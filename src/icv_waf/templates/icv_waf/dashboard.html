@@ -1,0 +1,224 @@
+{% load i18n %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% trans "WAF Dashboard" %}</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+    <style>
+        *,
+        *::before,
+        *::after { box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+            margin: 0;
+            padding: 1.25rem 2rem 3rem;
+            background: #f0f2f5;
+            color: #1a1a1a;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.75rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        header h1 {
+            font-size: 1.4rem;
+            margin: 0;
+            font-weight: 700;
+        }
+
+        .user-info {
+            font-size: 0.8rem;
+            color: #6b7280;
+        }
+
+        /* Grid layout — two equal columns, full-width panels span both. */
+        .panels {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.25rem;
+        }
+
+        @media (max-width: 768px) {
+            .panels { grid-template-columns: 1fr; }
+        }
+
+        .panel {
+            background: #fff;
+            border-radius: 8px;
+            padding: 1.25rem 1.5rem;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+        }
+
+        .panel-full {
+            grid-column: 1 / -1;
+        }
+
+        .panel h2 {
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin: 0 0 1rem;
+            padding-bottom: 0.6rem;
+            border-bottom: 1px solid #f3f4f6;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: #374151;
+        }
+
+        .loading {
+            color: #9ca3af;
+            padding: 1rem 0;
+            text-align: center;
+            font-size: 0.875rem;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8125rem;
+        }
+
+        th {
+            text-align: left;
+            padding: 0.35rem 0.5rem;
+            font-weight: 600;
+            color: #6b7280;
+            border-bottom: 1px solid #e5e7eb;
+        }
+
+        td {
+            text-align: left;
+            padding: 0.4rem 0.5rem;
+            border-bottom: 1px solid #f3f4f6;
+            vertical-align: middle;
+        }
+
+        tr:last-child td { border-bottom: none; }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+        }
+
+        @media (max-width: 480px) {
+            .stat-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        .stat {
+            text-align: center;
+            padding: 0.5rem;
+        }
+
+        .stat-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            line-height: 1.1;
+        }
+
+        .stat-label {
+            font-size: 0.7rem;
+            color: #9ca3af;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 0.15rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.2em 0.5em;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .badge-block  { background: #fef2f2; color: #b91c1c; }
+        .badge-challenge { background: #fef9c3; color: #92400e; }
+        .badge-throttle { background: #eff6ff; color: #1d4ed8; }
+        .badge-log    { background: #f0fdf4; color: #15803d; }
+
+        .btn {
+            display: inline-block;
+            padding: 0.25rem 0.55rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            font-weight: 600;
+            line-height: 1.4;
+            text-align: center;
+            transition: opacity 0.15s;
+        }
+
+        .btn:hover { opacity: 0.82; }
+
+        .btn-confirm {
+            background: #16a34a;
+            color: #fff;
+            margin-right: 0.3rem;
+        }
+
+        .btn-reject {
+            background: #dc2626;
+            color: #fff;
+        }
+
+        .htmx-request .btn { opacity: 0.5; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>{% trans "WAF Dashboard" %}</h1>
+        {% if user.is_authenticated %}
+        <span class="user-info">{{ user.get_full_name|default:user.email }}</span>
+        {% endif %}
+    </header>
+
+    <div class="panels">
+
+        {# Traffic overview — full width, auto-refreshes every 30 s #}
+        <div class="panel panel-full">
+            <h2>{% trans "Traffic Overview" %}</h2>
+            <div id="waf-stats-panel"
+                 hx-get="{{ stats_url }}"
+                 hx-trigger="load, every 30s"
+                 hx-swap="innerHTML"
+                 hx-indicator="#waf-stats-panel">
+                <div class="loading">{% trans "Loading stats…" %}</div>
+            </div>
+        </div>
+
+        {# Top blocked IPs #}
+        <div class="panel">
+            <h2>{% trans "Top Blocked IPs" %}</h2>
+            <div id="waf-top-blocked-panel"
+                 hx-get="{{ top_blocked_url }}"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <div class="loading">{% trans "Loading…" %}</div>
+            </div>
+        </div>
+
+        {# Anomaly alerts #}
+        <div class="panel">
+            <h2>{% trans "Anomaly Alerts" %}</h2>
+            <div id="waf-anomalies-panel"
+                 hx-get="{{ anomalies_url }}"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <div class="loading">{% trans "Loading…" %}</div>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>

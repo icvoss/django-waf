@@ -1,0 +1,29 @@
+{% load i18n %}
+{% if ips %}
+<table>
+    <thead>
+        <tr>
+            <th>{% trans "IP Address" %}</th>
+            <th>{% trans "Threat Score" %}</th>
+            <th>{% trans "Blocked" %}</th>
+            <th>{% trans "Challenged" %}</th>
+            <th>{% trans "Distinct UAs" %}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for ip in ips %}
+        <tr>
+            <td><code>{{ ip.ip_address }}</code></td>
+            <td>{{ ip.threat_score }}</td>
+            <td>{{ ip.blocked_requests }}</td>
+            <td>{{ ip.challenged_requests }}</td>
+            <td>{{ ip.distinct_ua_count }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p style="color:#9ca3af;font-size:0.875rem;text-align:center;padding:1rem 0;">
+    {% trans "No blocked IPs recorded yet." %}
+</p>
+{% endif %}

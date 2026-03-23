@@ -1,0 +1,25 @@
+{% load i18n %}
+{# Replaces the anomaly row after a superuser confirms (promotes) it. #}
+<tr id="anomaly-row-{{ rule.id }}" style="opacity:0.6;">
+    <td>
+        <code title="{{ rule.name }}">{{ rule.pattern|truncatechars:40 }}</code>
+    </td>
+    <td>
+        {% if rule.action == "block" %}
+            <span class="badge badge-block">{% trans "Block" %}</span>
+        {% elif rule.action == "challenge" %}
+            <span class="badge badge-challenge">{% trans "Challenge" %}</span>
+        {% elif rule.action == "throttle" %}
+            <span class="badge badge-throttle">{% trans "Throttle" %}</span>
+        {% else %}
+            <span class="badge badge-log">{{ rule.get_action_display }}</span>
+        {% endif %}
+    </td>
+    <td>{{ rule.created_at|date:"d M Y H:i" }}</td>
+    <td>&mdash;</td>
+    <td>
+        <span style="font-size:0.75rem;color:#15803d;font-weight:600;">
+            &#x2713; {% trans "Confirmed" %}
+        </span>
+    </td>
+</tr>

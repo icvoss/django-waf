@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security Check</title>
+    <style>
+        *,
+        *::before,
+        *::after { box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background: #f0f2f5;
+            color: #1a1a1a;
+        }
+
+        .container {
+            text-align: center;
+            padding: 2.5rem 2rem;
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+            max-width: 420px;
+            width: 100%;
+            margin: 1rem;
+        }
+
+        .shield {
+            font-size: 2.5rem;
+            margin-bottom: 0.75rem;
+            line-height: 1;
+        }
+
+        h1 {
+            font-size: 1.25rem;
+            margin: 0 0 0.5rem;
+            font-weight: 600;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 0.875rem;
+            margin: 0 0 1.5rem;
+            line-height: 1.5;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #e5e7eb;
+            border-top: 3px solid #374151;
+            border-radius: 50%;
+            animation: spin 0.9s linear infinite;
+            margin: 0 auto 1.25rem;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        #status {
+            font-size: 0.875rem;
+            color: #555;
+            margin: 0 0 0.25rem;
+            min-height: 1.25rem;
+        }
+
+        #status.success {
+            color: #15803d;
+            font-weight: 600;
+        }
+
+        #error {
+            display: none;
+            color: #b91c1c;
+            font-size: 0.875rem;
+            margin-top: 0.75rem;
+            padding: 0.6rem 0.75rem;
+            background: #fef2f2;
+            border-radius: 6px;
+        }
+
+        .privacy-note {
+            margin-top: 1.5rem;
+            font-size: 0.75rem;
+            color: #9ca3af;
+            line-height: 1.5;
+        }
+
+        /* Respect user motion preferences */
+        @media (prefers-reduced-motion: reduce) {
+            .spinner { animation: none; border-top-color: #374151; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container" role="main">
+        <div class="shield" aria-hidden="true">&#x1F6E1;</div>
+        <h1>Verifying your browser</h1>
+        <p class="subtitle">
+            We're running a quick security check.<br>
+            This usually takes a few seconds.
+        </p>
+
+        <div class="spinner" id="spinner" role="status" aria-label="Working…"></div>
+        <p id="status" aria-live="polite">Working&hellip;</p>
+        <div id="error" role="alert"></div>
+
+        <p class="privacy-note">
+            No personal data is collected during this check.
+        </p>
+    </div>
+
+    <script>
+    (function () {
+        "use strict";
+
+        var token = "{{ token }}";
+        var difficulty = {{ difficulty }};
+        var nextUrl = "{{ next_url|escapejs }}";
+        var postUrl = "{{ post_url|escapejs }}";
+        var nonce = 0;
+
+        var statusEl = document.getElementById("status");
+        var spinnerEl = document.getElementById("spinner");
+        var errorEl = document.getElementById("error");
+
+        // --- SHA-256 via Web Crypto API ---
+        function sha256(message) {
+            var buf = new TextEncoder().encode(message);
+            return crypto.subtle.digest("SHA-256", buf).then(function (hash) {
+                return new Uint8Array(hash);
+            });
+        }
+
+        function hasLeadingZeroBytes(hash, count) {
+            for (var i = 0; i < count; i++) {
+                if (hash[i] !== 0) return false;
+            }
+            return true;
+        }
+
+        function showError(message) {
+            spinnerEl.style.display = "none";
+            errorEl.textContent = message;
+            errorEl.style.display = "block";
+        }
+
+        // Yield to the browser event loop to keep the UI responsive.
+        function yieldToUI() {
+            return new Promise(function (resolve) { setTimeout(resolve, 0); });
+        }
+
+        async function solve() {
+            while (true) {
+                var hash = await sha256(token + nonce.toString());
+                if (hasLeadingZeroBytes(hash, difficulty)) {
+                    statusEl.textContent = "Verified!";
+                    statusEl.className = "success";
+                    spinnerEl.style.display = "none";
+                    await submit(nonce.toString());
+                    return;
+                }
+                nonce++;
+                // Yield every 10 000 iterations to keep UI responsive.
+                if (nonce % 10000 === 0) {
+                    statusEl.textContent = "Working\u2026 (" + nonce.toLocaleString() + " attempts)";
+                    await yieldToUI();
+                }
+            }
+        }
+
+        async function submit(solution) {
+            var resp;
+            try {
+                resp = await fetch(postUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ token: token, nonce: solution, next: nextUrl }),
+                    redirect: "manual",
+                });
+            } catch (err) {
+                showError("Network error. Please refresh the page.");
+                return;
+            }
+
+            // Any 2xx or redirect = success.
+            if (resp.ok || resp.type === "opaqueredirect" || resp.status === 302) {
+                window.location.href = nextUrl;
+                return;
+            }
+
+            // Server returned an error — extract reason and retry token.
+            var data = null;
+            try {
+                data = await resp.json();
+            } catch (_) {
+                showError("Verification failed. Please refresh the page.");
+                return;
+            }
+
+            if (data && data.new_token) {
+                // Retry with the fresh token.
+                token = data.new_token;
+                nonce = 0;
+                errorEl.style.display = "none";
+                spinnerEl.style.display = "block";
+                statusEl.textContent = "Retrying\u2026";
+                statusEl.className = "";
+                solve();
+            } else {
+                showError(
+                    (data && data.error)
+                        ? data.error
+                        : "Verification failed. Please refresh the page."
+                );
+            }
+        }
+
+        // Check Web Crypto availability (required by all modern browsers).
+        if (typeof crypto === "undefined" || !crypto.subtle) {
+            showError(
+                "Your browser does not support the security check. " +
+                "Please use a modern browser or enable JavaScript."
+            );
+            return;
+        }
+
+        solve();
+    })();
+    </script>
+</body>
+</html>

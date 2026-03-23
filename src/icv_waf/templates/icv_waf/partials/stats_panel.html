@@ -1,0 +1,27 @@
+{% load i18n %}
+<div class="stat-grid">
+    <div class="stat">
+        <div class="stat-value">{{ total|default:"0" }}</div>
+        <div class="stat-label">{% trans "Total" %}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ blocked|default:"0" }}</div>
+        <div class="stat-label">{% trans "Blocked" %}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ challenged|default:"0" }}</div>
+        <div class="stat-label">{% trans "Challenged" %}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ throttled|default:"0" }}</div>
+        <div class="stat-label">{% trans "Throttled" %}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ allowed|default:"0" }}</div>
+        <div class="stat-label">{% trans "Allowed" %}</div>
+    </div>
+    <div class="stat">
+        <div class="stat-value">{{ passed|default:"0" }}</div>
+        <div class="stat-label">{% trans "Allowlisted" %}</div>
+    </div>
+</div>

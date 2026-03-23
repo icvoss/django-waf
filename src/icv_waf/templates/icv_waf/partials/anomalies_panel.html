@@ -1,0 +1,64 @@
+{% load i18n %}
+{% if rules %}
+<table>
+    <thead>
+        <tr>
+            <th>{% trans "Pattern" %}</th>
+            <th>{% trans "Action" %}</th>
+            <th>{% trans "Created" %}</th>
+            <th>{% trans "Expires" %}</th>
+            <th>{% trans "Actions" %}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for rule in rules %}
+        <tr id="anomaly-row-{{ rule.id }}">
+            <td>
+                <code title="{{ rule.name }}">{{ rule.pattern|truncatechars:40 }}</code>
+            </td>
+            <td>
+                {% if rule.action == "block" %}
+                    <span class="badge badge-block">{% trans "Block" %}</span>
+                {% elif rule.action == "challenge" %}
+                    <span class="badge badge-challenge">{% trans "Challenge" %}</span>
+                {% elif rule.action == "throttle" %}
+                    <span class="badge badge-throttle">{% trans "Throttle" %}</span>
+                {% else %}
+                    <span class="badge badge-log">{{ rule.get_action_display }}</span>
+                {% endif %}
+            </td>
+            <td>{{ rule.created_at|date:"d M Y H:i" }}</td>
+            <td>
+                {% if rule.expires_at %}
+                    {{ rule.expires_at|date:"d M Y H:i" }}
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </td>
+            <td>
+                {% url 'icv_waf:anomaly-confirm' rule.id as confirm_url %}
+                {% url 'icv_waf:anomaly-reject' rule.id as reject_url %}
+                <button class="btn btn-confirm"
+                        hx-post="{{ confirm_url }}"
+                        hx-target="#anomaly-row-{{ rule.id }}"
+                        hx-swap="outerHTML"
+                        hx-confirm="{% trans "Promote this rule to a permanent admin rule?" %}">
+                    {% trans "Confirm" %}
+                </button>
+                <button class="btn btn-reject"
+                        hx-post="{{ reject_url }}"
+                        hx-target="#anomaly-row-{{ rule.id }}"
+                        hx-swap="delete"
+                        hx-confirm="{% trans "Deactivate and dismiss this anomaly rule?" %}">
+                    {% trans "Reject" %}
+                </button>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p style="color:#9ca3af;font-size:0.875rem;text-align:center;padding:1rem 0;">
+    {% trans "No anomaly rules in the last 48 hours." %}
+</p>
+{% endif %}
