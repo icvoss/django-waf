@@ -110,10 +110,13 @@ class TestGenerateBlocklistCommand:
     @pytest.mark.django_db
     def test_service_exception_raises_command_error(self):
         """A service exception is converted to CommandError."""
-        with patch(
-            "icv_waf.services.blocklist_generator.generate_nginx_blocklist",
-            side_effect=RuntimeError("disk full"),
-        ), pytest.raises(CommandError, match="Failed to generate blocklist"):
+        with (
+            patch(
+                "icv_waf.services.blocklist_generator.generate_nginx_blocklist",
+                side_effect=RuntimeError("disk full"),
+            ),
+            pytest.raises(CommandError, match="Failed to generate blocklist"),
+        ):
             call_command("icv_waf_generate_blocklist")
 
 
@@ -186,10 +189,13 @@ class TestDetectAnomaliesCommand:
     @pytest.mark.django_db
     def test_service_exception_raises_command_error(self):
         """A service exception is converted to CommandError."""
-        with patch(
-            "icv_waf.services.anomaly_detector.run_all_detectors",
-            side_effect=ValueError("bad window"),
-        ), pytest.raises(CommandError, match="Anomaly detection failed"):
+        with (
+            patch(
+                "icv_waf.services.anomaly_detector.run_all_detectors",
+                side_effect=ValueError("bad window"),
+            ),
+            pytest.raises(CommandError, match="Anomaly detection failed"),
+        ):
             call_command("icv_waf_detect_anomalies")
 
     @pytest.mark.django_db
@@ -387,7 +393,8 @@ class TestSyncFeedCommand:
             patch(
                 "icv_waf.services.threat_feed.sync_feed",
                 side_effect=ConnectionError("timeout"),
-            ),pytest.raises(CommandError, match="Feed sync failed")
+            ),
+            pytest.raises(CommandError, match="Feed sync failed"),
         ):
             call_command("icv_waf_sync_feed")
 

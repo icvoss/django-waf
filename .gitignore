@@ -11,3 +11,5 @@ build/
 .coverage
 htmlcov/
 *.so
+.idea/
+uv.lock

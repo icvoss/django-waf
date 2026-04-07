@@ -24,8 +24,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e ".[dev]"
           pip install "Django~=${{ matrix.django-version }}.0"
+          pip install -e ".[dev,celery]"
 
       - name: Lint
         run: ruff check src/ tests/

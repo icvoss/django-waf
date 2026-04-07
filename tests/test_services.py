@@ -1998,9 +1998,7 @@ class TestGenerateNginxBlocklist:
         # An empty-pattern rule should produce no entry line beyond 'default 0;'
         ua_section = content.split("map $http_user_agent")[1].split("}")[0]
         lines_with_entries = [
-            line
-            for line in ua_section.splitlines()
-            if line.strip() and "default 0" not in line and "{" not in line
+            line for line in ua_section.splitlines() if line.strip() and "default 0" not in line and "{" not in line
         ]
         assert lines_with_entries == []
 
