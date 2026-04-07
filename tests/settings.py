@@ -11,8 +11,6 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # ICV packages
-    "icv_core",
     "icv_waf",
 ]
 
@@ -52,7 +50,6 @@ DATABASES = {
 }
 
 MIGRATION_MODULES = {
-    "icv_core": None,
     "icv_waf": None,
     "contenttypes": None,
     "auth": None,

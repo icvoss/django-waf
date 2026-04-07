@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 
 from django.db import models
@@ -9,7 +10,6 @@ from django.db.models import Q
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from icv_core.models import BaseModel
 from icv_waf.enums import (
     ChallengeStatus,
     MatchType,
@@ -18,6 +18,27 @@ from icv_waf.enums import (
     RuleType,
     Verdict,
 )
+
+# ---------------------------------------------------------------------------
+# Abstract base model — UUID PK + timestamps
+# ---------------------------------------------------------------------------
+
+
+class BaseModel(models.Model):
+    """Abstract base with UUID primary key and created/updated timestamps.
+
+    Field-compatible with ``icv_core.models.BaseModel`` for projects that use
+    the ICV-Django ecosystem, but fully standalone — no external dependency.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+        ordering = ["-created_at"]
+
 
 # ---------------------------------------------------------------------------
 # BlockRule

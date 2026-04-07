@@ -31,7 +31,6 @@ keywords = [
 ]
 dependencies = [
     "Django>=4.2",
-    "django-icv-core",
     "django-redis>=5.4",
     "httpx>=0.27",
 ]

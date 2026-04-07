@@ -28,7 +28,6 @@ a reverse-proxy vendor.
 - Python >= 3.11
 - Django >= 4.2
 - Redis (via `django-redis >= 5.4`)
-- `django-icv-core`
 - `httpx >= 0.27` (for threat feed sync)
 - Optional: `celery >= 5.3` (for scheduled tasks)
 
@@ -43,7 +42,6 @@ Add to `INSTALLED_APPS`:
 ```python
 INSTALLED_APPS = [
     # ...
-    "icv_core",
     "icv_waf",
 ]
 ```
