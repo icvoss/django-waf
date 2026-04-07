@@ -363,6 +363,12 @@ class RequestLog(BaseModel):
         blank=True,
         verbose_name=_("response code"),
     )
+    referer = models.CharField(
+        max_length=2048,
+        blank=True,
+        verbose_name=_("referer"),
+        help_text=_("HTTP Referer header value, useful for identifying bot traffic sources."),
+    )
     country_code = models.CharField(
         max_length=2,
         blank=True,

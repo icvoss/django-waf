@@ -168,6 +168,7 @@ class WafMiddleware:
                 matched_rule_type=result.matched_rule_type,
                 anomaly_score=result.anomaly_score,
                 response_code=response_code,
+                referer=request.META.get("HTTP_REFERER", "")[:2048],
             )
         except Exception:
             logger.exception("icv-waf: error creating RequestLog record")

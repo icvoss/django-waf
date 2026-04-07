@@ -191,10 +191,11 @@ class RequestLogAdmin(admin.ModelAdmin):
         "verdict",
         "response_code",
         "anomaly_score",
+        "referer",
         "country_code",
     ]
     list_filter = ["verdict", "method", "country_code"]
-    search_fields = ["ip_address", "path", "user_agent"]
+    search_fields = ["ip_address", "path", "user_agent", "referer"]
     ordering = ["-timestamp"]
     date_hierarchy = "timestamp"
     readonly_fields = [
@@ -208,6 +209,7 @@ class RequestLogAdmin(admin.ModelAdmin):
         "matched_rule_type",
         "anomaly_score",
         "response_code",
+        "referer",
         "country_code",
         "created_at",
         "updated_at",
