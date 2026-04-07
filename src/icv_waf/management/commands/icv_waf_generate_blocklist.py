@@ -5,6 +5,8 @@ Generates the nginx IP/UA blocklist configuration file from active WAF rules.
 Can be run manually during initial setup, testing, or after emergency rule changes.
 """
 
+import contextlib
+
 from django.core.management.base import BaseCommand, CommandError
 
 
@@ -52,10 +54,8 @@ class Command(BaseCommand):
         except Exception as exc:
             raise CommandError(f"Failed to generate blocklist: {exc}") from exc
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
 
     def _write_and_reload(self, output_path: str | None) -> None:
         """Write the blocklist file and signal nginx to reload."""

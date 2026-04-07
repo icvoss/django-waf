@@ -1320,7 +1320,8 @@ class TestRunAllDetectors:
             result = run_all_detectors()
 
         assert result["ua_rotation_rules"] == 1
-        assert result["total_rules_created"] == result["ua_rotation_rules"] + result["subnet_burst_rules"] + result["challenge_farm_rules"]
+        expected = result["ua_rotation_rules"] + result["subnet_burst_rules"] + result["challenge_farm_rules"]
+        assert result["total_rules_created"] == expected
 
 
 # ---------------------------------------------------------------------------

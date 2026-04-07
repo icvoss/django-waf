@@ -1,4 +1,4 @@
-# django-icv-waf
+# django-waf
 
 Self-hosted request filtering, bot management, and WAF middleware for Django.
 
@@ -34,7 +34,7 @@ a reverse-proxy vendor.
 ## Installation
 
 ```bash
-pip install django-icv-waf
+pip install django-waf
 ```
 
 Add to `INSTALLED_APPS`:
@@ -205,7 +205,7 @@ The middleware evaluates requests in this order:
 
 ```bash
 # Run tests
-cd packages/icv-waf && pytest
+pytest
 
 # Run tests with coverage
 pytest --cov=src --cov-report=term-missing
@@ -218,6 +218,6 @@ ruff format src/ tests/
 mypy src/
 ```
 
-## Specification
+## Licence
 
-Full specification: [`docs/specs/APP-018-waf/`](../../docs/specs/APP-018-waf/)
+MIT

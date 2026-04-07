@@ -7,6 +7,7 @@ Writes are atomic via a temp-file-then-rename (BR-BL-002).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
@@ -78,11 +79,8 @@ def generate_nginx_blocklist(output_path: str | None = None) -> int:
             fh.writelines(lines)
         os.rename(tmp_path, dest)
     except Exception:
-        # Clean up temp file on failure
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
     logger.info("icv-waf: wrote %d rules to %s", rule_count, dest)
