@@ -48,14 +48,11 @@ def waf_urls(settings):
 
 
 def _make_staff_user(*, username="staff", email=None, superuser=False):
-    """Create and return a saved staff (or superuser) User.
-
-    Uses email as the primary identifier because AUTH_USER_MODEL is
-    icv_identity.User (email-based).
-    """
+    """Create and return a saved staff (or superuser) User."""
     if email is None:
         email = f"{username}@example.com"
     user = User.objects.create_user(
+        username=username,
         email=email,
         password="password",
         is_staff=True,
@@ -372,6 +369,7 @@ class TestDashboardView:
         StaffRequiredMixin, which calls handle_no_permission() on an authenticated user."""
         client = Client()
         user = User.objects.create_user(
+            username="regular",
             email="regular@example.com",
             password="pass",
             is_staff=False,
@@ -545,6 +543,7 @@ class TestAnomalyConfirmView:
         rule = BlockRuleFactory(source=RuleSource.AUTO)
         client = Client()
         staff_user = User.objects.create_user(
+            username="staffonly",
             email="staffonly@example.com",
             password="pass",
             is_staff=True,
@@ -563,6 +562,7 @@ class TestAnomalyConfirmView:
         rule = BlockRuleFactory(source=RuleSource.AUTO)
         client = Client()
         superuser = User.objects.create_user(
+            username="superconf",
             email="superconf@example.com",
             password="pass",
             is_staff=True,
@@ -588,6 +588,7 @@ class TestAnomalyRejectView:
         rule = BlockRuleFactory(source=RuleSource.AUTO, is_active=True)
         client = Client()
         superuser = User.objects.create_user(
+            username="superrej",
             email="superrej@example.com",
             password="pass",
             is_staff=True,
@@ -609,6 +610,7 @@ class TestAnomalyRejectView:
         rule = BlockRuleFactory(source=RuleSource.AUTO)
         client = Client()
         superuser = User.objects.create_user(
+            username="superrejempty",
             email="superrejempty@example.com",
             password="pass",
             is_staff=True,

@@ -1,19 +1,47 @@
-"""
-Django settings for icv-waf tests.
-
-Minimal configuration — MIGRATION_MODULES set to None so syncdb creates
-tables directly without running migrations.
-"""
+"""Django settings for icv-waf tests."""
 
 SECRET_KEY = "icv-waf-test-secret-key"  # noqa: S105
+DEBUG = True
+ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
-    "django.contrib.contenttypes",
-    "django.contrib.auth",
     "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
     "django.contrib.sessions",
+    "django.contrib.messages",
+    "django.contrib.staticfiles",
+    # ICV packages
     "icv_core",
     "icv_waf",
+]
+
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+]
+
+ROOT_URLCONF = "tests.urls"
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.debug",
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ],
+        },
+    },
 ]
 
 DATABASES = {
@@ -34,16 +62,23 @@ MIGRATION_MODULES = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-USE_TZ = True
-TIME_ZONE = "UTC"
+AUTH_PASSWORD_VALIDATORS = []
 
-ROOT_URLCONF = "icv_waf.urls"
+LANGUAGE_CODE = "en-gb"
+TIME_ZONE = "UTC"
+USE_I18N = True
+USE_TZ = True
+
+STATIC_URL = "/static/"
 
 CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
     }
 }
+
+# Celery
+CELERY_TASK_ALWAYS_EAGER = True
 
 # icv-waf settings
 ICV_WAF_ENABLED = True

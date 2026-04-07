@@ -1271,3 +1271,1138 @@ class TestDetectChallengeFarms:
             created = detect_challenge_farms(window_hours=24)
 
         assert created == []
+
+
+# ---------------------------------------------------------------------------
+# run_all_detectors
+# ---------------------------------------------------------------------------
+
+
+class TestRunAllDetectors:
+    def test_returns_summary_dict_with_correct_keys(self, db):
+        """run_all_detectors returns a dict with the expected summary keys."""
+        from icv_waf.services.anomaly_detector import run_all_detectors
+
+        result = run_all_detectors()
+
+        assert set(result.keys()) == {
+            "ua_rotation_rules",
+            "subnet_burst_rules",
+            "challenge_farm_rules",
+            "total_rules_created",
+        }
+
+    def test_returns_zero_counts_when_no_anomalies(self, db):
+        """When no anomalies exist, all counts are zero."""
+        from icv_waf.services.anomaly_detector import run_all_detectors
+
+        result = run_all_detectors()
+
+        assert result["ua_rotation_rules"] == 0
+        assert result["subnet_burst_rules"] == 0
+        assert result["challenge_farm_rules"] == 0
+        assert result["total_rules_created"] == 0
+
+    def test_total_rules_created_sums_all_detectors(self, db):
+        """total_rules_created is the sum across all three detectors."""
+        import icv_waf.conf as conf_mod
+        from icv_waf.services.anomaly_detector import run_all_detectors
+
+        now = timezone.now()
+        # Trigger UA rotation detector: one IP with many distinct UAs
+        for i in range(25):
+            RequestLogFactory(ip_address="55.55.55.55", user_agent=f"UA-{i}/1.0", timestamp=now)
+
+        with (
+            patch.object(conf_mod, "ICV_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS", 20),
+            patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24),
+        ):
+            result = run_all_detectors()
+
+        assert result["ua_rotation_rules"] == 1
+        assert result["total_rules_created"] == result["ua_rotation_rules"] + result["subnet_burst_rules"] + result["challenge_farm_rules"]
+
+
+# ---------------------------------------------------------------------------
+# _emit_anomaly_signal exception path
+# ---------------------------------------------------------------------------
+
+
+class TestEmitAnomalySignalExceptionPath:
+    def test_exception_during_signal_send_is_swallowed(self, db):
+        """_emit_anomaly_signal swallows exceptions raised inside the signal send."""
+        from icv_waf.enums import AnomalyType
+        from icv_waf.services.anomaly_detector import _emit_anomaly_signal
+
+        rule = BlockRuleFactory(is_active=True, rule_type=RuleType.IP)
+
+        with patch("icv_waf.signals.anomaly_detected.send", side_effect=Exception("signal error")):
+            # Should not raise — exceptions from signal send are caught
+            _emit_anomaly_signal(
+                rule=rule,
+                anomaly_type=AnomalyType.UA_ROTATION,
+                details={"distinct_ua_count": 5},
+            )
+
+
+# ---------------------------------------------------------------------------
+# detect_subnet_burst — branch coverage for non-burst path
+# ---------------------------------------------------------------------------
+
+
+class TestDetectSubnetBurstBranches:
+    def test_subnet_below_burst_threshold_not_flagged(self, db):
+        """Subnets at or below 3× mean are not flagged."""
+        import icv_waf.conf as conf_mod
+        from icv_waf.services.anomaly_detector import detect_subnet_burst
+
+        now = timezone.now()
+        # Uniform distribution: 10 requests per /24 subnet — no burst
+        for j in range(10):
+            RequestLogFactory(ip_address=f"40.40.{j}.1", timestamp=now)
+
+        with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+            created = detect_subnet_burst(window_minutes=60)
+
+        assert created == []
+
+    def test_invalid_ip_in_logs_is_skipped(self, db):
+        """RequestLog entries with invalid IP addresses are silently skipped."""
+        import icv_waf.conf as conf_mod
+        from icv_waf.services.anomaly_detector import detect_subnet_burst
+
+        now = timezone.now()
+        # Create a log entry with a value that cannot be parsed as an IP
+        RequestLogFactory(ip_address="999.999.999.999", timestamp=now)
+
+        with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+            # Should not raise
+            result = detect_subnet_burst(window_minutes=60)
+
+        assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# sync_feed
+# ---------------------------------------------------------------------------
+
+
+class TestSyncFeed:
+    def test_creates_new_rules_from_feed(self, db):
+        """sync_feed creates BlockRule records for new feed entries."""
+        from icv_waf.models import BlockRule
+        from icv_waf.services.threat_feed import sync_feed
+
+        feed_payload = [
+            {
+                "rule_type": "ip",
+                "pattern": "1.2.3.4",
+                "action": "block",
+                "match_type": "exact",
+                "confidence": 0.9,
+                "reporters": 5,
+            }
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result["created"] == 1
+        assert result["updated"] == 0
+        assert result["skipped"] == 0
+        assert BlockRule.objects.filter(source="feed", pattern="1.2.3.4").exists()
+
+    def test_updates_existing_feed_rule(self, db):
+        """sync_feed updates an existing feed rule matched on (source, rule_type, pattern)."""
+        from icv_waf.enums import RuleSource
+        from icv_waf.services.threat_feed import sync_feed
+
+        BlockRuleFactory(
+            source=RuleSource.FEED,
+            rule_type="ip",
+            match_type="exact",
+            pattern="5.6.7.8",
+            action="block",
+            confidence="0.7",
+            is_active=True,
+        )
+
+        feed_payload = [
+            {
+                "rule_type": "ip",
+                "pattern": "5.6.7.8",
+                "action": "challenge",
+                "match_type": "exact",
+                "confidence": 0.95,
+                "reporters": 10,
+            }
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result["updated"] == 1
+        assert result["created"] == 0
+
+    def test_skips_entries_below_confidence_threshold(self, db):
+        """Entries with confidence below the threshold are counted as skipped."""
+        from icv_waf.services.threat_feed import sync_feed
+
+        feed_payload = [
+            {
+                "rule_type": "ip",
+                "pattern": "9.9.9.9",
+                "action": "block",
+                "match_type": "exact",
+                "confidence": 0.1,  # below threshold
+            }
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.8)
+
+        assert result["skipped"] == 1
+        assert result["created"] == 0
+
+    def test_skips_entries_missing_rule_type_or_pattern(self, db):
+        """Entries without rule_type or pattern are counted as skipped."""
+        from icv_waf.services.threat_feed import sync_feed
+
+        feed_payload = [
+            {"confidence": 0.9, "action": "block"},  # missing rule_type and pattern
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result["skipped"] == 1
+
+    def test_deactivates_feed_rules_absent_from_feed(self, db):
+        """Feed rules no longer in the feed response are deactivated (BR-FEED-005)."""
+        from icv_waf.enums import RuleSource
+        from icv_waf.services.threat_feed import sync_feed
+
+        stale_rule = BlockRuleFactory(
+            source=RuleSource.FEED,
+            rule_type="ip",
+            match_type="exact",
+            pattern="10.20.30.40",
+            action="block",
+            is_active=True,
+        )
+
+        # Feed returns an empty list — stale_rule is not present
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = []
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result["expired"] == 1
+        stale_rule.refresh_from_db()
+        assert stale_rule.is_active is False
+
+    def test_network_error_returns_error_dict(self, db):
+        """When the HTTP request fails, sync_feed returns an error dict without raising."""
+        from icv_waf.services.threat_feed import sync_feed
+
+        with patch("httpx.get", side_effect=Exception("connection refused")):
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert "error" in result
+        assert result["created"] == 0
+
+    def test_accepts_wrapped_rules_dict(self, db):
+        """sync_feed handles a feed payload wrapped in {'rules': [...]} format."""
+        from icv_waf.services.threat_feed import sync_feed
+
+        feed_payload = {
+            "rules": [
+                {
+                    "rule_type": "ip",
+                    "pattern": "11.22.33.44",
+                    "action": "block",
+                    "match_type": "exact",
+                    "confidence": 0.9,
+                }
+            ]
+        }
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result["created"] == 1
+
+    def test_entry_with_expires_field_uses_parsed_datetime(self, db):
+        """A feed entry with an 'expires' field sets expires_at from that value."""
+        from icv_waf.models import BlockRule
+        from icv_waf.services.threat_feed import sync_feed
+
+        future_ts = "2099-12-31T00:00:00+00:00"
+        feed_payload = [
+            {
+                "rule_type": "ip",
+                "pattern": "66.77.88.99",
+                "action": "block",
+                "match_type": "exact",
+                "confidence": 0.9,
+                "expires": future_ts,
+            }
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        rule = BlockRule.objects.get(pattern="66.77.88.99")
+        assert rule.expires_at.year == 2099
+
+    def test_emits_feed_synced_signal(self, db):
+        """sync_feed emits the feed_synced signal on completion."""
+        from icv_waf.services.threat_feed import sync_feed
+        from icv_waf.signals import feed_synced
+
+        received = []
+
+        def handler(sender, **kwargs):
+            received.append(kwargs)
+
+        feed_synced.connect(handler, dispatch_uid="test_sync_feed_signal")
+        try:
+            with patch("httpx.get") as mock_get:
+                mock_resp = MagicMock()
+                mock_resp.json.return_value = []
+                mock_resp.raise_for_status.return_value = None
+                mock_get.return_value = mock_resp
+
+                sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+        finally:
+            feed_synced.disconnect(dispatch_uid="test_sync_feed_signal")
+
+        assert len(received) == 1
+        assert "created" in received[0]
+
+
+# ---------------------------------------------------------------------------
+# build_telemetry_payload
+# ---------------------------------------------------------------------------
+
+
+class TestBuildTelemetryPayload:
+    def test_returns_payload_with_expected_keys(self, db):
+        """build_telemetry_payload returns a dict with all required top-level keys."""
+        from icv_waf.services.threat_feed import build_telemetry_payload
+
+        period_start = timezone.now() - timezone.timedelta(hours=1)
+        period_end = timezone.now()
+
+        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="test-install-id"):
+            payload = build_telemetry_payload(period_start, period_end)
+
+        assert set(payload.keys()) == {"install_id", "period", "ua_hashes", "subnets", "anomalies", "summary"}
+
+    def test_install_id_in_payload(self, db):
+        """The install_id from get_or_create_install_id is included in the payload."""
+        from icv_waf.services.threat_feed import build_telemetry_payload
+
+        period_start = timezone.now() - timezone.timedelta(hours=1)
+        period_end = timezone.now()
+
+        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="my-stable-id"):
+            payload = build_telemetry_payload(period_start, period_end)
+
+        assert payload["install_id"] == "my-stable-id"
+
+    def test_summary_counts_requests_in_period(self, db):
+        """summary.total_requests reflects the count of RequestLog entries in the period."""
+        from icv_waf.services.threat_feed import build_telemetry_payload
+
+        now = timezone.now()
+        period_start = now - timezone.timedelta(hours=1)
+        period_end = now
+
+        RequestLogFactory.create_batch(3, timestamp=now - timezone.timedelta(minutes=30))
+
+        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
+            payload = build_telemetry_payload(period_start, period_end)
+
+        assert payload["summary"]["total_requests"] == 3
+
+    def test_ua_hashes_are_sha256_of_ua_rules(self, db):
+        """UA block rules are hashed with SHA-256 — raw patterns are not included."""
+        import hashlib
+
+        from icv_waf.enums import RuleSource
+        from icv_waf.services.threat_feed import build_telemetry_payload
+
+        raw_pattern = "EvilBot/1.0"
+        BlockRuleFactory(
+            source=RuleSource.ADMIN,
+            rule_type="ua",
+            match_type="exact",
+            pattern=raw_pattern,
+            is_active=True,
+        )
+
+        period_start = timezone.now() - timezone.timedelta(hours=1)
+        period_end = timezone.now()
+
+        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
+            payload = build_telemetry_payload(period_start, period_end)
+
+        ua_hashes = payload["ua_hashes"]
+        assert len(ua_hashes) == 1
+        expected_hash = hashlib.sha256(raw_pattern.encode()).hexdigest()
+        assert ua_hashes[0]["sha256"] == expected_hash
+        # Raw pattern must not appear anywhere in the payload
+        assert raw_pattern not in str(payload)
+
+    def test_subnets_are_truncated_to_slash24(self, db):
+        """IP addresses in logs are truncated to /24 subnets in the payload."""
+        from icv_waf.services.threat_feed import build_telemetry_payload
+
+        now = timezone.now()
+        period_start = now - timezone.timedelta(hours=1)
+        period_end = now
+
+        RequestLogFactory(ip_address="192.0.2.100", timestamp=now - timezone.timedelta(minutes=5))
+
+        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
+            payload = build_telemetry_payload(period_start, period_end)
+
+        subnet_cidrs = [s["cidr"] for s in payload["subnets"]]
+        assert "192.0.2.0/24" in subnet_cidrs
+
+    def test_invalid_ip_in_logs_is_skipped(self, db):
+        """RequestLog entries with invalid IPs are skipped during subnet aggregation."""
+        from icv_waf.services.threat_feed import build_telemetry_payload
+
+        now = timezone.now()
+        period_start = now - timezone.timedelta(hours=1)
+        period_end = now
+
+        RequestLogFactory(ip_address="999.999.999.999", timestamp=now - timezone.timedelta(minutes=5))
+
+        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
+            # Should not raise
+            payload = build_telemetry_payload(period_start, period_end)
+
+        assert isinstance(payload["subnets"], list)
+
+
+# ---------------------------------------------------------------------------
+# submit_telemetry
+# ---------------------------------------------------------------------------
+
+
+class TestSubmitTelemetry:
+    def test_returns_true_on_successful_post(self):
+        """submit_telemetry returns True when the server responds with 2xx."""
+        from icv_waf.services.threat_feed import submit_telemetry
+
+        with patch("httpx.post") as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.is_success = True
+            mock_post.return_value = mock_resp
+
+            result = submit_telemetry({"install_id": "x"}, report_url="https://report.example.com")
+
+        assert result is True
+
+    def test_returns_false_on_non_2xx_response(self):
+        """submit_telemetry returns False when the server responds with a non-2xx status."""
+        from icv_waf.services.threat_feed import submit_telemetry
+
+        with patch("httpx.post") as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.is_success = False
+            mock_resp.status_code = 503
+            mock_post.return_value = mock_resp
+
+            result = submit_telemetry({"install_id": "x"}, report_url="https://report.example.com")
+
+        assert result is False
+
+    def test_returns_false_on_network_error(self):
+        """submit_telemetry returns False when a network error occurs (BR-TEL-004)."""
+        from icv_waf.services.threat_feed import submit_telemetry
+
+        with patch("httpx.post", side_effect=Exception("timeout")):
+            result = submit_telemetry({"install_id": "x"}, report_url="https://report.example.com")
+
+        assert result is False
+
+    def test_includes_bearer_token_when_api_key_set(self):
+        """An API key from conf is sent as a Bearer token in the Authorization header."""
+        import icv_waf.conf as conf_mod
+        from icv_waf.services.threat_feed import submit_telemetry
+
+        with (
+            patch.object(conf_mod, "ICV_WAF_FEED_API_KEY", "secret-key-123"),
+            patch("httpx.post") as mock_post,
+        ):
+            mock_resp = MagicMock()
+            mock_resp.is_success = True
+            mock_post.return_value = mock_resp
+
+            submit_telemetry({"install_id": "x"}, report_url="https://report.example.com")
+
+        _, call_kwargs = mock_post.call_args
+        headers = call_kwargs.get("headers", {})
+        assert headers.get("Authorization") == "Bearer secret-key-123"
+
+    def test_omits_auth_header_when_no_api_key(self):
+        """When ICV_WAF_FEED_API_KEY is empty, no Authorization header is sent."""
+        import icv_waf.conf as conf_mod
+        from icv_waf.services.threat_feed import submit_telemetry
+
+        with (
+            patch.object(conf_mod, "ICV_WAF_FEED_API_KEY", ""),
+            patch("httpx.post") as mock_post,
+        ):
+            mock_resp = MagicMock()
+            mock_resp.is_success = True
+            mock_post.return_value = mock_resp
+
+            submit_telemetry({"install_id": "x"}, report_url="https://report.example.com")
+
+        _, call_kwargs = mock_post.call_args
+        headers = call_kwargs.get("headers", {})
+        assert "Authorization" not in headers
+
+
+# ---------------------------------------------------------------------------
+# get_or_create_install_id
+# ---------------------------------------------------------------------------
+
+
+class TestGetOrCreateInstallId:
+    def test_returns_cached_value_without_file_io(self):
+        """Returns the install_id from Django cache without touching the filesystem."""
+        from icv_waf.services.threat_feed import get_or_create_install_id
+
+        with patch("django.core.cache.cache") as mock_cache:
+            mock_cache.get.return_value = "cached-install-id"
+
+            result = get_or_create_install_id()
+
+        assert result == "cached-install-id"
+
+    def test_reads_id_from_file_when_cache_empty(self, tmp_path):
+        """When the cache is empty, reads install_id from the filesystem file."""
+        from unittest.mock import mock_open
+
+        from icv_waf.services.threat_feed import get_or_create_install_id
+
+        with (
+            patch("django.core.cache.cache") as mock_cache,
+            patch("os.path.isfile", return_value=True),
+            patch("builtins.open", mock_open(read_data="file-install-id")),
+        ):
+            mock_cache.get.return_value = None
+
+            result = get_or_create_install_id()
+
+        assert result == "file-install-id"
+
+    def test_generates_new_uuid_when_no_file_exists(self, tmp_path):
+        """When the cache is empty and no file exists, generates and persists a new UUID."""
+        import uuid as uuid_mod
+
+        from icv_waf.services.threat_feed import get_or_create_install_id
+
+        with (
+            patch("django.core.cache.cache") as mock_cache,
+            patch("os.path.isfile", return_value=False),
+            patch("uuid.uuid4", return_value=uuid_mod.UUID("12345678-1234-5678-1234-567812345678")),
+            patch("builtins.open", side_effect=OSError("no write")),
+        ):
+            mock_cache.get.return_value = None
+
+            result = get_or_create_install_id()
+
+        assert result == "12345678-1234-5678-1234-567812345678"
+        mock_cache.set.assert_called_once()
+
+    def test_persists_new_id_to_cache(self, tmp_path):
+        """A freshly generated install_id is stored in the Django cache."""
+        from icv_waf.services.threat_feed import get_or_create_install_id
+
+        with (
+            patch("django.core.cache.cache") as mock_cache,
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", side_effect=OSError("no write")),
+        ):
+            mock_cache.get.return_value = None
+
+            get_or_create_install_id()
+
+        assert mock_cache.set.called
+
+
+# ---------------------------------------------------------------------------
+# generate_nginx_blocklist
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateNginxBlocklist:
+    def test_writes_file_with_ip_and_ua_rules(self, db, tmp_path):
+        """generate_nginx_blocklist writes both IP/CIDR and UA rules to the output file."""
+        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+
+        output_file = str(tmp_path / "blocklist.conf")
+
+        BlockRuleFactory(
+            is_active=True,
+            rule_type="ip",
+            match_type="exact",
+            pattern="10.0.0.1",
+            action="block",
+        )
+        BlockRuleFactory(
+            is_active=True,
+            rule_type="ua",
+            match_type="exact",
+            pattern="EvilBot/1.0",
+            action="block",
+        )
+
+        count = generate_nginx_blocklist(output_path=output_file)
+
+        assert count == 2
+        with open(output_file) as fh:
+            content = fh.read()
+        assert "10.0.0.1" in content
+        assert '"EvilBot/1.0"' in content
+        assert "map $http_user_agent $waf_block_ua" in content
+        assert "geo $waf_block_ip" in content
+
+    def test_returns_count_of_rules_written(self, db, tmp_path):
+        """generate_nginx_blocklist returns the number of rules written."""
+        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+
+        BlockRuleFactory.create_batch(3, is_active=True, rule_type="ip", match_type="exact", action="block")
+        output_file = str(tmp_path / "blocklist.conf")
+
+        count = generate_nginx_blocklist(output_path=output_file)
+
+        assert count == 3
+
+    def test_write_is_atomic_via_rename(self, db, tmp_path):
+        """The output file is written via temp file + rename (BR-BL-002)."""
+        import os
+
+        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+
+        output_file = str(tmp_path / "blocklist.conf")
+
+        rename_calls = []
+        real_rename = os.rename
+
+        def tracking_rename(src, dst):
+            rename_calls.append((src, dst))
+            real_rename(src, dst)
+
+        with patch("icv_waf.services.blocklist_generator.os.rename", side_effect=tracking_rename):
+            generate_nginx_blocklist(output_path=output_file)
+
+        assert len(rename_calls) == 1
+        _, dst = rename_calls[0]
+        assert dst == output_file
+
+    def test_ua_contains_pattern_escaped_as_regex(self, db, tmp_path):
+        """UA rules with match_type='contains' are written as case-insensitive nginx regexes."""
+        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+
+        BlockRuleFactory(
+            is_active=True,
+            rule_type="ua",
+            match_type="contains",
+            pattern="badbot",
+            action="block",
+        )
+        output_file = str(tmp_path / "blocklist.conf")
+        generate_nginx_blocklist(output_path=output_file)
+
+        with open(output_file) as fh:
+            content = fh.read()
+        # Contains pattern should use ~* prefix
+        assert "~*" in content
+
+    def test_ua_regex_pattern_written_with_prefix(self, db, tmp_path):
+        """UA rules with match_type='regex' are written with ~* nginx prefix."""
+        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+
+        BlockRuleFactory(
+            is_active=True,
+            rule_type="ua",
+            match_type="regex",
+            pattern=r"EvilBot/\d+",
+            action="block",
+        )
+        output_file = str(tmp_path / "blocklist.conf")
+        generate_nginx_blocklist(output_path=output_file)
+
+        with open(output_file) as fh:
+            content = fh.read()
+        assert "~*" in content
+
+    def test_empty_ua_pattern_is_omitted(self, db, tmp_path):
+        """UA rules with an empty pattern are not written to the output file."""
+        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+
+        BlockRuleFactory(
+            is_active=True,
+            rule_type="ua",
+            match_type="exact",
+            pattern="",  # empty — should be skipped
+            action="block",
+        )
+        output_file = str(tmp_path / "blocklist.conf")
+        generate_nginx_blocklist(output_path=output_file)
+
+        with open(output_file) as fh:
+            content = fh.read()
+        # An empty-pattern rule should produce no entry line beyond 'default 0;'
+        ua_section = content.split("map $http_user_agent")[1].split("}")[0]
+        lines_with_entries = [
+            line
+            for line in ua_section.splitlines()
+            if line.strip() and "default 0" not in line and "{" not in line
+        ]
+        assert lines_with_entries == []
+
+
+# ---------------------------------------------------------------------------
+# reload_nginx
+# ---------------------------------------------------------------------------
+
+
+class TestReloadNginx:
+    def test_returns_true_on_successful_reload(self):
+        """reload_nginx returns True when nginx exits with code 0."""
+        from icv_waf.services.blocklist_generator import reload_nginx
+
+        with patch("icv_waf.services.blocklist_generator.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stderr="")
+
+            result = reload_nginx()
+
+        assert result is True
+
+    def test_returns_false_on_nonzero_exit_code(self):
+        """reload_nginx returns False when nginx exits with a non-zero code."""
+        from icv_waf.services.blocklist_generator import reload_nginx
+
+        with patch("icv_waf.services.blocklist_generator.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="configuration file error")
+
+            result = reload_nginx()
+
+        assert result is False
+
+    def test_returns_false_when_nginx_not_found(self):
+        """reload_nginx returns False when nginx is not on the PATH."""
+        from icv_waf.services.blocklist_generator import reload_nginx
+
+        with patch(
+            "icv_waf.services.blocklist_generator.subprocess.run",
+            side_effect=FileNotFoundError,
+        ):
+            result = reload_nginx()
+
+        assert result is False
+
+    def test_returns_false_on_timeout(self):
+        """reload_nginx returns False when the subprocess times out."""
+        import subprocess
+
+        from icv_waf.services.blocklist_generator import reload_nginx
+
+        with patch(
+            "icv_waf.services.blocklist_generator.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="nginx", timeout=10),
+        ):
+            result = reload_nginx()
+
+        assert result is False
+
+    def test_returns_false_on_os_error(self):
+        """reload_nginx returns False on a generic OSError."""
+        from icv_waf.services.blocklist_generator import reload_nginx
+
+        with patch(
+            "icv_waf.services.blocklist_generator.subprocess.run",
+            side_effect=OSError("permission denied"),
+        ):
+            result = reload_nginx()
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# rule_engine — _verify_rdns
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyRdns:
+    def test_returns_true_when_hostname_matches_pattern(self):
+        """_verify_rdns returns True when the resolved hostname matches the pattern."""
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = None  # No cached value
+
+        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr", return_value=("crawl.googlebot.com", [], [])):
+            result = _verify_rdns("66.249.66.1", r"\.googlebot\.com$", redis)
+
+        assert result is True
+
+    def test_returns_false_when_hostname_does_not_match(self):
+        """_verify_rdns returns False when the hostname does not match the pattern."""
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = None
+
+        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr", return_value=("evil.example.com", [], [])):
+            result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
+
+        assert result is False
+
+    def test_returns_false_on_dns_failure(self):
+        """_verify_rdns returns False when DNS lookup fails."""
+        import socket
+
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = None
+
+        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr", side_effect=socket.herror):
+            result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
+
+        assert result is False
+
+    def test_uses_cached_hostname_from_redis(self):
+        """_verify_rdns uses the cached hostname from Redis without a DNS lookup."""
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = b"crawl.googlebot.com"
+
+        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr") as mock_dns:
+            result = _verify_rdns("66.249.66.1", r"\.googlebot\.com$", redis)
+
+        mock_dns.assert_not_called()
+        assert result is True
+
+    def test_stores_resolved_hostname_in_redis(self):
+        """_verify_rdns caches the resolved hostname in Redis with a 24-hour TTL."""
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = None
+
+        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr", return_value=("host.example.com", [], [])):
+            _verify_rdns("1.2.3.4", r"example\.com$", redis)
+
+        assert redis.setex.called
+        call_args = redis.setex.call_args
+        assert call_args.args[1] == 86400  # 24-hour TTL
+        assert call_args.args[2] == "host.example.com"
+
+    def test_returns_false_for_empty_cached_hostname(self):
+        """_verify_rdns returns False when the cached hostname is an empty string."""
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = b""  # Cached empty hostname (prior DNS failure)
+
+        result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
+
+        assert result is False
+
+    def test_returns_false_for_invalid_rdns_regex(self):
+        """_verify_rdns returns False gracefully when rdns_pattern is an invalid regex."""
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = b"host.example.com"
+
+        result = _verify_rdns("1.2.3.4", "[invalid(regex", redis)
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# rule_engine — _check_block_rules CIDR and regex paths
+# ---------------------------------------------------------------------------
+
+
+class TestCheckBlockRulesPaths:
+    def test_cidr_rule_matches_ip_in_range(self, db):
+        """_check_block_rules matches a CIDR-type rule for an IP within the network."""
+        from icv_waf.services.rule_engine import RuleCache, _check_block_rules
+
+        cidr_rule = {
+            "id": "00000000-0000-0000-0000-000000000001",
+            "rule_type": "cidr",
+            "match_type": "cidr",
+            "pattern": "10.10.0.0/16",
+            "action": "block",
+            "priority": 100,
+        }
+        cache = RuleCache(version=1, allow_rules=[], block_rules=[cidr_rule], ua_regex_set=[])
+
+        result = _check_block_rules("10.10.5.1", "Mozilla/5.0", cache)
+
+        assert result is not None
+        matched_id, rule = result
+        assert matched_id == cidr_rule["id"]
+
+    def test_cidr_rule_does_not_match_ip_outside_range(self, db):
+        """_check_block_rules does not match a CIDR rule for an IP outside the network."""
+        from icv_waf.services.rule_engine import RuleCache, _check_block_rules
+
+        cidr_rule = {
+            "id": "00000000-0000-0000-0000-000000000002",
+            "rule_type": "cidr",
+            "match_type": "cidr",
+            "pattern": "10.10.0.0/16",
+            "action": "block",
+            "priority": 100,
+        }
+        cache = RuleCache(version=1, allow_rules=[], block_rules=[cidr_rule], ua_regex_set=[])
+
+        result = _check_block_rules("192.168.1.1", "Mozilla/5.0", cache)
+
+        assert result is None
+
+    def test_ua_regex_rule_matches(self, db):
+        """_check_block_rules matches a UA rule with regex match_type."""
+        from icv_waf.services.rule_engine import RuleCache, _check_block_rules
+
+        ua_rule = {
+            "id": "00000000-0000-0000-0000-000000000003",
+            "rule_type": "ua",
+            "match_type": "regex",
+            "pattern": r"EvilBot/\d+",
+            "action": "block",
+            "priority": 100,
+        }
+        cache = RuleCache(version=1, allow_rules=[], block_rules=[ua_rule], ua_regex_set=[])
+
+        result = _check_block_rules("1.2.3.4", "EvilBot/3", cache)
+
+        assert result is not None
+
+    def test_ua_contains_rule_matches(self, db):
+        """_check_block_rules matches a UA rule with contains match_type."""
+        from icv_waf.services.rule_engine import RuleCache, _check_block_rules
+
+        ua_rule = {
+            "id": "00000000-0000-0000-0000-000000000004",
+            "rule_type": "ua",
+            "match_type": "contains",
+            "pattern": "SuspiciousTool",
+            "action": "block",
+            "priority": 100,
+        }
+        cache = RuleCache(version=1, allow_rules=[], block_rules=[ua_rule], ua_regex_set=[])
+
+        result = _check_block_rules("1.2.3.4", "Some SuspiciousTool/2.0", cache)
+
+        assert result is not None
+
+    def test_unknown_rule_type_returns_none(self, db):
+        """_check_block_rules returns None for an unrecognised rule_type."""
+        from icv_waf.services.rule_engine import RuleCache, _check_block_rules
+
+        unknown_rule = {
+            "id": "00000000-0000-0000-0000-000000000005",
+            "rule_type": "unknown_type",
+            "match_type": "exact",
+            "pattern": "1.2.3.4",
+            "action": "block",
+            "priority": 100,
+        }
+        cache = RuleCache(version=1, allow_rules=[], block_rules=[unknown_rule], ua_regex_set=[])
+
+        result = _check_block_rules("1.2.3.4", "Mozilla/5.0", cache)
+
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# rule_engine — _compile_ua_patterns invalid regex
+# ---------------------------------------------------------------------------
+
+
+class TestCompileUaPatterns:
+    def test_invalid_regex_pattern_is_skipped_with_warning(self):
+        """_compile_ua_patterns skips rules with invalid regex patterns."""
+        from icv_waf.services.rule_engine import _compile_ua_patterns
+
+        rules = [
+            {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "rule_type": "ua",
+                "match_type": "regex",
+                "pattern": "[invalid(regex",  # deliberately invalid
+                "action": "block",
+                "priority": 100,
+            }
+        ]
+
+        result = _compile_ua_patterns(rules)
+
+        # Invalid pattern should be silently dropped
+        assert result == []
+
+    def test_valid_regex_pattern_is_compiled(self):
+        """_compile_ua_patterns compiles a valid regex pattern."""
+        from icv_waf.services.rule_engine import _compile_ua_patterns
+
+        rules = [
+            {
+                "id": "00000000-0000-0000-0000-000000000002",
+                "rule_type": "ua",
+                "match_type": "regex",
+                "pattern": r"BadBot/\d+",
+                "action": "block",
+                "priority": 100,
+            }
+        ]
+
+        result = _compile_ua_patterns(rules)
+
+        assert len(result) == 1
+        compiled_re, rule_dict = result[0]
+        assert compiled_re.search("BadBot/99")
+
+    def test_non_ua_rules_are_excluded(self):
+        """_compile_ua_patterns only processes ua-type rules."""
+        from icv_waf.services.rule_engine import _compile_ua_patterns
+
+        rules = [
+            {
+                "id": "00000000-0000-0000-0000-000000000003",
+                "rule_type": "ip",
+                "match_type": "exact",
+                "pattern": "1.2.3.4",
+                "action": "block",
+                "priority": 100,
+            }
+        ]
+
+        result = _compile_ua_patterns(rules)
+
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# rule_engine — load_rule_cache DB fallback path
+# ---------------------------------------------------------------------------
+
+
+class TestLoadRuleCacheDbFallback:
+    def test_corrupt_json_triggers_db_rebuild(self, db):
+        """A corrupt Redis cache value causes a DB rebuild."""
+        BlockRuleFactory(is_active=True, rule_type=RuleType.IP)
+        AllowRuleFactory(is_active=True)
+
+        redis = _make_redis()
+        redis.get.side_effect = ["3", b"{not: valid json}"]
+
+        cache = load_rule_cache(redis)
+
+        assert len(cache.block_rules) == 1
+        assert len(cache.allow_rules) == 1
+
+    def test_db_rebuild_stores_result_in_redis(self, db):
+        """After a DB rebuild, the result is stored in Redis via setex."""
+        BlockRuleFactory(is_active=True)
+
+        redis = _make_redis()
+        redis.get.return_value = None
+
+        load_rule_cache(redis)
+
+        assert redis.setex.called
+
+
+# ---------------------------------------------------------------------------
+# rule_engine — record_block_verdict
+# ---------------------------------------------------------------------------
+
+
+class TestRecordBlockVerdict:
+    def test_sets_blocked_ip_key_in_redis(self):
+        """record_block_verdict writes the blocked-IP key to Redis with the given TTL."""
+        from icv_waf.services.rule_engine import record_block_verdict
+
+        redis = _make_redis()
+        record_block_verdict("1.2.3.4", redis, ttl=300)
+
+        redis.setex.assert_called_once_with("waf:blocked:1.2.3.4", 300, "1")
+
+    def test_increments_daily_stats_counter(self):
+        """record_block_verdict increments the daily stats blocked counter."""
+        from icv_waf.services.rule_engine import record_block_verdict
+
+        redis = _make_redis()
+        record_block_verdict("1.2.3.4", redis, ttl=300)
+
+        redis.hincrby.assert_called_once_with("waf:stats:today", "blocked", 1)
+
+    def test_custom_ttl_is_respected(self):
+        """record_block_verdict uses the custom TTL argument."""
+        from icv_waf.services.rule_engine import record_block_verdict
+
+        redis = _make_redis()
+        record_block_verdict("5.6.7.8", redis, ttl=600)
+
+        call_args = redis.setex.call_args.args
+        assert call_args[1] == 600
+
+    def test_default_ttl_is_300(self):
+        """record_block_verdict defaults to a 300-second TTL."""
+        from icv_waf.services.rule_engine import record_block_verdict
+
+        redis = _make_redis()
+        record_block_verdict("9.8.7.6", redis)
+
+        call_args = redis.setex.call_args.args
+        assert call_args[1] == 300

@@ -44,7 +44,7 @@ Changelog = "https://github.com/nigelcopley/icv-django/tree/main/packages/icv-wa
 "Source Code" = "https://github.com/nigelcopley/icv-django/tree/main/packages/icv-waf"
 
 [project.optional-dependencies]
-celery = ["celery>=5.3"]
+celery = ["celery>=5.3", "django-celery-beat>=2.6"]
 dev = [
     "pytest>=8.0",
     "pytest-django>=4.8",
@@ -58,8 +58,12 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# pytest config is centralised in the root pyproject.toml.
-# Run tests from the project root: pytest packages/icv-waf/tests/
+[tool.setuptools.package-data]
+icv_waf = ["templates/**/*.html"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+pythonpath = ["."]
 
 # ruff config is centralised in the root pyproject.toml.
 
