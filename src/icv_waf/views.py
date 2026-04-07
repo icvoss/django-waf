@@ -38,7 +38,18 @@ logger = logging.getLogger("icv_waf.views")
 
 
 def _get_ip(request: HttpRequest) -> str:
-    """Extract the client IP address from the request."""
+    """Extract the client IP address from the request.
+
+    Respects ICV_WAF_TRUST_X_FORWARDED_FOR — uses the first IP in the
+    X-Forwarded-For chain when trusted, otherwise falls back to REMOTE_ADDR.
+    """
+    from icv_waf import conf
+
+    if conf.ICV_WAF_TRUST_X_FORWARDED_FOR:
+        forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+
     return request.META.get("REMOTE_ADDR", "")
 
 
