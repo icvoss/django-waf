@@ -1289,6 +1289,7 @@ class TestRunAllDetectors:
             "ua_rotation_rules",
             "subnet_burst_rules",
             "challenge_farm_rules",
+            "unsolved_challenge_rules",
             "total_rules_created",
         }
 
@@ -2405,3 +2406,183 @@ class TestRecordBlockVerdict:
 
         call_args = redis.setex.call_args.args
         assert call_args[1] == 300
+
+
+# ---------------------------------------------------------------------------
+# detect_unsolved_challenges
+# ---------------------------------------------------------------------------
+
+
+class TestDetectUnsolvedChallenges:
+    """Tests for the composite unsolved-challenge anomaly detector."""
+
+    @pytest.mark.django_db
+    def test_blocks_ip_with_challenges_no_solves_empty_referer(self):
+        """IP with 3+ challenged verdicts, 0 solves, and empty referers is blocked."""
+        from icv_waf.models import BlockRule
+        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        ip = "101.47.1.1"
+        now = timezone.now()
+        for _ in range(4):
+            RequestLogFactory(
+                ip_address=ip,
+                verdict=Verdict.CHALLENGED,
+                path="/products/old-page",
+                referer="",
+                timestamp=now,
+            )
+
+        rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
+
+        assert len(rules) == 1
+        rule = rules[0]
+        assert rule.pattern == ip
+        assert rule.action == RuleAction.BLOCK
+        assert rule.source == RuleSource.AUTO
+        assert BlockRule.objects.filter(pattern=ip, is_active=True).exists()
+
+    @pytest.mark.django_db
+    def test_skips_ip_with_solved_challenge(self):
+        """IP that has solved at least one challenge is not flagged."""
+        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        ip = "10.0.0.5"
+        now = timezone.now()
+        for _ in range(5):
+            RequestLogFactory(
+                ip_address=ip,
+                verdict=Verdict.CHALLENGED,
+                path="/page",
+                referer="",
+                timestamp=now,
+            )
+        ChallengeTokenFactory(ip_address=ip, status=ChallengeStatus.SOLVED)
+
+        rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
+
+        assert len(rules) == 0
+
+    @pytest.mark.django_db
+    def test_skips_ip_below_min_challenged_threshold(self):
+        """IP with fewer than min_challenged verdicts is not flagged."""
+        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        ip = "10.0.0.6"
+        now = timezone.now()
+        RequestLogFactory(
+            ip_address=ip,
+            verdict=Verdict.CHALLENGED,
+            path="/page",
+            referer="",
+            timestamp=now,
+        )
+
+        rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
+
+        assert len(rules) == 0
+
+    @pytest.mark.django_db
+    def test_skips_ip_with_referer_present(self):
+        """IP whose requests have referer headers is not flagged."""
+        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        ip = "10.0.0.7"
+        now = timezone.now()
+        for _ in range(5):
+            RequestLogFactory(
+                ip_address=ip,
+                verdict=Verdict.CHALLENGED,
+                path="/products/item",
+                referer="https://www.google.com/search?q=test",
+                timestamp=now,
+            )
+
+        rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
+
+        assert len(rules) == 0
+
+    @pytest.mark.django_db
+    def test_skips_ip_with_only_root_path_requests(self):
+        """IP with all requests to '/' is skipped (no non-root requests to evaluate)."""
+        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        ip = "10.0.0.8"
+        now = timezone.now()
+        for _ in range(5):
+            RequestLogFactory(
+                ip_address=ip,
+                verdict=Verdict.CHALLENGED,
+                path="/",
+                referer="",
+                timestamp=now,
+            )
+
+        rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
+
+        assert len(rules) == 0
+
+    @pytest.mark.django_db
+    def test_does_not_duplicate_existing_active_rule(self):
+        """An existing active rule for the IP prevents a duplicate."""
+        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        ip = "10.0.0.9"
+        now = timezone.now()
+        for _ in range(5):
+            RequestLogFactory(
+                ip_address=ip,
+                verdict=Verdict.CHALLENGED,
+                path="/page",
+                referer="",
+                timestamp=now,
+            )
+        BlockRuleFactory(
+            rule_type=RuleType.IP,
+            pattern=ip,
+            is_active=True,
+        )
+
+        rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
+
+        assert len(rules) == 0
+
+    @pytest.mark.django_db
+    def test_referer_ratio_threshold(self):
+        """IP with some referers below the ratio threshold is not flagged."""
+        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        ip = "10.0.0.10"
+        now = timezone.now()
+        # 3 challenged
+        for _ in range(3):
+            RequestLogFactory(
+                ip_address=ip,
+                verdict=Verdict.CHALLENGED,
+                path="/page",
+                referer="",
+                timestamp=now,
+            )
+        # 3 with referer (so ratio is 50%, below 80% default)
+        for _ in range(3):
+            RequestLogFactory(
+                ip_address=ip,
+                verdict=Verdict.ALLOWED,
+                path="/other",
+                referer="https://example.com",
+                timestamp=now,
+            )
+
+        rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
+
+        assert len(rules) == 0
+
+    @pytest.mark.django_db
+    def test_wired_into_run_all_detectors(self):
+        """run_all_detectors includes unsolved_challenge_rules in its output."""
+        from icv_waf.services.anomaly_detector import run_all_detectors
+
+        result = run_all_detectors()
+
+        assert "unsolved_challenge_rules" in result
+        assert "total_rules_created" in result

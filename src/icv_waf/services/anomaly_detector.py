@@ -221,6 +221,130 @@ def detect_challenge_farms(window_hours: int = 24) -> list:
     return created_rules
 
 
+def detect_unsolved_challenges(
+    window_minutes: int = 60,
+    min_challenged: int = 3,
+    referer_ratio: float = 0.8,
+) -> list:
+    """Detect IPs that receive challenges but never solve them.
+
+    Composite detector combining three signals:
+    1. IP has >= min_challenged challenged verdicts in the window
+    2. IP has zero solved ChallengeTokens (ever)
+    3. Majority (>= referer_ratio) of the IP's requests have empty referer
+       on paths other than "/"
+
+    The three-way conjunction gives high-confidence bot classification with
+    near-zero false-positive risk: real users always solve JS challenges,
+    and real browsing always produces referer headers from search engines
+    or internal navigation.
+
+    Args:
+        window_minutes: Time window to analyse (default 60).
+        min_challenged: Minimum challenged verdicts to consider (default 3).
+        referer_ratio: Fraction of non-root requests with empty referer
+                       required to trigger (default 0.8).
+
+    Returns:
+        List of BlockRule instances created.
+    """
+    from django.db.models import Count, Q
+
+    from icv_waf import conf
+    from icv_waf.enums import (
+        AnomalyType,
+        ChallengeStatus,
+        RuleAction,
+        RuleSource,
+        RuleType,
+        Verdict,
+    )
+    from icv_waf.models import BlockRule, ChallengeToken, RequestLog
+
+    cutoff = timezone.now() - timedelta(minutes=window_minutes)
+
+    # Step 1: IPs with >= min_challenged challenged verdicts in window
+    challenged_ips = (
+        RequestLog.objects.filter(
+            timestamp__gte=cutoff,
+            verdict=Verdict.CHALLENGED,
+        )
+        .values("ip_address")
+        .annotate(challenged_count=Count("id"))
+        .filter(challenged_count__gte=min_challenged)
+    )
+
+    created_rules = []
+    expiry = timezone.now() + timedelta(hours=conf.ICV_WAF_AUTO_RULE_EXPIRY_HOURS)
+
+    for row in challenged_ips:
+        ip = row["ip_address"]
+
+        # Step 2: Check for zero solved challenges from this IP
+        has_solved = ChallengeToken.objects.filter(
+            ip_address=ip,
+            status=ChallengeStatus.SOLVED,
+        ).exists()
+        if has_solved:
+            continue
+
+        # Step 3: Check referer ratio on non-root paths
+        non_root_requests = RequestLog.objects.filter(
+            timestamp__gte=cutoff,
+            ip_address=ip,
+        ).exclude(path="/")
+
+        non_root_count = non_root_requests.count()
+        if non_root_count == 0:
+            continue
+
+        empty_referer_count = non_root_requests.filter(
+            Q(referer="") | Q(referer__isnull=True),
+        ).count()
+
+        if empty_referer_count / non_root_count < referer_ratio:
+            continue
+
+        # BR-ANOM-004: skip if active block rule already exists
+        if BlockRule.objects.filter(
+            rule_type=RuleType.IP,
+            pattern=ip,
+            is_active=True,
+        ).exists():
+            continue
+
+        with transaction.atomic():
+            rule = BlockRule.objects.create(
+                name=f"Auto: unsolved challenges from {ip}",
+                rule_type=RuleType.IP,
+                match_type="exact",
+                pattern=ip,
+                action=RuleAction.BLOCK,
+                source=RuleSource.AUTO,
+                expires_at=expiry,
+            )
+            created_rules.append(rule)
+
+        _emit_anomaly_signal(
+            rule=rule,
+            anomaly_type=AnomalyType.UNSOLVED_CHALLENGE,
+            details={
+                "challenged_count": row["challenged_count"],
+                "empty_referer_ratio": round(empty_referer_count / non_root_count, 2),
+                "non_root_requests": non_root_count,
+                "window_minutes": window_minutes,
+            },
+        )
+        logger.info(
+            "icv-waf: auto-created unsolved challenge rule for %s (challenged=%d, referer_empty=%.0f%%)",
+            ip,
+            row["challenged_count"],
+            (empty_referer_count / non_root_count) * 100,
+        )
+
+    return created_rules
+
+
 def run_all_detectors() -> dict:
     """Run all anomaly detectors and return a summary of findings.
 
@@ -231,13 +355,15 @@ def run_all_detectors() -> dict:
     ua_rules = detect_ua_rotation()
     subnet_rules = detect_subnet_burst()
     farm_rules = detect_challenge_farms()
+    unsolved_rules = detect_unsolved_challenges()
 
-    total = len(ua_rules) + len(subnet_rules) + len(farm_rules)
+    total = len(ua_rules) + len(subnet_rules) + len(farm_rules) + len(unsolved_rules)
     logger.info(
-        "icv-waf anomaly detection: ua_rotation=%d subnet_burst=%d challenge_farm=%d total=%d",
+        "icv-waf anomaly detection: ua_rotation=%d subnet_burst=%d challenge_farm=%d unsolved_challenge=%d total=%d",
         len(ua_rules),
         len(subnet_rules),
         len(farm_rules),
+        len(unsolved_rules),
         total,
     )
 
@@ -245,6 +371,7 @@ def run_all_detectors() -> dict:
         "ua_rotation_rules": len(ua_rules),
         "subnet_burst_rules": len(subnet_rules),
         "challenge_farm_rules": len(farm_rules),
+        "unsolved_challenge_rules": len(unsolved_rules),
         "total_rules_created": total,
     }
 

@@ -67,3 +67,4 @@ class AnomalyType(models.TextChoices):
     SUBNET_FLOOD = "subnet_flood", _("Subnet flood")
     PATH_HAMMERING = "path_hammering", _("Path hammering")
     CHALLENGE_FARM = "challenge_farm", _("Challenge farm")
+    UNSOLVED_CHALLENGE = "unsolved_challenge", _("Unsolved challenge")
