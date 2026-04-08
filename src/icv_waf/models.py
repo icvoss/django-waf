@@ -349,6 +349,7 @@ class RequestLog(BaseModel):
         max_length=10,
         choices=MATCHED_RULE_TYPE_CHOICES,
         blank=True,
+        default="",
         verbose_name=_("matched rule type"),
     )
     anomaly_score = models.DecimalField(
