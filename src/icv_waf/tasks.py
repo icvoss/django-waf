@@ -5,13 +5,14 @@ All tasks use @shared_task and lazy imports for Celery compatibility.
 Tasks are idempotent and fail gracefully.
 
 Scheduled tasks (Celery Beat):
-  - generate_blocklist   — every 5 minutes (BR-BL-004)
-  - detect_anomalies     — every 15 minutes (BR-ANOM-005)
-  - parse_access_log     — every 10 minutes
-  - prune_request_logs   — daily 04:00 (BR-LOG-003)
-  - expire_rules         — every 30 minutes (BR-LIFE-002)
-  - update_ip_reputation — every 6 hours
-  - sync_threat_feed     — daily 04:30
+  - generate_blocklist      — every 5 minutes (BR-BL-004)
+  - flush_rule_hit_counts   — every 5 minutes
+  - detect_anomalies        — every 15 minutes (BR-ANOM-005)
+  - parse_access_log        — every 10 minutes
+  - prune_request_logs      — daily 04:00 (BR-LOG-003)
+  - expire_rules            — every 30 minutes (BR-LIFE-002)
+  - update_ip_reputation    — every 6 hours
+  - sync_threat_feed        — daily 04:30
   - report_threat_telemetry — daily 05:00
 """
 
@@ -124,7 +125,7 @@ def parse_access_log(log_path: str | None = None) -> dict:
                         user_agent=user_agent,
                         path=path_str,
                         method=method,
-                        verdict="allowed",
+                        verdict=_infer_verdict_from_status(status_code, path_str),
                         response_code=status_code,
                     )
                 )
@@ -407,6 +408,17 @@ def flush_rule_hit_counts(self) -> dict:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _infer_verdict_from_status(status_code: int, path: str) -> str:
+    """Infer a WAF verdict from an nginx response status code."""
+    if status_code == 403:
+        return "blocked"
+    if status_code == 429:
+        return "throttled"
+    if status_code == 302 and "/waf/challenge" in path:
+        return "challenged"
+    return "allowed"
 
 
 def _invalidate_rule_cache_redis() -> None:

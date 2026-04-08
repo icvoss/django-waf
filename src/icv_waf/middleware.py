@@ -79,16 +79,6 @@ class WafMiddleware:
         except Exception:
             logger.exception("icv-waf: error validating waf_pass cookie")
 
-        # No-referer challenge: challenge requests to non-exempt paths
-        # that lack a Referer header (strong bot signal).
-        if conf.ICV_WAF_CHALLENGE_NO_REFERER:
-            referer = request.META.get("HTTP_REFERER", "")
-            if not referer:
-                exempt = any(path == p or path.startswith(p) for p in conf.ICV_WAF_NO_REFERER_EXEMPT_PATHS)
-                if not exempt:
-                    challenge_url = f"/waf/challenge/?next={path}"
-                    return HttpResponseRedirect(challenge_url)
-
         # Core evaluation
         try:
             from icv_waf.services.rule_engine import evaluate_request
@@ -99,6 +89,7 @@ class WafMiddleware:
                 path=path,
                 method=request.method,
                 redis_client=redis_client,
+                referer=request.META.get("HTTP_REFERER", ""),
             )
         except Exception:
             # Fail-open: if evaluation raises, pass the request through

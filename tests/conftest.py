@@ -1,5 +1,19 @@
 """Shared pytest fixtures for icv-waf tests."""
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clear_rule_cache():
+    """Reset the in-process rule cache between tests."""
+    import icv_waf.services.rule_engine as re_mod
+
+    re_mod._process_cache = None
+    re_mod._process_cache_version = -1
+    yield
+    re_mod._process_cache = None
+    re_mod._process_cache_version = -1
+
 
 def pytest_configure(config):
     """Ensure icv_waf is in INSTALLED_APPS when running from the project root."""

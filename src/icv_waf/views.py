@@ -192,6 +192,15 @@ class VerifyView(View):
                 logger.exception("icv-waf: failed to issue replacement challenge token")
                 return JsonResponse({"error": reason}, status=400)
 
+        # Mark IP as solved in Redis so escalation counter resets
+        try:
+            solved_key = f"waf:solved:{ip}"
+            redis_client.setex(solved_key, 86400, "1")  # 24-hour flag
+            # Reset challenged counter
+            redis_client.delete(f"waf:challenged:{ip}")
+        except Exception:
+            pass
+
         response = redirect(next_url)
         issue_pass_cookie(response, token, ip, secure=request.is_secure())
         return response

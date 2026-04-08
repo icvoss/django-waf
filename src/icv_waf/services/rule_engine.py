@@ -53,6 +53,11 @@ _BOT_RDNS_KEY = "waf:bot_rdns:{ip}"
 _STATS_KEY = "waf:stats:today"
 _CACHE_TTL = 600  # 10 minutes
 
+# In-process rule cache — avoids Redis GET + JSON parse + regex compilation
+# on every request when the rule version hasn't changed.
+_process_cache: RuleCache | None = None
+_process_cache_version: int = -1
+
 
 # ---------------------------------------------------------------------------
 # Rule cache management
@@ -60,9 +65,11 @@ _CACHE_TTL = 600  # 10 minutes
 
 
 def load_rule_cache(redis_client) -> RuleCache:
-    """Load the active rule set from Redis cache, rebuilding from DB if stale.
+    """Load the active rule set, using an in-process cache when possible.
 
-    Per BR-UA-004, all UA regex patterns are pre-compiled into memory.
+    Fast path: one Redis GET for the version integer. If unchanged since
+    last call, returns the in-process RuleCache without JSON parse or
+    regex compilation. Per BR-UA-004, all UA regex patterns are pre-compiled.
 
     Args:
         redis_client: Configured Redis client instance.
@@ -70,10 +77,17 @@ def load_rule_cache(redis_client) -> RuleCache:
     Returns:
         RuleCache namedtuple.
     """
-    # Get current version
+    global _process_cache, _process_cache_version  # noqa: PLW0603
+
+    # Get current version — single Redis GET (integer)
     raw_version = redis_client.get(_RULES_VERSION_KEY)
     version = int(raw_version) if raw_version else 0
 
+    # Fast path: in-process cache is current
+    if _process_cache is not None and _process_cache_version == version:
+        return _process_cache
+
+    # Check Redis JSON cache
     cache_key = _RULES_CACHE_KEY.format(version=version)
     cached = redis_client.get(cache_key)
 
@@ -83,17 +97,23 @@ def load_rule_cache(redis_client) -> RuleCache:
             allow_rules = data.get("allow_rules", [])
             block_rules = data.get("block_rules", [])
             ua_regex_set = _compile_ua_patterns(block_rules)
-            return RuleCache(
+            result = RuleCache(
                 version=version,
                 allow_rules=allow_rules,
                 block_rules=block_rules,
                 ua_regex_set=ua_regex_set,
             )
+            _process_cache = result
+            _process_cache_version = version
+            return result
         except (json.JSONDecodeError, KeyError):
             pass  # fall through to rebuild
 
     # Cache miss or corrupt — rebuild from DB
-    return _rebuild_rule_cache(redis_client, version, cache_key)
+    result = _rebuild_rule_cache(redis_client, version, cache_key)
+    _process_cache = result
+    _process_cache_version = version
+    return result
 
 
 def _rebuild_rule_cache(redis_client, version: int, cache_key: str) -> RuleCache:
@@ -188,6 +208,7 @@ def evaluate_request(
     path: str,
     method: str,
     redis_client,
+    referer: str = "",
 ) -> EvaluationResult:
     """Evaluate a request against the WAF rule set and return a verdict.
 
@@ -266,31 +287,54 @@ def evaluate_request(
             anomaly_score=None,
         )
 
-    # Step 8: UA + path anomaly scoring
+    # Step 8: No-referer challenge (moved from middleware for proper logging)
+    if conf.ICV_WAF_CHALLENGE_NO_REFERER and not referer:
+        exempt = any(path == p or path.startswith(p) for p in conf.ICV_WAF_NO_REFERER_EXEMPT_PATHS)
+        if not exempt:
+            return EvaluationResult(
+                verdict=Verdict.CHALLENGED,
+                action=RuleAction.CHALLENGE,
+                matched_rule_id=None,
+                matched_rule_type=None,
+                anomaly_score=None,
+            )
+
+    # Step 9: Path scoring — always evaluated (no volume threshold).
+    # A single .env probe is suspicious regardless of request count.
+    path_score = _score_path(path)
+
+    # Step 9: UA anomaly scoring — only if IP has >10 recent requests.
+    # Combined with path score from step 8.
+    ua_score = 0.0
     recent_count = get_request_count(ip_address, "5m", redis_client)
     if recent_count > 10:
-        score = score_user_agent(user_agent) + _score_path(path)
-        verdict, action = _score_to_verdict(score)
+        ua_score = score_user_agent(user_agent)
+
+    total_score = ua_score + path_score
+    if total_score > 0:
+        verdict, action = _score_to_verdict(total_score)
         if verdict != Verdict.ALLOWED:
             return EvaluationResult(
                 verdict=verdict,
                 action=action,
                 matched_rule_id=None,
                 matched_rule_type=None,
-                anomaly_score=score,
+                anomaly_score=total_score,
             )
         return EvaluationResult(
             verdict=Verdict.ALLOWED,
             action=None,
             matched_rule_id=None,
             matched_rule_type=None,
-            anomaly_score=score,
+            anomaly_score=total_score,
         )
 
-    # Step 9: Challenge escalation — auto-block IPs that ignore challenges
+    # Step 10: Challenge escalation — auto-block IPs that ignore challenges.
+    # Creates a persistent auto BlockRule + Redis fast-path with configurable TTL.
     challenged_count = _get_unsolved_challenge_count(ip_address, redis_client)
     if challenged_count >= conf.ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD:
-        record_block_verdict(ip_address, redis_client)
+        record_block_verdict(ip_address, redis_client, ttl=conf.ICV_WAF_ESCALATION_BLOCK_TTL)
+        _create_escalation_rule(ip_address)
         return EvaluationResult(
             verdict=Verdict.BLOCKED,
             action=RuleAction.BLOCK,
@@ -377,17 +421,16 @@ def _rule_matches(rule: dict, ip_address: str, user_agent: str) -> bool:
         return _match_cidr(ip_address, pattern)
 
     if rule_type == "composite":
-        # Both UA and IP/CIDR must match (BR-EVAL-007)
-        # composite rules encode both patterns — expect "ua_pattern|cidr_pattern" convention
-        # or store separately; fall back to checking pattern against UA first then IP
-        # Per spec: composite = UA + IP/CIDR, both must match.
-        # Composite rules store the UA pattern; ip_pattern comes from a second field.
-        # Since the serialised rule dict only has one 'pattern', for composite we
-        # check whether the pattern looks like an IP/CIDR or a UA, and require both.
-        # A full implementation would store two patterns; we check ip_address first.
-        ua_match = _match_ua(user_agent, pattern, match_type)
-        ip_match = _match_ip(ip_address, pattern, match_type) or _match_cidr(ip_address, pattern)
-        return ua_match and ip_match
+        # Both UA and IP/CIDR must match (BR-EVAL-007).
+        # Pattern format: "ua_pattern||ip_or_cidr_pattern"
+        # e.g. "Go-http-client||10.0.0.0/8" or "python-requests||203.0.113.42"
+        if "||" in pattern:
+            ua_part, ip_part = pattern.split("||", 1)
+            ua_match = _match_ua(user_agent, ua_part.strip(), match_type)
+            ip_match = _match_ip(ip_address, ip_part.strip(), match_type) or _match_cidr(ip_address, ip_part.strip())
+            return ua_match and ip_match
+        # Legacy single-pattern fallback — unlikely to match correctly
+        return False
 
     return False
 
@@ -489,26 +532,33 @@ def _score_to_verdict(score: float) -> tuple[str, str | None]:
 
 
 def _score_path(path: str) -> float:
-    """Return anomaly score contribution from suspicious path patterns."""
+    """Return anomaly score contribution from suspicious path patterns.
+
+    Accumulates score for each matching pattern (multiple matches = higher
+    confidence). Capped at 10.0.
+    """
     import re
 
     from icv_waf import conf
 
+    score = 0.0
     for pattern in conf.ICV_WAF_SUSPICIOUS_PATH_PATTERNS:
         try:
             if re.search(pattern, path, re.IGNORECASE):
-                return conf.ICV_WAF_SUSPICIOUS_PATH_SCORE
+                score += conf.ICV_WAF_SUSPICIOUS_PATH_SCORE
+                if score >= 10.0:
+                    return 10.0
         except re.error:
             continue
-    return 0.0
+    return score
 
 
 def _get_unsolved_challenge_count(ip_address: str, redis_client) -> int:
     """Count recent challenged verdicts for an IP with no solved ChallengeTokens.
 
     Uses Redis counter waf:challenged:{ip} incremented by the middleware
-    on each CHALLENGED verdict. Returns 0 if the IP has any solved tokens
-    or if Redis is unavailable.
+    on each CHALLENGED verdict. Checks Redis waf:solved:{ip} flag first
+    (set by VerifyView on successful solve), falling back to DB only on miss.
     """
     try:
         key = f"waf:challenged:{ip_address}"
@@ -517,20 +567,48 @@ def _get_unsolved_challenge_count(ip_address: str, redis_client) -> int:
             return 0
         count = int(count)
 
-        # Check for any solved challenges — if so, reset counter
-        from icv_waf.enums import ChallengeStatus
-        from icv_waf.models import ChallengeToken
-
-        if ChallengeToken.objects.filter(
-            ip_address=ip_address,
-            status=ChallengeStatus.SOLVED,
-        ).exists():
+        # Fast path: check Redis solved flag first
+        solved_key = f"waf:solved:{ip_address}"
+        if redis_client.get(solved_key):
             redis_client.delete(key)
             return 0
 
         return count
     except Exception:
         return 0
+
+
+def _create_escalation_rule(ip_address: str) -> None:
+    """Create a persistent auto BlockRule for an escalated IP.
+
+    Uses update_or_create so concurrent escalations don't duplicate.
+    The rule is picked up by the nginx blocklist generator on its next run.
+    """
+    from datetime import timedelta
+
+    from django.db import transaction
+    from django.utils import timezone
+
+    from icv_waf import conf
+    from icv_waf.enums import RuleAction, RuleSource, RuleType
+    from icv_waf.models import BlockRule
+
+    try:
+        with transaction.atomic():
+            BlockRule.objects.update_or_create(
+                rule_type=RuleType.IP,
+                pattern=ip_address,
+                source=RuleSource.AUTO,
+                action=RuleAction.BLOCK,
+                defaults={
+                    "name": f"Auto: escalated from unsolved challenges ({ip_address})",
+                    "match_type": "exact",
+                    "is_active": True,
+                    "expires_at": timezone.now() + timedelta(seconds=conf.ICV_WAF_ESCALATION_BLOCK_TTL),
+                },
+            )
+    except Exception:
+        logger.exception("icv-waf: failed to create escalation rule for %s", ip_address)
 
 
 # ---------------------------------------------------------------------------

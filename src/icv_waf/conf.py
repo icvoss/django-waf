@@ -144,3 +144,6 @@ ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD: int = getattr(settings, "ICV_WAF_CHALLEN
 
 # Score added per suspicious path match.
 ICV_WAF_SUSPICIOUS_PATH_SCORE: float = getattr(settings, "ICV_WAF_SUSPICIOUS_PATH_SCORE", 3.0)
+
+# TTL in seconds for escalation blocks (challenges that were never solved).
+ICV_WAF_ESCALATION_BLOCK_TTL: int = getattr(settings, "ICV_WAF_ESCALATION_BLOCK_TTL", 3600)
