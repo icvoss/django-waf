@@ -44,6 +44,7 @@ Changelog = "https://github.com/nigelcopley/django-waf/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 celery = ["celery>=5.3", "django-celery-beat>=2.6"]
+geoip = ["geoip2>=4.8"]
 dev = [
     "pytest>=8.0",
     "pytest-django>=4.8",
@@ -70,7 +71,7 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "S"]
-ignore = ["S101", "S105", "S106", "S107", "S110", "S311", "S607"]
+ignore = ["S101", "S105", "S106", "S107", "S110", "S311", "S603", "S607"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S"]

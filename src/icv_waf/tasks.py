@@ -242,17 +242,32 @@ def update_ip_reputation() -> dict:
         challenged = row["challenged"]
         distinct_ua = row["distinct_ua"]
 
-        # Fetch challenge pass/fail counts from existing reputation or default to 0
-        existing = IPReputation.objects.filter(ip_address=ip).first()
-        passes = existing.challenge_passes if existing else 0
-        failures = existing.challenge_failures if existing else 0
+        # Count actual challenge outcomes from ChallengeToken
+        from icv_waf.enums import ChallengeStatus
+        from icv_waf.models import ChallengeToken
 
-        # Threat score formula (BR-REP-002)
+        passes = ChallengeToken.objects.filter(ip_address=ip, status=ChallengeStatus.SOLVED).count()
+        failures = ChallengeToken.objects.filter(
+            ip_address=ip, status__in=[ChallengeStatus.EXPIRED, ChallengeStatus.FAILED]
+        ).count()
+
+        # Unsolved challenge rate: challenged verdicts with zero solves
+        unsolved_rate = 0.0
+        if challenged > 0 and passes == 0:
+            unsolved_rate = 1.0
+        elif challenged > 0:
+            unsolved_rate = max(0.0, 1.0 - (passes / challenged))
+
+        # Threat score formula (BR-REP-002, revised)
+        # - block_rate: fraction of requests that were blocked
+        # - unsolved_rate: challenged but never solved (strongest bot signal)
+        # - challenge_fail_rate: explicit challenge failures vs passes
+        # - ua_diversity: distinct UA count relative to threshold
         block_rate = blocked / total if total > 0 else 0.0
         challenge_fail_rate = failures / (passes + failures + 1)
         ua_diversity = min(distinct_ua / conf.ICV_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS, 1.0)
         threat_score = min(
-            (block_rate * 0.4) + (challenge_fail_rate * 0.3) + (ua_diversity * 0.3),
+            (block_rate * 0.2) + (unsolved_rate * 0.35) + (challenge_fail_rate * 0.25) + (ua_diversity * 0.2),
             1.0,
         )
 
@@ -260,6 +275,8 @@ def update_ip_reputation() -> dict:
             "total_requests": total,
             "blocked_requests": blocked,
             "challenged_requests": challenged,
+            "challenge_passes": passes,
+            "challenge_failures": failures,
             "distinct_ua_count": distinct_ua,
             "threat_score": round(threat_score, 2),
             "last_seen_at": timezone.now(),

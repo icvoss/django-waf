@@ -38,8 +38,8 @@ def detect_ua_rotation(
     from django.db.models import Count
 
     from icv_waf import conf
-    from icv_waf.enums import AnomalyType, RuleAction, RuleSource, RuleType
-    from icv_waf.models import BlockRule, RequestLog
+    from icv_waf.enums import AnomalyType, RuleAction, RuleType
+    from icv_waf.models import RequestLog
 
     effective_threshold = threshold if threshold is not None else conf.ICV_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS
     cutoff = timezone.now() - timedelta(minutes=window_minutes)
@@ -57,32 +57,22 @@ def detect_ua_rotation(
 
     for row in qs:
         ip = row["ip_address"]
-        # BR-ANOM-004: skip if an active rule already exists for this pattern
-        if BlockRule.objects.filter(
+        rule, created = _get_or_create_auto_rule(
+            name=f"Auto: UA rotation from {ip}",
             rule_type=RuleType.IP,
+            match_type="exact",
             pattern=ip,
-            is_active=True,
-        ).exists():
-            continue
-
-        with transaction.atomic():
-            rule = BlockRule.objects.create(
-                name=f"Auto: UA rotation from {ip}",
-                rule_type=RuleType.IP,
-                match_type="exact",
-                pattern=ip,
-                action=RuleAction.CHALLENGE,
-                source=RuleSource.AUTO,
-                expires_at=expiry,
-            )
-            created_rules.append(rule)
-
-        _emit_anomaly_signal(
-            rule=rule,
-            anomaly_type=AnomalyType.UA_ROTATION,
-            details={"distinct_ua_count": row["distinct_ua_count"], "window_minutes": window_minutes},
+            action=RuleAction.CHALLENGE,
+            expiry=expiry,
         )
-        logger.info("icv-waf: auto-created UA rotation rule for %s", ip)
+        if created:
+            created_rules.append(rule)
+            _emit_anomaly_signal(
+                rule=rule,
+                anomaly_type=AnomalyType.UA_ROTATION,
+                details={"distinct_ua_count": row["distinct_ua_count"], "window_minutes": window_minutes},
+            )
+            logger.info("icv-waf: auto-created UA rotation rule for %s", ip)
 
     return created_rules
 
@@ -100,8 +90,8 @@ def detect_subnet_burst(window_minutes: int = 15) -> list:
         List of BlockRule instances created.
     """
     from icv_waf import conf
-    from icv_waf.enums import AnomalyType, RuleAction, RuleSource, RuleType
-    from icv_waf.models import BlockRule, RequestLog
+    from icv_waf.enums import AnomalyType, RuleAction, RuleType
+    from icv_waf.models import RequestLog
 
     cutoff = timezone.now() - timedelta(minutes=window_minutes)
     logs = RequestLog.objects.filter(timestamp__gte=cutoff).values_list("ip_address", flat=True)
@@ -128,32 +118,22 @@ def detect_subnet_burst(window_minutes: int = 15) -> list:
         if count <= burst_threshold:
             continue
 
-        # BR-ANOM-004: skip if active rule exists
-        if BlockRule.objects.filter(
+        rule, created = _get_or_create_auto_rule(
+            name=f"Auto: subnet burst from {subnet}",
             rule_type=RuleType.CIDR,
+            match_type="cidr",
             pattern=subnet,
-            is_active=True,
-        ).exists():
-            continue
-
-        with transaction.atomic():
-            rule = BlockRule.objects.create(
-                name=f"Auto: subnet burst from {subnet}",
-                rule_type=RuleType.CIDR,
-                match_type="cidr",
-                pattern=subnet,
-                action=RuleAction.CHALLENGE,
-                source=RuleSource.AUTO,
-                expires_at=expiry,
-            )
-            created_rules.append(rule)
-
-        _emit_anomaly_signal(
-            rule=rule,
-            anomaly_type=AnomalyType.SUBNET_FLOOD,
-            details={"count": count, "mean": mean_count, "threshold": burst_threshold},
+            action=RuleAction.CHALLENGE,
+            expiry=expiry,
         )
-        logger.info("icv-waf: auto-created subnet burst rule for %s (count=%d)", subnet, count)
+        if created:
+            created_rules.append(rule)
+            _emit_anomaly_signal(
+                rule=rule,
+                anomaly_type=AnomalyType.SUBNET_FLOOD,
+                details={"count": count, "mean": mean_count, "threshold": burst_threshold},
+            )
+            logger.info("icv-waf: auto-created subnet burst rule for %s (count=%d)", subnet, count)
 
     return created_rules
 
@@ -171,8 +151,8 @@ def detect_challenge_farms(window_hours: int = 24) -> list:
         List of BlockRule instances created.
     """
     from icv_waf import conf
-    from icv_waf.enums import AnomalyType, RuleAction, RuleSource, RuleType
-    from icv_waf.models import BlockRule, IPReputation
+    from icv_waf.enums import AnomalyType, RuleAction, RuleType
+    from icv_waf.models import IPReputation
 
     cutoff = timezone.now() - timedelta(hours=window_hours)
     suspects = IPReputation.objects.filter(
@@ -187,36 +167,25 @@ def detect_challenge_farms(window_hours: int = 24) -> list:
     for rep in suspects:
         ip = rep.ip_address
 
-        # BR-ANOM-004: skip if active block rule already exists
-        if BlockRule.objects.filter(
+        rule, created = _get_or_create_auto_rule(
+            name=f"Auto: challenge farm from {ip}",
             rule_type=RuleType.IP,
+            match_type="exact",
             pattern=ip,
             action=RuleAction.BLOCK,
-            is_active=True,
-        ).exists():
-            continue
-
-        with transaction.atomic():
-            rule = BlockRule.objects.create(
-                name=f"Auto: challenge farm from {ip}",
-                rule_type=RuleType.IP,
-                match_type="exact",
-                pattern=ip,
-                action=RuleAction.BLOCK,
-                source=RuleSource.AUTO,
-                expires_at=expiry,
-            )
-            created_rules.append(rule)
-
-        _emit_anomaly_signal(
-            rule=rule,
-            anomaly_type=AnomalyType.CHALLENGE_FARM,
-            details={
-                "challenge_failures": rep.challenge_failures,
-                "challenge_passes": rep.challenge_passes,
-            },
+            expiry=expiry,
         )
-        logger.info("icv-waf: auto-created challenge farm rule for %s", ip)
+        if created:
+            created_rules.append(rule)
+            _emit_anomaly_signal(
+                rule=rule,
+                anomaly_type=AnomalyType.CHALLENGE_FARM,
+                details={
+                    "challenge_failures": rep.challenge_failures,
+                    "challenge_passes": rep.challenge_passes,
+                },
+            )
+            logger.info("icv-waf: auto-created challenge farm rule for %s", ip)
 
     return created_rules
 
@@ -255,11 +224,10 @@ def detect_unsolved_challenges(
         AnomalyType,
         ChallengeStatus,
         RuleAction,
-        RuleSource,
         RuleType,
         Verdict,
     )
-    from icv_waf.models import BlockRule, ChallengeToken, RequestLog
+    from icv_waf.models import ChallengeToken, RequestLog
 
     cutoff = timezone.now() - timedelta(minutes=window_minutes)
 
@@ -305,42 +273,32 @@ def detect_unsolved_challenges(
         if empty_referer_count / non_root_count < referer_ratio:
             continue
 
-        # BR-ANOM-004: skip if active block rule already exists
-        if BlockRule.objects.filter(
+        rule, created = _get_or_create_auto_rule(
+            name=f"Auto: unsolved challenges from {ip}",
             rule_type=RuleType.IP,
+            match_type="exact",
             pattern=ip,
-            is_active=True,
-        ).exists():
-            continue
-
-        with transaction.atomic():
-            rule = BlockRule.objects.create(
-                name=f"Auto: unsolved challenges from {ip}",
-                rule_type=RuleType.IP,
-                match_type="exact",
-                pattern=ip,
-                action=RuleAction.BLOCK,
-                source=RuleSource.AUTO,
-                expires_at=expiry,
-            )
+            action=RuleAction.BLOCK,
+            expiry=expiry,
+        )
+        if created:
             created_rules.append(rule)
-
-        _emit_anomaly_signal(
-            rule=rule,
-            anomaly_type=AnomalyType.UNSOLVED_CHALLENGE,
-            details={
-                "challenged_count": row["challenged_count"],
-                "empty_referer_ratio": round(empty_referer_count / non_root_count, 2),
-                "non_root_requests": non_root_count,
-                "window_minutes": window_minutes,
-            },
-        )
-        logger.info(
-            "icv-waf: auto-created unsolved challenge rule for %s (challenged=%d, referer_empty=%.0f%%)",
-            ip,
-            row["challenged_count"],
-            (empty_referer_count / non_root_count) * 100,
-        )
+            _emit_anomaly_signal(
+                rule=rule,
+                anomaly_type=AnomalyType.UNSOLVED_CHALLENGE,
+                details={
+                    "challenged_count": row["challenged_count"],
+                    "empty_referer_ratio": round(empty_referer_count / non_root_count, 2),
+                    "non_root_requests": non_root_count,
+                    "window_minutes": window_minutes,
+                },
+            )
+            logger.info(
+                "icv-waf: auto-created unsolved challenge rule for %s (challenged=%d, referer_empty=%.0f%%)",
+                ip,
+                row["challenged_count"],
+                (empty_referer_count / non_root_count) * 100,
+            )
 
     return created_rules
 
@@ -379,6 +337,43 @@ def run_all_detectors() -> dict:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _get_or_create_auto_rule(
+    *,
+    name: str,
+    rule_type: str,
+    match_type: str,
+    pattern: str,
+    action: str,
+    expiry,
+) -> tuple:
+    """Create or refresh an auto-generated BlockRule, avoiding duplicates.
+
+    Uses update_or_create keyed on (rule_type, pattern, source=AUTO, action)
+    so concurrent detector runs cannot create duplicates. If the rule already
+    exists, its expiry and is_active flag are refreshed.
+
+    Returns:
+        (rule, created) tuple.
+    """
+    from icv_waf.enums import RuleSource
+    from icv_waf.models import BlockRule
+
+    with transaction.atomic():
+        rule, created = BlockRule.objects.update_or_create(
+            rule_type=rule_type,
+            pattern=pattern,
+            source=RuleSource.AUTO,
+            action=action,
+            defaults={
+                "name": name,
+                "match_type": match_type,
+                "is_active": True,
+                "expires_at": expiry,
+            },
+        )
+    return rule, created
 
 
 def _emit_anomaly_signal(rule, anomaly_type: str, details: dict) -> None:

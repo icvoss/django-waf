@@ -1142,8 +1142,8 @@ class TestDetectUaRotation:
 
         assert result == []
 
-    def test_does_not_duplicate_existing_active_rule(self, db):
-        """BR-ANOM-004: skip if an active rule already exists for the IP."""
+    def test_does_not_duplicate_existing_auto_rule(self, db):
+        """update_or_create refreshes an existing auto rule instead of creating a duplicate."""
         import icv_waf.conf as conf_mod
         from icv_waf.services.anomaly_detector import detect_ua_rotation
 
@@ -1152,18 +1152,25 @@ class TestDetectUaRotation:
         for i in range(25):
             RequestLogFactory(ip_address=ip, user_agent=f"UA-{i}/1.0", timestamp=now)
 
-        # Pre-existing active rule
+        # Pre-existing auto rule with same key fields
         BlockRuleFactory(
             is_active=True,
             rule_type=RuleType.IP,
             match_type="exact",
             pattern=ip,
+            action=RuleAction.CHALLENGE,
+            source=RuleSource.AUTO,
         )
 
         with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
             created = detect_ua_rotation(window_minutes=10, threshold=20)
 
+        # update_or_create found the existing rule — no new creation
         assert created == []
+        # Still only one rule for this IP
+        from icv_waf.models import BlockRule
+
+        assert BlockRule.objects.filter(pattern=ip, source=RuleSource.AUTO).count() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1247,8 +1254,8 @@ class TestDetectChallengeFarms:
 
         assert result == []
 
-    def test_does_not_duplicate_existing_block_rule(self, db):
-        """BR-ANOM-004: skip if an active BLOCK rule already exists for the IP."""
+    def test_does_not_duplicate_existing_auto_block_rule(self, db):
+        """update_or_create refreshes an existing auto rule instead of duplicating."""
         import icv_waf.conf as conf_mod
         from icv_waf.services.anomaly_detector import detect_challenge_farms
 
@@ -1265,12 +1272,16 @@ class TestDetectChallengeFarms:
             match_type="exact",
             pattern=ip,
             action=RuleAction.BLOCK,
+            source=RuleSource.AUTO,
         )
 
         with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
             created = detect_challenge_farms(window_hours=24)
 
         assert created == []
+        from icv_waf.models import BlockRule
+
+        assert BlockRule.objects.filter(pattern=ip, source=RuleSource.AUTO).count() == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2523,8 +2534,8 @@ class TestDetectUnsolvedChallenges:
         assert len(rules) == 0
 
     @pytest.mark.django_db
-    def test_does_not_duplicate_existing_active_rule(self):
-        """An existing active rule for the IP prevents a duplicate."""
+    def test_does_not_duplicate_existing_auto_rule(self):
+        """update_or_create refreshes an existing auto rule instead of duplicating."""
         from icv_waf.services.anomaly_detector import detect_unsolved_challenges
 
         ip = "10.0.0.9"
@@ -2541,11 +2552,16 @@ class TestDetectUnsolvedChallenges:
             rule_type=RuleType.IP,
             pattern=ip,
             is_active=True,
+            action=RuleAction.BLOCK,
+            source=RuleSource.AUTO,
         )
 
         rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
 
         assert len(rules) == 0
+        from icv_waf.models import BlockRule
+
+        assert BlockRule.objects.filter(pattern=ip, source=RuleSource.AUTO).count() == 1
 
     @pytest.mark.django_db
     def test_referer_ratio_threshold(self):

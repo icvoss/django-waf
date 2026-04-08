@@ -90,16 +90,19 @@ def generate_nginx_blocklist(output_path: str | None = None) -> int:
 def reload_nginx() -> bool:
     """Signal nginx to reload its configuration.
 
-    Runs ``nginx -s reload`` in a subprocess with a 10-second timeout.
+    Runs the command defined by ``ICV_WAF_NGINX_RELOAD_COMMAND`` (default:
+    ``["nginx", "-s", "reload"]``) in a subprocess with a 10-second timeout.
     Errors are logged but do not raise — a failed reload leaves the previous
     config active (BR-BL-003).
 
     Returns:
         True if reload succeeded, False otherwise.
     """
+    from icv_waf import conf
+
     try:
         result = subprocess.run(
-            ["nginx", "-s", "reload"],
+            conf.ICV_WAF_NGINX_RELOAD_COMMAND,
             capture_output=True,
             text=True,
             timeout=10,

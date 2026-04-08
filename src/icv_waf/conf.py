@@ -82,3 +82,23 @@ ICV_WAF_FEED_API_KEY: str = getattr(settings, "ICV_WAF_FEED_API_KEY", "")
 
 # Number of days to retain RequestLog entries before purging.
 ICV_WAF_LOG_RETENTION_DAYS: int = getattr(settings, "ICV_WAF_LOG_RETENTION_DAYS", 30)
+
+# Command to reload nginx after blocklist generation.
+ICV_WAF_NGINX_RELOAD_COMMAND: list[str] = getattr(
+    settings,
+    "ICV_WAF_NGINX_RELOAD_COMMAND",
+    ["nginx", "-s", "reload"],
+)
+
+# Path prefixes exempt from no-referer challenge (only evaluated when
+# ICV_WAF_CHALLENGE_NO_REFERER is True).
+ICV_WAF_CHALLENGE_NO_REFERER: bool = getattr(settings, "ICV_WAF_CHALLENGE_NO_REFERER", False)
+ICV_WAF_NO_REFERER_EXEMPT_PATHS: list[str] = getattr(
+    settings,
+    "ICV_WAF_NO_REFERER_EXEMPT_PATHS",
+    ["/", "/search/", "/robots.txt", "/sitemap.xml", "/favicon.ico"],
+)
+
+# Path to a MaxMind GeoLite2-Country.mmdb database for GeoIP lookups.
+# Set to None to disable GeoIP (default).
+ICV_WAF_GEOIP_PATH: str | None = getattr(settings, "ICV_WAF_GEOIP_PATH", None)

@@ -70,6 +70,16 @@ class WafMiddleware:
         except Exception:
             logger.exception("icv-waf: error validating waf_pass cookie")
 
+        # No-referer challenge: challenge requests to non-exempt paths
+        # that lack a Referer header (strong bot signal).
+        if conf.ICV_WAF_CHALLENGE_NO_REFERER:
+            referer = request.META.get("HTTP_REFERER", "")
+            if not referer:
+                exempt = any(path == p or path.startswith(p) for p in conf.ICV_WAF_NO_REFERER_EXEMPT_PATHS)
+                if not exempt:
+                    challenge_url = f"/waf/challenge/?next={path}"
+                    return HttpResponseRedirect(challenge_url)
+
         # Core evaluation
         try:
             from icv_waf.services.rule_engine import evaluate_request
@@ -169,6 +179,7 @@ class WafMiddleware:
                 anomaly_score=result.anomaly_score,
                 response_code=response_code,
                 referer=request.META.get("HTTP_REFERER", "")[:2048],
+                country_code=_lookup_country(ip_address),
             )
         except Exception:
             logger.exception("icv-waf: error creating RequestLog record")
@@ -177,6 +188,44 @@ class WafMiddleware:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+# GeoIP reader — lazily initialised, cached for the process lifetime.
+_geoip_reader = None
+_geoip_checked = False
+
+
+def _lookup_country(ip_address: str) -> str:
+    """Return the 2-letter ISO country code for an IP, or '' if unavailable.
+
+    Uses MaxMind GeoLite2-Country database at the path specified by
+    ICV_WAF_GEOIP_PATH. Degrades gracefully if the database is missing,
+    geoip2 is not installed, or the IP is not found.
+    """
+    global _geoip_reader, _geoip_checked  # noqa: PLW0603
+
+    from icv_waf import conf
+
+    if not conf.ICV_WAF_GEOIP_PATH:
+        return ""
+
+    if not _geoip_checked:
+        _geoip_checked = True
+        try:
+            import geoip2.database
+
+            _geoip_reader = geoip2.database.Reader(conf.ICV_WAF_GEOIP_PATH)
+        except Exception:
+            logger.warning("icv-waf: GeoIP database not available at %s", conf.ICV_WAF_GEOIP_PATH)
+
+    if _geoip_reader is None:
+        return ""
+
+    try:
+        response = _geoip_reader.country(ip_address)
+        return response.country.iso_code or ""
+    except Exception:
+        return ""
 
 
 def _extract_ip(request) -> str:

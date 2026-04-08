@@ -1,5 +1,7 @@
-"""icv-waf — Self-hosted WAF middleware for Django."""
+"""django-waf — Self-hosted WAF middleware for Django."""
 
-__version__ = "0.1.0"
+from importlib.metadata import version
+
+__version__ = version("django-waf")
 
 default_app_config = "icv_waf.apps.IcvWafConfig"

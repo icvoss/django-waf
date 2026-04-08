@@ -480,23 +480,24 @@ class TestUpdateIpReputation:
         assert result == {"updated_count": 0, "created_count": 0}
 
     @pytest.mark.django_db
-    def test_preserves_existing_challenge_counts(self):
-        """Existing challenge_passes/failures from IPReputation are carried forward."""
-        ip = "203.0.113.77"
-        IPReputationFactory(
-            ip_address=ip,
-            challenge_passes=5,
-            challenge_failures=3,
-        )
-        RequestLogFactory(ip_address=ip, timestamp=timezone.now(), verdict=Verdict.CHALLENGED)
-
+    def test_counts_challenge_tokens_for_pass_fail(self):
+        """challenge_passes/failures are counted from ChallengeToken records."""
+        from icv_waf.enums import ChallengeStatus
         from icv_waf.models import IPReputation
         from icv_waf.tasks import update_ip_reputation
+        from icv_waf.testing.factories import ChallengeTokenFactory
+
+        ip = "203.0.113.77"
+        RequestLogFactory(ip_address=ip, timestamp=timezone.now(), verdict=Verdict.CHALLENGED)
+        # Create actual challenge tokens
+        for _ in range(5):
+            ChallengeTokenFactory(ip_address=ip, status=ChallengeStatus.SOLVED)
+        for _ in range(3):
+            ChallengeTokenFactory(ip_address=ip, status=ChallengeStatus.FAILED)
 
         update_ip_reputation()
 
         rep = IPReputation.objects.get(ip_address=ip)
-        # The task reads existing passes/failures for scoring but does not reset them
         assert rep.challenge_passes == 5
         assert rep.challenge_failures == 3
 
