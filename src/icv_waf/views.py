@@ -42,6 +42,8 @@ def _get_ip(request: HttpRequest) -> str:
 
     Respects ICV_WAF_TRUST_X_FORWARDED_FOR — uses the first IP in the
     X-Forwarded-For chain when trusted, otherwise falls back to REMOTE_ADDR.
+    Returns ``0.0.0.0`` as a last resort to avoid NULL constraint violations
+    on ChallengeToken.ip_address.
     """
     from icv_waf import conf
 
@@ -50,7 +52,7 @@ def _get_ip(request: HttpRequest) -> str:
         if forwarded_for:
             return forwarded_for.split(",")[0].strip()
 
-    return request.META.get("REMOTE_ADDR", "")
+    return request.META.get("REMOTE_ADDR", "") or "0.0.0.0"
 
 
 def _get_redis_client():

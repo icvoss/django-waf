@@ -355,6 +355,55 @@ def report_threat_telemetry() -> dict:
     }
 
 
+@shared_task(bind=True, ignore_result=True)
+def flush_rule_hit_counts(self) -> dict:
+    """Flush block rule hit counters from Redis to the database.
+
+    Reads waf:rule_hits:{rule_id} keys, updates BlockRule.hit_count and
+    last_hit_at, then deletes the Redis keys. Designed to run every 5 minutes
+    alongside the blocklist generation task.
+    """
+    from icv_waf.models import BlockRule
+
+    try:
+        from django_redis import get_redis_connection
+
+        from icv_waf import conf
+
+        redis_client = get_redis_connection(conf.ICV_WAF_REDIS_ALIAS)
+    except Exception:
+        logger.warning("icv-waf: Redis unavailable for hit count flush")
+        return {"flushed": 0}
+
+    flushed = 0
+    prefix = "waf:rule_hits:"
+
+    try:
+        keys = redis_client.keys(f"{prefix}*")
+    except Exception:
+        return {"flushed": 0}
+
+    for key in keys:
+        try:
+            key_str = key.decode() if isinstance(key, bytes) else key
+            rule_id = key_str[len(prefix) :]
+            count = int(redis_client.getdel(key) or 0)
+            if count > 0:
+                from django.db.models import F
+
+                updated = BlockRule.objects.filter(id=rule_id).update(
+                    hit_count=F("hit_count") + count,
+                    last_hit_at=timezone.now(),
+                )
+                if updated:
+                    flushed += 1
+        except Exception:
+            continue
+
+    logger.info("icv-waf: flushed hit counts for %d rules", flushed)
+    return {"flushed": flushed}
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

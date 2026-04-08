@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-waf"
-version = "0.4.1"
+version = "0.5.0"
 description = "Self-hosted request filtering, bot management, and WAF middleware for Django — rate limiting, UA anomaly scoring, JS challenges, nginx blocklist generation, and collective threat feed."
 readme = "README.md"
 license = "MIT"
@@ -71,7 +71,7 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "S"]
-ignore = ["S101", "S105", "S106", "S107", "S110", "S311", "S603", "S607"]
+ignore = ["S101", "S104", "S105", "S106", "S107", "S110", "S112", "S311", "S603", "S607"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S"]

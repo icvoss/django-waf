@@ -102,3 +102,45 @@ ICV_WAF_NO_REFERER_EXEMPT_PATHS: list[str] = getattr(
 # Path to a MaxMind GeoLite2-Country.mmdb database for GeoIP lookups.
 # Set to None to disable GeoIP (default).
 ICV_WAF_GEOIP_PATH: str | None = getattr(settings, "ICV_WAF_GEOIP_PATH", None)
+
+# HTTP methods allowed through the WAF. Requests with other methods receive
+# a 405 response before any rule evaluation. Set to None to allow all methods.
+ICV_WAF_ALLOWED_METHODS: list[str] | None = getattr(settings, "ICV_WAF_ALLOWED_METHODS", None)
+
+# Regex patterns for suspicious paths (credential probes, config files).
+# Matched paths add to the anomaly score during UA scoring.
+ICV_WAF_SUSPICIOUS_PATH_PATTERNS: list[str] = getattr(
+    settings,
+    "ICV_WAF_SUSPICIOUS_PATH_PATTERNS",
+    [
+        r"\.env",
+        r"wp-config\.php",
+        r"phpinfo",
+        r"credentials",
+        r"config\.php",
+        r"settings\.py",
+        r"\.yml$",
+        r"\.yaml$",
+        r"\.json$",
+        r"\.sql$",
+        r"\.bak$",
+        r"\.git",
+        r"wp-admin",
+        r"wp-login",
+        r"xmlrpc\.php",
+        r"/admin/config",
+        r"\.aws",
+        r"\.ssh",
+    ],
+)
+
+# Anomaly score thresholds for verdict escalation.
+ICV_WAF_SCORE_THRESHOLD_LOG: float = getattr(settings, "ICV_WAF_SCORE_THRESHOLD_LOG", 3.0)
+ICV_WAF_SCORE_THRESHOLD_CHALLENGE: float = getattr(settings, "ICV_WAF_SCORE_THRESHOLD_CHALLENGE", 5.0)
+ICV_WAF_SCORE_THRESHOLD_BLOCK: float = getattr(settings, "ICV_WAF_SCORE_THRESHOLD_BLOCK", 7.0)
+
+# Number of unanswered challenges before auto-escalating from challenge to block.
+ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD: int = getattr(settings, "ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD", 10)
+
+# Score added per suspicious path match.
+ICV_WAF_SUSPICIOUS_PATH_SCORE: float = getattr(settings, "ICV_WAF_SUSPICIOUS_PATH_SCORE", 3.0)

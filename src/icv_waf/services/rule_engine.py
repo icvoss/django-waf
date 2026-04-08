@@ -211,6 +211,7 @@ def evaluate_request(
     Returns:
         EvaluationResult namedtuple.
     """
+    from icv_waf import conf
     from icv_waf.enums import RuleAction, Verdict
     from icv_waf.services.rate_limiter import check_rate_limit, get_request_count
     from icv_waf.services.ua_analyser import score_user_agent
@@ -241,7 +242,7 @@ def evaluate_request(
         )
 
     # Step 6: Evaluate BlockRules
-    block_result = _check_block_rules(ip_address, user_agent, cache)
+    block_result = _check_block_rules(ip_address, user_agent, cache, redis_client)
     if block_result is not None:
         matched_id, rule = block_result
         action = rule["action"]
@@ -265,10 +266,10 @@ def evaluate_request(
             anomaly_score=None,
         )
 
-    # Step 8: UA anomaly scoring (BR-UA-001 — only if IP has >10 recent requests)
+    # Step 8: UA + path anomaly scoring
     recent_count = get_request_count(ip_address, "5m", redis_client)
     if recent_count > 10:
-        score = score_user_agent(user_agent)
+        score = score_user_agent(user_agent) + _score_path(path)
         verdict, action = _score_to_verdict(score)
         if verdict != Verdict.ALLOWED:
             return EvaluationResult(
@@ -278,13 +279,24 @@ def evaluate_request(
                 matched_rule_type=None,
                 anomaly_score=score,
             )
-        # Score in clean range but was computed — return allowed with score
         return EvaluationResult(
             verdict=Verdict.ALLOWED,
             action=None,
             matched_rule_id=None,
             matched_rule_type=None,
             anomaly_score=score,
+        )
+
+    # Step 9: Challenge escalation — auto-block IPs that ignore challenges
+    challenged_count = _get_unsolved_challenge_count(ip_address, redis_client)
+    if challenged_count >= conf.ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD:
+        record_block_verdict(ip_address, redis_client)
+        return EvaluationResult(
+            verdict=Verdict.BLOCKED,
+            action=RuleAction.BLOCK,
+            matched_rule_id=None,
+            matched_rule_type=None,
+            anomaly_score=None,
         )
 
     return EvaluationResult(
@@ -324,13 +336,29 @@ def _check_block_rules(
     ip_address: str,
     user_agent: str,
     cache: RuleCache,
+    redis_client=None,
 ) -> tuple[str, dict] | None:
-    """Return (rule_id, rule_dict) for the first matching BlockRule (by priority), else None."""
-    # block_rules are already ordered by priority ascending from DB query
+    """Return (rule_id, rule_dict) for the first matching BlockRule (by priority), else None.
+
+    If redis_client is provided, increments a hit counter for the matched rule
+    (flushed to DB by the update_rule_hit_counts task).
+    """
     for rule in cache.block_rules:
         if _rule_matches(rule, ip_address, user_agent):
+            if redis_client is not None:
+                _record_rule_hit(rule["id"], redis_client)
             return rule["id"], rule
     return None
+
+
+def _record_rule_hit(rule_id: str, redis_client) -> None:
+    """Increment the Redis hit counter for a block rule."""
+    try:
+        key = f"waf:rule_hits:{rule_id}"
+        redis_client.incr(key)
+        redis_client.expire(key, 86400 * 2)  # TTL: 2 days
+    except Exception:
+        pass
 
 
 def _rule_matches(rule: dict, ip_address: str, user_agent: str) -> bool:
@@ -441,23 +469,68 @@ def _action_to_verdict(action: str) -> str:
 
 
 def _score_to_verdict(score: float) -> tuple[str, str | None]:
-    """Map an anomaly score to (verdict, action) per BR-UA-003.
+    """Map an anomaly score to (verdict, action).
 
-    Score ranges:
-      0.0 – 2.9  → allowed (no action)
-      3.0 – 4.9  → logged
-      5.0 – 6.9  → challenged
-      7.0 – 10.0 → blocked
+    Thresholds are configurable via settings:
+      ICV_WAF_SCORE_THRESHOLD_BLOCK (default 7.0)
+      ICV_WAF_SCORE_THRESHOLD_CHALLENGE (default 5.0)
+      ICV_WAF_SCORE_THRESHOLD_LOG (default 3.0)
     """
+    from icv_waf import conf
     from icv_waf.enums import RuleAction, Verdict
 
-    if score >= 7.0:
+    if score >= conf.ICV_WAF_SCORE_THRESHOLD_BLOCK:
         return Verdict.BLOCKED, RuleAction.BLOCK
-    if score >= 5.0:
+    if score >= conf.ICV_WAF_SCORE_THRESHOLD_CHALLENGE:
         return Verdict.CHALLENGED, RuleAction.CHALLENGE
-    if score >= 3.0:
+    if score >= conf.ICV_WAF_SCORE_THRESHOLD_LOG:
         return Verdict.LOGGED, RuleAction.LOG_ONLY
     return Verdict.ALLOWED, None
+
+
+def _score_path(path: str) -> float:
+    """Return anomaly score contribution from suspicious path patterns."""
+    import re
+
+    from icv_waf import conf
+
+    for pattern in conf.ICV_WAF_SUSPICIOUS_PATH_PATTERNS:
+        try:
+            if re.search(pattern, path, re.IGNORECASE):
+                return conf.ICV_WAF_SUSPICIOUS_PATH_SCORE
+        except re.error:
+            continue
+    return 0.0
+
+
+def _get_unsolved_challenge_count(ip_address: str, redis_client) -> int:
+    """Count recent challenged verdicts for an IP with no solved ChallengeTokens.
+
+    Uses Redis counter waf:challenged:{ip} incremented by the middleware
+    on each CHALLENGED verdict. Returns 0 if the IP has any solved tokens
+    or if Redis is unavailable.
+    """
+    try:
+        key = f"waf:challenged:{ip_address}"
+        count = redis_client.get(key)
+        if not count:
+            return 0
+        count = int(count)
+
+        # Check for any solved challenges — if so, reset counter
+        from icv_waf.enums import ChallengeStatus
+        from icv_waf.models import ChallengeToken
+
+        if ChallengeToken.objects.filter(
+            ip_address=ip_address,
+            status=ChallengeStatus.SOLVED,
+        ).exists():
+            redis_client.delete(key)
+            return 0
+
+        return count
+    except Exception:
+        return 0
 
 
 # ---------------------------------------------------------------------------

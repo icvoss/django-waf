@@ -45,6 +45,13 @@ class WafMiddleware:
             if path.startswith(prefix):
                 return self.get_response(request)
 
+        # HTTP method filtering — 405 for disallowed methods
+        allowed = conf.ICV_WAF_ALLOWED_METHODS
+        if allowed is not None and request.method not in allowed:
+            response = HttpResponse("Method not allowed.", status=405)
+            response["Allow"] = ", ".join(allowed)
+            return response
+
         # Extract client IP — fail-open if unavailable
         ip_address = _extract_ip(request)
         if not ip_address:
@@ -146,6 +153,13 @@ class WafMiddleware:
             return response
 
         if verdict == Verdict.CHALLENGED:
+            # Increment unsolved-challenge counter for escalation tracking
+            try:
+                key = f"waf:challenged:{ip_address}"
+                redis_client.incr(key)
+                redis_client.expire(key, 3600)  # 1-hour window
+            except Exception:
+                pass
             next_path = path
             challenge_url = f"/waf/challenge/?next={next_path}"
             return HttpResponseRedirect(challenge_url)
