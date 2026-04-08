@@ -90,6 +90,7 @@ class WafMiddleware:
                 method=request.method,
                 redis_client=redis_client,
                 referer=request.META.get("HTTP_REFERER", ""),
+                request_meta=request.META,
             )
         except Exception:
             # Fail-open: if evaluation raises, pass the request through
@@ -186,6 +187,8 @@ class WafMiddleware:
                 anomaly_score=result.anomaly_score,
                 response_code=response_code,
                 referer=request.META.get("HTTP_REFERER", "")[:2048],
+                http_fingerprint=_compute_fingerprint(request),
+                fingerprint_verdict=_classify_fingerprint(request),
                 country_code=_lookup_country(ip_address),
             )
         except Exception:
@@ -231,6 +234,29 @@ def _lookup_country(ip_address: str) -> str:
     try:
         response = _geoip_reader.country(ip_address)
         return response.country.iso_code or ""
+    except Exception:
+        return ""
+
+
+def _compute_fingerprint(request) -> str:
+    """Compute an HTTP fingerprint hash for the request."""
+    try:
+        from icv_waf.services.fingerprint import compute_fingerprint
+
+        return compute_fingerprint(request.META)
+    except Exception:
+        return ""
+
+
+def _classify_fingerprint(request) -> str:
+    """Classify the request fingerprint as browser/bot/suspicious/unknown."""
+    try:
+        from icv_waf.services.fingerprint import classify_fingerprint
+
+        return classify_fingerprint(
+            request.META.get("HTTP_USER_AGENT", ""),
+            request.META,
+        )
     except Exception:
         return ""
 

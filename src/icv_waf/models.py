@@ -370,6 +370,19 @@ class RequestLog(BaseModel):
         verbose_name=_("referer"),
         help_text=_("HTTP Referer header value, useful for identifying bot traffic sources."),
     )
+    http_fingerprint = models.CharField(
+        max_length=64,
+        blank=True,
+        db_index=True,
+        verbose_name=_("HTTP fingerprint"),
+        help_text=_("SHA-256 hash of normalised HTTP headers — identifies real client software."),
+    )
+    fingerprint_verdict = models.CharField(
+        max_length=20,
+        blank=True,
+        verbose_name=_("fingerprint verdict"),
+        help_text=_("Fingerprint classification: browser, bot, suspicious, unknown."),
+    )
     country_code = models.CharField(
         max_length=2,
         blank=True,

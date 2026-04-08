@@ -209,6 +209,7 @@ def evaluate_request(
     method: str,
     redis_client,
     referer: str = "",
+    request_meta: dict | None = None,
 ) -> EvaluationResult:
     """Evaluate a request against the WAF rule set and return a verdict.
 
@@ -300,17 +301,30 @@ def evaluate_request(
             )
 
     # Step 9: Path scoring — always evaluated (no volume threshold).
-    # A single .env probe is suspicious regardless of request count.
     path_score = _score_path(path)
 
-    # Step 9: UA anomaly scoring — only if IP has >10 recent requests.
-    # Combined with path score from step 8.
+    # Step 10: HTTP fingerprint scoring — always evaluated.
+    # Detects bots claiming to be browsers but missing expected headers.
+    fp_score = 0.0
+    if request_meta:
+        from icv_waf.services.fingerprint import (
+            compute_fingerprint,
+            is_known_fingerprint,
+            score_fingerprint_mismatch,
+        )
+
+        fp_hash = compute_fingerprint(request_meta)
+        # Skip scoring if this fingerprint is known-good (from solved challenges)
+        if not is_known_fingerprint(fp_hash, redis_client):
+            fp_score = score_fingerprint_mismatch(user_agent, request_meta)
+
+    # Step 11: UA anomaly scoring — only if IP has >10 recent requests.
     ua_score = 0.0
     recent_count = get_request_count(ip_address, "5m", redis_client)
     if recent_count > 10:
         ua_score = score_user_agent(user_agent)
 
-    total_score = ua_score + path_score
+    total_score = ua_score + path_score + fp_score
     if total_score > 0:
         verdict, action = _score_to_verdict(total_score)
         if verdict != Verdict.ALLOWED:

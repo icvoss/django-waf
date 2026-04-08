@@ -196,8 +196,16 @@ class VerifyView(View):
         try:
             solved_key = f"waf:solved:{ip}"
             redis_client.setex(solved_key, 86400, "1")  # 24-hour flag
-            # Reset challenged counter
             redis_client.delete(f"waf:challenged:{ip}")
+        except Exception:
+            pass
+
+        # Register this browser's HTTP fingerprint as known-good
+        try:
+            from icv_waf.services.fingerprint import compute_fingerprint, register_known_fingerprint
+
+            fp_hash = compute_fingerprint(request.META)
+            register_known_fingerprint(fp_hash, redis_client)
         except Exception:
             pass
 
