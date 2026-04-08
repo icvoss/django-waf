@@ -39,7 +39,16 @@ def generate_blocklist() -> dict:
     """
     from icv_waf.services.blocklist_generator import generate_nginx_blocklist, reload_nginx
 
-    count = generate_nginx_blocklist()
+    try:
+        count = generate_nginx_blocklist()
+    except PermissionError as exc:
+        logger.error(
+            "icv-waf: cannot write blocklist — %s. "
+            "Set ICV_WAF_NGINX_BLOCKLIST_PATH to a writable location.",
+            exc,
+        )
+        return {"rules_written": 0, "reload_succeeded": False, "error": str(exc)}
+
     success = reload_nginx()
     logger.info("icv-waf: generate_blocklist — %d rules, reload=%s", count, success)
     return {"rules_written": count, "reload_succeeded": success}
