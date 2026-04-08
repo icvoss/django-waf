@@ -3,17 +3,34 @@
 Self-hosted request filtering, bot management, and WAF middleware for Django.
 
 Provides two-layer defence (nginx + Django middleware) with rate limiting,
-user-agent anomaly scoring, JS proof-of-work challenges, nginx blocklist
-generation, and collective threat feed integration — all configurable without
-a reverse-proxy vendor.
+user-agent anomaly scoring, JS proof-of-work challenges, path-based threat
+scoring, nginx blocklist generation, and collective threat feed integration —
+all configurable without a reverse-proxy vendor.
 
 ## Features
 
 - **Rate limiting** — sliding-window per-IP limits (burst, per-minute, per-5-min)
 - **UA anomaly scoring** — heuristic detection of impossible OS/browser combos,
   ancient versions, scraper libraries
+- **Path-based threat scoring** — suspicious path detection for credential probes
+  (`.env`, `wp-config`, AWS/SSH config files) adds to the anomaly score
+- **HTTP method filtering** — block non-standard methods (e.g. `HEAD`, `OPTIONS`,
+  `PUT`, `PATCH`, `DELETE`) before rule evaluation
 - **JS proof-of-work challenges** — hashcash-style SHA-256 challenges for
   suspicious clients (no CAPTCHAs, no third-party dependencies)
+- **Challenge auto-escalation** — repeat offenders who exceed the unsolved-challenge
+  threshold are automatically blocked for a configurable TTL
+- **No-referer challenge trigger** — optionally challenge direct-navigation requests
+  lacking a `Referer` header
+- **GeoIP country code population** — attach ISO country codes to request log
+  entries using a MaxMind GeoLite2 database
+- **Composite rules** — block rules combining UA pattern with IP/CIDR
+- **In-process rule cache** — version-checked in-memory cache avoids Redis round
+  trips on every request; invalidated automatically when rules change
+- **Hit count tracking** — block rules accumulate hit counts, flushed to the
+  database periodically
+- **Configurable anomaly score thresholds** — separate thresholds for log,
+  challenge, and block verdicts
 - **nginx blocklist generation** — exports `map`/`geo` blocks for C-level
   filtering at < 0.01 ms latency
 - **Anomaly detection** — auto-creates expiring rules for UA rotation, subnet
@@ -26,15 +43,23 @@ a reverse-proxy vendor.
 ## Requirements
 
 - Python >= 3.11
-- Django >= 4.2
+- Django >= 5.0
 - Redis (via `django-redis >= 5.4`)
 - `httpx >= 0.27` (for threat feed sync)
 - Optional: `celery >= 5.3` (for scheduled tasks)
+- Optional: `maxminddb >= 2.4` (for GeoIP lookups)
 
 ## Installation
 
 ```bash
 pip install django-waf
+```
+
+With optional extras:
+
+```bash
+pip install django-waf[geoip]    # adds maxminddb for GeoIP support
+pip install django-waf[celery]   # adds celery for scheduled tasks
 ```
 
 Add to `INSTALLED_APPS`:
@@ -95,27 +120,76 @@ python manage.py migrate icv_waf
 
 All settings are namespaced under `ICV_WAF_*` and have sensible defaults.
 
+### Core
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `ICV_WAF_ENABLED` | `True` | Master switch — disable to pass all requests through |
-| `ICV_WAF_EXEMPT_PATHS` | `["/static/", "/media/", "/health/", "/favicon.ico"]` | URL prefixes that bypass WAF evaluation |
+| `ICV_WAF_EXEMPT_PATHS` | `["/static/", "/media/", "/health/", "/favicon.ico"]` | URL prefixes that bypass WAF evaluation entirely |
 | `ICV_WAF_TRUST_X_FORWARDED_FOR` | `False` | Trust `X-Forwarded-For` header for client IP extraction |
 | `ICV_WAF_REDIS_ALIAS` | `"default"` | Django cache alias for Redis connections |
+| `ICV_WAF_ALLOWED_METHODS` | `None` | Allowed HTTP methods; requests with other methods receive 405 before rule evaluation. `None` allows all methods. |
+
+### Rate Limiting
+
+| Setting | Default | Description |
+|---------|---------|-------------|
 | `ICV_WAF_RATE_LIMIT_BURST` | `10` | Max requests per IP per second |
 | `ICV_WAF_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per IP per minute |
 | `ICV_WAF_RATE_LIMIT_PER_5MIN` | `600` | Max requests per IP per 5 minutes |
+
+### Challenges
+
+| Setting | Default | Description |
+|---------|---------|-------------|
 | `ICV_WAF_CHALLENGE_DIFFICULTY` | `4` | Proof-of-work leading zero bits |
 | `ICV_WAF_CHALLENGE_COOKIE_TTL` | `86400` | Seconds a solved-challenge cookie remains valid |
-| `ICV_WAF_LOG_SAMPLE_RATE` | `0.01` | Fraction of allowed requests to log (0.0–1.0) |
-| `ICV_WAF_LOG_RETENTION_DAYS` | `30` | Days to retain RequestLog entries |
-| `ICV_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS` | `20` | Distinct UAs per IP before triggering anomaly |
+| `ICV_WAF_CHALLENGE_NO_REFERER` | `False` | Challenge requests that have no `Referer` header |
+| `ICV_WAF_NO_REFERER_EXEMPT_PATHS` | `["/", "/search/", "/robots.txt", "/sitemap.xml", "/favicon.ico"]` | Paths exempt from the no-referer challenge (only evaluated when `ICV_WAF_CHALLENGE_NO_REFERER` is `True`) |
+| `ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD` | `10` | Number of unsolved challenges before auto-escalating to a block |
+| `ICV_WAF_ESCALATION_BLOCK_TTL` | `3600` | TTL in seconds for escalation blocks |
+
+### Anomaly Scoring
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ICV_WAF_SCORE_THRESHOLD_LOG` | `3.0` | Anomaly score at which a request is logged |
+| `ICV_WAF_SCORE_THRESHOLD_CHALLENGE` | `5.0` | Anomaly score at which a challenge is issued |
+| `ICV_WAF_SCORE_THRESHOLD_BLOCK` | `7.0` | Anomaly score at which a request is blocked |
+| `ICV_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS` | `20` | Distinct UAs per IP before triggering a UA-rotation anomaly |
 | `ICV_WAF_AUTO_RULE_EXPIRY_HOURS` | `24` | Hours before auto-generated rules expire |
-| `ICV_WAF_NGINX_BLOCKLIST_PATH` | `"/etc/nginx/conf.d/icv-waf-blocklist.conf"` | Output path for nginx blocklist |
+| `ICV_WAF_SUSPICIOUS_PATH_PATTERNS` | `[r"\.env", r"wp-config\.php", ...]` | Regex patterns for suspicious paths (credential probes, config files); matched paths add `ICV_WAF_SUSPICIOUS_PATH_SCORE` to the anomaly score |
+| `ICV_WAF_SUSPICIOUS_PATH_SCORE` | `3.0` | Score added per suspicious path match |
+
+### Logging
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ICV_WAF_LOG_SAMPLE_RATE` | `0.01` | Fraction of allowed requests to log (0.0–1.0) |
+| `ICV_WAF_LOG_RETENTION_DAYS` | `30` | Days to retain `RequestLog` entries |
+
+### GeoIP
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ICV_WAF_GEOIP_PATH` | `None` | Filesystem path to a MaxMind GeoLite2-Country `.mmdb` database. `None` disables GeoIP. |
+
+### nginx Integration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ICV_WAF_NGINX_BLOCKLIST_PATH` | `"/etc/nginx/conf.d/icv-waf-blocklist.conf"` | Output path for the generated nginx blocklist |
 | `ICV_WAF_ACCESS_LOG_PATH` | `"/var/log/nginx/access.log"` | nginx access log path for parsing |
+| `ICV_WAF_NGINX_RELOAD_COMMAND` | `["nginx", "-s", "reload"]` | Command to reload nginx after blocklist generation |
+
+### Collective Threat Feed
+
+| Setting | Default | Description |
+|---------|---------|-------------|
 | `ICV_WAF_FEED_ENABLED` | `True` | Enable collective threat feed sync |
 | `ICV_WAF_FEED_URL` | `"https://threats.icv.dev/v1/feed.json"` | Threat feed JSON endpoint |
-| `ICV_WAF_FEED_MIN_CONFIDENCE` | `0.8` | Minimum confidence to import feed rules |
-| `ICV_WAF_FEED_REPORT` | `False` | Report local detections back to feed (opt-in) |
+| `ICV_WAF_FEED_MIN_CONFIDENCE` | `0.8` | Minimum confidence (0.0–1.0) to import a feed entry as a rule |
+| `ICV_WAF_FEED_REPORT` | `False` | Report local detections back to the feed (opt-in) |
 | `ICV_WAF_FEED_REPORT_URL` | `"https://threats.icv.dev/v1/report"` | Telemetry reporting endpoint |
 | `ICV_WAF_FEED_API_KEY` | `""` | API key for feed authentication |
 
@@ -127,6 +201,10 @@ If using Celery, configure the beat schedule for automated tasks:
 from celery.schedules import crontab
 
 CELERY_BEAT_SCHEDULE = {
+    "icv-waf-flush-rule-hit-counts": {
+        "task": "icv_waf.tasks.flush_rule_hit_counts",
+        "schedule": crontab(minute="*/5"),
+    },
     "icv-waf-generate-blocklist": {
         "task": "icv_waf.tasks.generate_blocklist",
         "schedule": crontab(minute="*/5"),
@@ -168,7 +246,7 @@ CELERY_BEAT_SCHEDULE = {
 |---------|-------------|
 | `icv_waf_generate_blocklist` | Generate the nginx blocklist file (`--dry-run` to preview) |
 | `icv_waf_detect_anomalies` | Run anomaly detectors and auto-create block rules (`--dry-run`) |
-| `icv_waf_prune_logs` | Delete RequestLog entries older than retention period (`--dry-run`) |
+| `icv_waf_prune_logs` | Delete `RequestLog` entries older than the retention period (`--dry-run`) |
 | `icv_waf_sync_feed` | Fetch and import rules from the collective threat feed (`--dry-run`) |
 
 ## Dashboard
@@ -193,13 +271,20 @@ Client → nginx (C-level blocklist, < 0.01 ms)
 
 The middleware evaluates requests in this order:
 
-1. Exempt paths bypass
-2. Master switch check
-3. Staff/superuser bypass
-4. Valid challenge cookie check
-5. Allow rules → Block rules → Rate limits → UA scoring
-6. Verdict dispatch (allow / block / challenge / throttle)
-7. Sampled logging + signal emission
+1. **Exempt paths bypass** — static assets and health endpoints skip all evaluation
+2. **HTTP method filtering** — disallowed methods receive 405 immediately
+3. **Master switch check** — `ICV_WAF_ENABLED = False` passes all requests through
+4. **Staff/superuser bypass** — authenticated staff skip rule evaluation
+5. **Valid challenge cookie check** — previously-solved challenges are honoured
+6. **Allow rules → Block rules → Rate limits** — explicit rule matching
+7. **No-referer challenge** — optionally challenge requests with no `Referer` header
+8. **Path scoring (always) + UA scoring (after 10 requests)** — anomaly score
+   accumulates from suspicious paths and UA heuristics; score thresholds determine
+   the verdict (log / challenge / block)
+9. **Challenge escalation** — IPs exceeding the unsolved-challenge threshold are
+   auto-blocked for `ICV_WAF_ESCALATION_BLOCK_TTL` seconds
+10. **Verdict dispatch** — response rendered (allow / block / challenge / throttle),
+    sampled logging written, and WAF signal emitted
 
 ## Development
 
