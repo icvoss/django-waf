@@ -45,8 +45,10 @@ class WafMiddleware:
             if path.startswith(prefix):
                 return self.get_response(request)
 
-        # Extract client IP
+        # Extract client IP — fail-open if unavailable
         ip_address = _extract_ip(request)
+        if not ip_address:
+            return self.get_response(request)
         user_agent = request.META.get("HTTP_USER_AGENT", "")
 
         # BR-RATE-003: staff/superuser bypass — skip WAF entirely
