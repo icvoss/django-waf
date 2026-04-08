@@ -157,3 +157,7 @@ ICV_WAF_SUSPICIOUS_PATH_SCORE: float = getattr(settings, "ICV_WAF_SUSPICIOUS_PAT
 
 # TTL in seconds for escalation blocks (challenges that were never solved).
 ICV_WAF_ESCALATION_BLOCK_TTL: int = getattr(settings, "ICV_WAF_ESCALATION_BLOCK_TTL", 3600)
+
+# Cloud spray detection: many distinct IPs with identical behaviour.
+ICV_WAF_CLOUD_SPRAY_MIN_IPS: int = getattr(settings, "ICV_WAF_CLOUD_SPRAY_MIN_IPS", 20)
+ICV_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP: int = getattr(settings, "ICV_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP", 3)

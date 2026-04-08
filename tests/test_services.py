@@ -1301,6 +1301,7 @@ class TestRunAllDetectors:
             "subnet_burst_rules",
             "challenge_farm_rules",
             "unsolved_challenge_rules",
+            "cloud_spray_rules",
             "total_rules_created",
         }
 

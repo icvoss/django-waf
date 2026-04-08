@@ -68,3 +68,4 @@ class AnomalyType(models.TextChoices):
     PATH_HAMMERING = "path_hammering", _("Path hammering")
     CHALLENGE_FARM = "challenge_farm", _("Challenge farm")
     UNSOLVED_CHALLENGE = "unsolved_challenge", _("Unsolved challenge")
+    CLOUD_SPRAY = "cloud_spray", _("Cloud spray")

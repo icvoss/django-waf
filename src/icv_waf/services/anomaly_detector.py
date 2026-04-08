@@ -242,35 +242,55 @@ def detect_unsolved_challenges(
         .filter(challenged_count__gte=min_challenged)
     )
 
+    # Prefetch all IPs with solved challenges in one query (fixes N+1)
+    challenged_ip_list = [row["ip_address"] for row in challenged_ips]
+    solved_ips = set(
+        ChallengeToken.objects.filter(
+            ip_address__in=challenged_ip_list,
+            status=ChallengeStatus.SOLVED,
+        )
+        .values_list("ip_address", flat=True)
+        .distinct()
+    )
+
+    # Prefetch referer stats for all candidate IPs in two queries
+    non_root_counts = dict(
+        RequestLog.objects.filter(
+            timestamp__gte=cutoff,
+            ip_address__in=challenged_ip_list,
+        )
+        .exclude(path="/")
+        .values("ip_address")
+        .annotate(total=Count("id"))
+        .values_list("ip_address", "total")
+    )
+    empty_referer_counts = dict(
+        RequestLog.objects.filter(
+            timestamp__gte=cutoff,
+            ip_address__in=challenged_ip_list,
+        )
+        .exclude(path="/")
+        .filter(Q(referer="") | Q(referer__isnull=True))
+        .values("ip_address")
+        .annotate(total=Count("id"))
+        .values_list("ip_address", "total")
+    )
+
     created_rules = []
     expiry = timezone.now() + timedelta(hours=conf.ICV_WAF_AUTO_RULE_EXPIRY_HOURS)
 
     for row in challenged_ips:
         ip = row["ip_address"]
 
-        # Step 2: Check for zero solved challenges from this IP
-        has_solved = ChallengeToken.objects.filter(
-            ip_address=ip,
-            status=ChallengeStatus.SOLVED,
-        ).exists()
-        if has_solved:
+        if ip in solved_ips:
             continue
 
-        # Step 3: Check referer ratio on non-root paths
-        non_root_requests = RequestLog.objects.filter(
-            timestamp__gte=cutoff,
-            ip_address=ip,
-        ).exclude(path="/")
-
-        non_root_count = non_root_requests.count()
+        non_root_count = non_root_counts.get(ip, 0)
         if non_root_count == 0:
             continue
 
-        empty_referer_count = non_root_requests.filter(
-            Q(referer="") | Q(referer__isnull=True),
-        ).count()
-
-        if empty_referer_count / non_root_count < referer_ratio:
+        empty_count = empty_referer_counts.get(ip, 0)
+        if empty_count / non_root_count < referer_ratio:
             continue
 
         rule, created = _get_or_create_auto_rule(
@@ -288,7 +308,7 @@ def detect_unsolved_challenges(
                 anomaly_type=AnomalyType.UNSOLVED_CHALLENGE,
                 details={
                     "challenged_count": row["challenged_count"],
-                    "empty_referer_ratio": round(empty_referer_count / non_root_count, 2),
+                    "empty_referer_ratio": round(empty_count / non_root_count, 2),
                     "non_root_requests": non_root_count,
                     "window_minutes": window_minutes,
                 },
@@ -297,8 +317,112 @@ def detect_unsolved_challenges(
                 "icv-waf: auto-created unsolved challenge rule for %s (challenged=%d, referer_empty=%.0f%%)",
                 ip,
                 row["challenged_count"],
-                (empty_referer_count / non_root_count) * 100,
+                (empty_count / non_root_count) * 100,
             )
+
+    return created_rules
+
+
+def detect_cloud_spray(window_minutes: int = 30) -> list:
+    """Detect coordinated low-and-slow scraping from many distinct IPs.
+
+    Identifies UAs shared by many distinct IPs (>= ICV_WAF_CLOUD_SPRAY_MIN_IPS)
+    where each IP makes only 1-3 requests with no referer. This pattern is
+    characteristic of cloud-hosted bot farms that evade per-IP rate limits.
+
+    Flags /24 subnets rather than individual IPs — cloud providers allocate
+    contiguous blocks, so a single /24 CIDR catches the cluster efficiently.
+
+    Args:
+        window_minutes: Time window to analyse (default 30).
+
+    Returns:
+        List of BlockRule instances created.
+    """
+    from django.db.models import Count, Q
+
+    from icv_waf import conf
+    from icv_waf.enums import AnomalyType, RuleAction, RuleType
+    from icv_waf.models import RequestLog
+
+    cutoff = timezone.now() - timedelta(minutes=window_minutes)
+    min_ips = conf.ICV_WAF_CLOUD_SPRAY_MIN_IPS
+    max_per_ip = conf.ICV_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP
+
+    # Step 1: Find UAs used by many distinct IPs with no referer
+    spray_uas = (
+        RequestLog.objects.filter(
+            timestamp__gte=cutoff,
+        )
+        .filter(Q(referer="") | Q(referer__isnull=True))
+        .exclude(user_agent="")
+        .values("user_agent")
+        .annotate(distinct_ips=Count("ip_address", distinct=True))
+        .filter(distinct_ips__gte=min_ips)
+        .order_by("-distinct_ips")[:5]
+    )
+
+    created_rules = []
+    expiry = timezone.now() + timedelta(hours=conf.ICV_WAF_AUTO_RULE_EXPIRY_HOURS)
+
+    for ua_row in spray_uas:
+        ua = ua_row["user_agent"]
+
+        # Step 2: Get IPs using this UA with low request counts and no referer
+        ip_counts = (
+            RequestLog.objects.filter(
+                timestamp__gte=cutoff,
+                user_agent=ua,
+            )
+            .filter(Q(referer="") | Q(referer__isnull=True))
+            .values("ip_address")
+            .annotate(req_count=Count("id"))
+            .filter(req_count__lte=max_per_ip)
+        )
+
+        suspicious_ips = [row["ip_address"] for row in ip_counts]
+        if len(suspicious_ips) < min_ips:
+            continue
+
+        # Step 3: Aggregate into /24 subnets and create rules
+        subnet_counts: dict[str, int] = {}
+        for ip in suspicious_ips:
+            try:
+                subnet = str(ipaddress.ip_network(f"{ip}/24", strict=False))
+            except ValueError:
+                continue
+            subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
+
+        for subnet, count in subnet_counts.items():
+            if count < 2:
+                continue
+
+            rule, created = _get_or_create_auto_rule(
+                name=f"Auto: cloud spray from {subnet} ({count} IPs, UA: {ua[:40]})",
+                rule_type=RuleType.CIDR,
+                match_type="cidr",
+                pattern=subnet,
+                action=RuleAction.CHALLENGE,
+                expiry=expiry,
+            )
+            if created:
+                created_rules.append(rule)
+                _emit_anomaly_signal(
+                    rule=rule,
+                    anomaly_type=AnomalyType.CLOUD_SPRAY,
+                    details={
+                        "subnet": subnet,
+                        "ip_count": count,
+                        "total_spray_ips": len(suspicious_ips),
+                        "user_agent": ua[:200],
+                        "window_minutes": window_minutes,
+                    },
+                )
+                logger.info(
+                    "icv-waf: auto-created cloud spray rule for %s (%d IPs)",
+                    subnet,
+                    count,
+                )
 
     return created_rules
 
@@ -314,14 +438,17 @@ def run_all_detectors() -> dict:
     subnet_rules = detect_subnet_burst()
     farm_rules = detect_challenge_farms()
     unsolved_rules = detect_unsolved_challenges()
+    spray_rules = detect_cloud_spray()
 
-    total = len(ua_rules) + len(subnet_rules) + len(farm_rules) + len(unsolved_rules)
+    total = len(ua_rules) + len(subnet_rules) + len(farm_rules) + len(unsolved_rules) + len(spray_rules)
     logger.info(
-        "icv-waf anomaly detection: ua_rotation=%d subnet_burst=%d challenge_farm=%d unsolved_challenge=%d total=%d",
+        "icv-waf anomaly detection: ua_rotation=%d subnet_burst=%d "
+        "challenge_farm=%d unsolved_challenge=%d cloud_spray=%d total=%d",
         len(ua_rules),
         len(subnet_rules),
         len(farm_rules),
         len(unsolved_rules),
+        len(spray_rules),
         total,
     )
 
@@ -330,6 +457,7 @@ def run_all_detectors() -> dict:
         "subnet_burst_rules": len(subnet_rules),
         "challenge_farm_rules": len(farm_rules),
         "unsolved_challenge_rules": len(unsolved_rules),
+        "cloud_spray_rules": len(spray_rules),
         "total_rules_created": total,
     }
 
