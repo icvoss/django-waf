@@ -83,7 +83,17 @@ ICV_WAF_FEED_API_KEY: str = getattr(settings, "ICV_WAF_FEED_API_KEY", "")
 # Number of days to retain RequestLog entries before purging.
 ICV_WAF_LOG_RETENTION_DAYS: int = getattr(settings, "ICV_WAF_LOG_RETENTION_DAYS", 30)
 
-# Command to reload nginx after blocklist generation.
+# Path to the nginx PID file. When set, reload_nginx() sends SIGHUP to the
+# master process directly — no subprocess, no sudo, no PATH required. Just
+# needs read access to the PID file. Set to None to use the command fallback.
+ICV_WAF_NGINX_PID_PATH: str | None = getattr(
+    settings,
+    "ICV_WAF_NGINX_PID_PATH",
+    "/run/nginx.pid",
+)
+
+# Fallback command for nginx reload (used when ICV_WAF_NGINX_PID_PATH is None
+# or the PID file is unreadable).
 ICV_WAF_NGINX_RELOAD_COMMAND: list[str] = getattr(
     settings,
     "ICV_WAF_NGINX_RELOAD_COMMAND",

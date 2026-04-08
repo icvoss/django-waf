@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import signal
 import subprocess
 import tempfile
 
@@ -90,8 +91,13 @@ def generate_nginx_blocklist(output_path: str | None = None) -> int:
 def reload_nginx() -> bool:
     """Signal nginx to reload its configuration.
 
-    Runs the command defined by ``ICV_WAF_NGINX_RELOAD_COMMAND`` (default:
-    ``["nginx", "-s", "reload"]``) in a subprocess with a 10-second timeout.
+    Strategy (in order):
+    1. **SIGHUP via PID file** (preferred) — reads the nginx master PID from
+       ``ICV_WAF_NGINX_PID_PATH`` and sends SIGHUP directly. No subprocess,
+       no sudo, no PATH required. Just needs read access to the PID file.
+    2. **Subprocess command** (fallback) — runs ``ICV_WAF_NGINX_RELOAD_COMMAND``
+       if the PID file is unavailable or unreadable.
+
     Errors are logged but do not raise — a failed reload leaves the previous
     config active (BR-BL-003).
 
@@ -100,30 +106,72 @@ def reload_nginx() -> bool:
     """
     from icv_waf import conf
 
+    # Strategy 1: SIGHUP via PID file
+    if conf.ICV_WAF_NGINX_PID_PATH:
+        result = _reload_via_pid(conf.ICV_WAF_NGINX_PID_PATH)
+        if result is not None:
+            return result
+        # PID file unreadable — fall through to command
+
+    # Strategy 2: subprocess command
+    return _reload_via_command(conf.ICV_WAF_NGINX_RELOAD_COMMAND)
+
+
+def _reload_via_pid(pid_path: str) -> bool | None:
+    """Send SIGHUP to the nginx master process via its PID file.
+
+    Returns:
+        True if SIGHUP sent successfully, False if the process doesn't exist,
+        None if the PID file is unreadable (caller should fall back).
+    """
+    try:
+        with open(pid_path) as fh:
+            pid = int(fh.read().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        logger.debug("icv-waf: PID file %s unreadable — falling back to command", pid_path)
+        return None
+
+    try:
+        os.kill(pid, signal.SIGHUP)
+        logger.info("icv-waf: sent SIGHUP to nginx master (PID %d)", pid)
+        return True
+    except ProcessLookupError:
+        logger.error("icv-waf: nginx PID %d not found — stale PID file?", pid)
+        return False
+    except PermissionError:
+        logger.warning("icv-waf: no permission to signal PID %d — falling back to command", pid)
+        return None
+    except OSError as exc:
+        logger.error("icv-waf: error sending SIGHUP to PID %d: %s", pid, exc)
+        return False
+
+
+def _reload_via_command(command: list[str]) -> bool:
+    """Reload nginx via a subprocess command."""
     try:
         result = subprocess.run(
-            conf.ICV_WAF_NGINX_RELOAD_COMMAND,
+            command,
             capture_output=True,
             text=True,
             timeout=10,
         )
         if result.returncode == 0:
-            logger.info("icv-waf: nginx reloaded successfully")
+            logger.info("icv-waf: nginx reloaded via command")
             return True
         logger.error(
-            "icv-waf: nginx reload failed (exit %d): %s",
+            "icv-waf: nginx reload command failed (exit %d): %s",
             result.returncode,
             result.stderr.strip(),
         )
         return False
     except FileNotFoundError:
-        logger.error("icv-waf: nginx not found in PATH — reload skipped")
+        logger.error("icv-waf: nginx command not found in PATH — reload skipped")
         return False
     except subprocess.TimeoutExpired:
-        logger.error("icv-waf: nginx reload timed out after 10s")
+        logger.error("icv-waf: nginx reload command timed out after 10s")
         return False
     except OSError as exc:
-        logger.error("icv-waf: nginx reload error: %s", exc)
+        logger.error("icv-waf: nginx reload command error: %s", exc)
         return False
 
 

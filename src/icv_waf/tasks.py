@@ -43,8 +43,7 @@ def generate_blocklist() -> dict:
         count = generate_nginx_blocklist()
     except PermissionError as exc:
         logger.error(
-            "icv-waf: cannot write blocklist — %s. "
-            "Set ICV_WAF_NGINX_BLOCKLIST_PATH to a writable location.",
+            "icv-waf: cannot write blocklist — %s. Set ICV_WAF_NGINX_BLOCKLIST_PATH to a writable location.",
             exc,
         )
         return {"rules_written": 0, "reload_succeeded": False, "error": str(exc)}
