@@ -29,7 +29,7 @@ class EvaluationResult(NamedTuple):
     verdict: str
     action: str | None
     matched_rule_id: UUID | None
-    matched_rule_type: str | None
+    matched_rule_type: str  # "" when no rule matched; RequestLog.matched_rule_type is NOT NULL
     anomaly_score: float | None
 
 
@@ -259,7 +259,7 @@ def evaluate_request(
             verdict=Verdict.BLOCKED,
             action=RuleAction.BLOCK,
             matched_rule_id=None,
-            matched_rule_type=None,
+            matched_rule_type="",
             anomaly_score=None,
         )
 
@@ -284,7 +284,7 @@ def evaluate_request(
             verdict=Verdict.THROTTLED,
             action=RuleAction.THROTTLE,
             matched_rule_id=None,
-            matched_rule_type=None,
+            matched_rule_type="",
             anomaly_score=None,
         )
 
@@ -296,7 +296,7 @@ def evaluate_request(
                 verdict=Verdict.CHALLENGED,
                 action=RuleAction.CHALLENGE,
                 matched_rule_id=None,
-                matched_rule_type=None,
+                matched_rule_type="",
                 anomaly_score=None,
             )
 
@@ -332,14 +332,14 @@ def evaluate_request(
                 verdict=verdict,
                 action=action,
                 matched_rule_id=None,
-                matched_rule_type=None,
+                matched_rule_type="",
                 anomaly_score=total_score,
             )
         return EvaluationResult(
             verdict=Verdict.ALLOWED,
             action=None,
             matched_rule_id=None,
-            matched_rule_type=None,
+            matched_rule_type="",
             anomaly_score=total_score,
         )
 
@@ -353,7 +353,7 @@ def evaluate_request(
             verdict=Verdict.BLOCKED,
             action=RuleAction.BLOCK,
             matched_rule_id=None,
-            matched_rule_type=None,
+            matched_rule_type="",
             anomaly_score=None,
         )
 
@@ -361,7 +361,7 @@ def evaluate_request(
         verdict=Verdict.ALLOWED,
         action=None,
         matched_rule_id=None,
-        matched_rule_type=None,
+        matched_rule_type="",
         anomaly_score=None,
     )
 

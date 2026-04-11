@@ -467,6 +467,32 @@ class TestEvaluateRequest:
 
         assert result.verdict == Verdict.ALLOWED
         assert result.action is None
+        # Must be "" (empty string), not None — RequestLog.matched_rule_type is NOT NULL
+        # and Django's default="" only applies when the field is omitted, not when
+        # None is passed explicitly. See CHANGELOG 0.8.1.
+        assert result.matched_rule_type == ""
+
+    def test_matched_rule_type_is_never_none(self, db):
+        """Every EvaluationResult path returns matched_rule_type as a str (never None).
+
+        Regression test: passing None to RequestLog.objects.create(matched_rule_type=None)
+        produces an IntegrityError because the DB column is NOT NULL. The rule engine
+        must always return "" in the no-match cases.
+        """
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(1)
+        redis.zcount.return_value = 5
+
+        # Unmatched request — falls through to final return
+        result = evaluate_request(
+            ip_address="10.0.0.99",
+            user_agent="Mozilla/5.0",
+            path="/",
+            method="GET",
+            redis_client=redis,
+        )
+        assert result.matched_rule_type is not None
+        assert isinstance(result.matched_rule_type, str)
 
     def test_allow_rule_match_returns_passed(self, db):
         """A matching AllowRule bypasses block rules and returns PASSED."""

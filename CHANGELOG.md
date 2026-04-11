@@ -5,6 +5,70 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-04-11
+
+### Fixed
+
+- **`RequestLog` NOT NULL violation on unmatched requests**: `EvaluationResult`
+  returned `matched_rule_type=None` for every no-match path (unmatched, throttled,
+  challenged, anomaly-scored, Redis fast-path, escalation). The middleware passed
+  this through to `RequestLog.objects.create(matched_rule_type=None)`, which
+  bypasses the model's `default=""` and sends `NULL` to a `NOT NULL` column,
+  producing an `IntegrityError` on every non-matching request. Audit log rows
+  were silently dropped (the response to the client was unaffected). All
+  `matched_rule_type=None` call sites in `services/rule_engine.py` now return
+  `""`, and the `EvaluationResult.matched_rule_type` type hint is narrowed from
+  `str | None` to `str`. Regression test added in `tests/test_services.py`.
+
+## [0.8.0] - 2026-04-08
+
+### Added
+
+- **HTTP request fingerprinting** (`services/fingerprint.py`): deterministic bot
+  detection via HTTP header analysis — identifies clients claiming to be
+  browsers but missing expected headers (`Sec-CH-UA`, `Sec-Fetch-*`,
+  `Accept-Language`, `Accept`).
+  - `compute_fingerprint()` — SHA-256 hash of the normalised header tuple
+  - `score_fingerprint_mismatch()` — 0.0–5.0 score for UA/header mismatch
+  - `classify_fingerprint()` — `browser` / `bot` / `suspicious` / `unknown`
+- **Dynamic known-good registry**: `VerifyView` registers fingerprints from
+  solved challenges; known fingerprints bypass mismatch scoring; self-updating
+  as new browser versions hit production; 30-day Redis TTL.
+- **Rule engine integration**: fingerprint score combined with UA + path scores
+  in step 10 of evaluation.
+- **`RequestLog` fields**: `http_fingerprint` (SHA-256) and `fingerprint_verdict`,
+  surfaced in admin `list_display` and `list_filter` (migration `0004`).
+
+### Scoring signals
+
+- `+2.0` Chrome 89+ UA without `Sec-CH-UA`
+- `+1.5` Browser UA without any `Sec-Fetch-*` headers
+- `+1.0` Browser UA without `Accept-Language`
+- `+0.5` Browser UA with `Accept: */*` only
+
+A `Go-http-client` or `python-requests` sending a Chrome UA now scores 5.0 from
+fingerprinting alone — automatically challenged.
+
+## [0.7.0] - 2026-04-08
+
+### Added
+
+- **Cloud spray detector** (`detect_cloud_spray`): detects coordinated low-and-slow
+  scraping — many distinct IPs with identical UA, no referer, 1–3 requests each.
+  Groups into `/24` subnets and auto-creates `CHALLENGE` rules. Tunable via
+  `ICV_WAF_CLOUD_SPRAY_MIN_IPS` (default 20) and
+  `ICV_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP` (default 3).
+- **Management commands**: `icv_waf_block` and `icv_waf_unblock` for operator
+  control.
+  - `manage.py icv_waf_block 203.0.113.42 --reason "scanner" --ttl 24`
+  - `manage.py icv_waf_unblock 203.0.113.42 [--delete]`
+
+### Fixed
+
+- **N+1 query in `detect_unsolved_challenges`**: replaced per-IP
+  `ChallengeToken.exists()` + 2× `RequestLog.count()` with three prefetch
+  queries. `O(3)` instead of `O(3n)` for `n` challenged IPs.
+
 ## [0.6.0] - 2026-04-08
 
 ### Added
