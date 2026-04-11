@@ -3109,6 +3109,70 @@ class TestRuleEngineHelpers:
         assert _score_path("/") == 0.0
         assert _score_path("/about/team/") == 0.0
 
+    def test_score_path_default_patterns_cover_common_probes(self):
+        """Default pattern list catches the credential/webshell probes seen in production.
+
+        Regression for the v0.7 staging sample: probes like /.env, /.git/config,
+        /alfashell.php, /onvif/device_service were logged as 'allowed' because
+        the default pattern list did not cover them or the version deployed
+        predated path scoring entirely. v0.9.0 expanded the defaults to cover
+        these probe classes.
+        """
+        from icv_waf.services.rule_engine import _score_path
+
+        probes = [
+            "/.env",
+            "/.env.production",
+            "/.git/config",
+            "/.aws/credentials",
+            "/.ssh/id_rsa",
+            "/.bash_history",
+            "/wp-config.php",
+            "/wp-admin/",
+            "/wp-login.php",
+            "/xmlrpc.php",
+            "/alfashell.php",
+            "/shell.php",
+            "/c99.php",
+            "/r57.php",
+            "/filemanager.php",
+            "/phpinfo.php",
+            "/phpmyadmin/index.php",
+            "/onvif/device_service",
+            "/HNAP1",
+            "/boaform/admin/formLogin",
+            "/backup.zip",
+            "/dump.sql",
+            "/db.sqlite",
+        ]
+        for probe in probes:
+            assert _score_path(probe) > 0, f"probe {probe!r} did not score"
+
+    def test_score_path_does_not_catch_legitimate_django_paths(self):
+        """Paths a real Django app would serve must NOT trigger path scoring.
+
+        Guards against over-broad patterns (e.g. we deliberately dropped
+        ``.ini`` and ``.conf`` from the defaults because real apps use them).
+        """
+        from icv_waf.services.rule_engine import _score_path
+
+        legit_paths = [
+            "/",
+            "/en/",
+            "/products/barbour-jacket/",
+            "/search/?q=boots",
+            "/cart/",
+            "/checkout/",
+            "/accounts/login/",
+            "/api/v1/products/",
+            "/robots.txt",
+            "/sitemap.xml",
+            "/static/css/app.css",
+            "/media/product-images/foo.jpg",
+        ]
+        for path in legit_paths:
+            assert _score_path(path) == 0.0, f"legitimate path {path!r} triggered scoring"
+
     def test_score_path_is_capped_at_10(self):
         """Accumulated score is capped at 10.0 even when many patterns match."""
         from icv_waf.services.rule_engine import _score_path

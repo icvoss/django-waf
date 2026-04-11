@@ -117,30 +117,78 @@ ICV_WAF_GEOIP_PATH: str | None = getattr(settings, "ICV_WAF_GEOIP_PATH", None)
 # a 405 response before any rule evaluation. Set to None to allow all methods.
 ICV_WAF_ALLOWED_METHODS: list[str] | None = getattr(settings, "ICV_WAF_ALLOWED_METHODS", None)
 
-# Regex patterns for suspicious paths (credential probes, config files).
-# Matched paths add to the anomaly score during UA scoring.
+# Regex patterns for suspicious paths (credential probes, known webshells,
+# backup archives, and vendor-specific exploit targets).
+#
+# Each matched pattern adds ICV_WAF_SUSPICIOUS_PATH_SCORE to the request's
+# anomaly score. Patterns are picked so that a legitimate user on a Django
+# site is extremely unlikely to trigger them — any match is a strong signal.
+#
+# Patterns that would overlap legitimate apps (``.ini``, ``.conf``, ``.aspx``,
+# ``.jsp``, ``/cgi-bin/``) are intentionally omitted to keep the
+# false-positive rate near-zero on mixed-tech estates.
+#
+# Patterns use re.search (anywhere-in-path, case-insensitive). Anchor with
+# ^ or $ when position matters.
 ICV_WAF_SUSPICIOUS_PATH_PATTERNS: list[str] = getattr(
     settings,
     "ICV_WAF_SUSPICIOUS_PATH_PATTERNS",
     [
+        # Environment and secrets files
         r"\.env",
-        r"wp-config\.php",
-        r"phpinfo",
+        r"\.aws",
+        r"\.ssh",
+        r"id_rsa",
+        r"id_dsa",
+        r"\.pem$",
+        r"\.key$",
         r"credentials",
+        r"\.bash_history",
+        r"\.zsh_history",
+        # Config files (framework-specific — avoid broad ``.conf``/``.ini``)
+        r"wp-config\.php",
         r"config\.php",
         r"settings\.py",
+        r"/admin/config",
         r"\.yml$",
         r"\.yaml$",
-        r"\.json$",
-        r"\.sql$",
-        r"\.bak$",
+        # Version control exposure
         r"\.git",
+        r"\.svn",
+        r"\.hg",
+        # Database and backup artefacts
+        r"\.sql$",
+        r"\.sql\.gz$",
+        r"\.bak$",
+        r"\.backup$",
+        r"dump\.sql",
+        r"backup\.zip",
+        r"db\.sqlite",
+        # WordPress exploit targets
         r"wp-admin",
         r"wp-login",
         r"xmlrpc\.php",
-        r"/admin/config",
-        r"\.aws",
-        r"\.ssh",
+        # Generic webshells (named explicitly — avoid broad plugin/upload
+        # wildcards that would catch legitimate WP sites)
+        r"shell\.php",
+        r"alfa.*\.php",
+        r"r57\.php",
+        r"c99\.php",
+        r"filemanager\.php",
+        r"webshell",
+        r"cmd\.php",
+        r"/eval\.php",
+        # Information disclosure
+        r"phpinfo",
+        r"phpmyadmin",
+        r"/server-status",
+        r"/server-info",
+        # IoT / vendor exploits (path-anchored to avoid colliding with
+        # legitimate /onvif-meeting-room-booking etc.)
+        r"/onvif/",
+        r"/boaform/",
+        r"/HNAP1",
+        r"/goform/",
     ],
 )
 

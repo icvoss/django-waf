@@ -5,6 +5,65 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-04-11
+
+### Changed — defaults
+
+- **Expanded default `ICV_WAF_SUSPICIOUS_PATH_PATTERNS`** from 18 to 45
+  patterns, driven by production data from the 0.7 → 0.8.1 upgrade. New
+  categories covered:
+  - SSH key files (`id_rsa`, `id_dsa`, `.pem`, `.key`)
+  - Shell history files (`.bash_history`, `.zsh_history`)
+  - Additional VCS metadata (`.svn`, `.hg`)
+  - Backup archives (`.sql.gz`, `.backup`, `dump.sql`, `backup.zip`, `db.sqlite`)
+  - Named webshells (`alfa*.php`, `shell.php`, `r57.php`, `c99.php`,
+    `filemanager.php`, `c99.php`, `webshell`, `cmd.php`, `eval.php`)
+  - Information disclosure (`phpmyadmin`, `/server-status`, `/server-info`)
+  - IoT/router exploits (`/onvif/`, `/boaform/`, `/HNAP1`, `/goform/`)
+
+  **Omissions intentional:** `.ini`, `.conf`, `.asp`, `.aspx`, `.jsp`, and
+  `/cgi-bin/` are **not** included because they collide with legitimate
+  traffic on mixed-tech estates. Pattern additions are selected so that
+  legitimate Django, WordPress, and SPA paths do not trigger scoring.
+
+- **`ICV_WAF_SUSPICIOUS_PATH_SCORE` remains at 3.0**. A previous plan to
+  raise it to 5.0 (pushing single probes from LOGGED → CHALLENGED) was
+  dropped after production data showed ~44% of the challenge tier was
+  already hitting real browsers. Raising this would have compounded the
+  false-positive rate. Tune per consuming project via settings.
+
+### Added
+
+- **`RequestLog.matched_rule_type.help_text`**: documents the common
+  misreading that `matched_rule_type="block"` means "the request was
+  blocked". It does not — it means the matching rule came from the
+  `BlockRule` table. A `BlockRule` with `action="challenge"` produces
+  `matched_rule_type="block"` and `verdict="challenged"`. **Always use
+  the `verdict` column for enforcement reporting.**
+
+### Migration
+
+- `0005_alter_requestlog_matched_rule_type` — schema-level no-op (only
+  adds `help_text` to the field). Safe to apply on a running system; no
+  table rewrite, no downtime. Run `manage.py migrate icv_waf` after
+  upgrading.
+
+### Notes for operators
+
+The production data that drove this release revealed three ops-side
+issues that are **not package bugs**:
+
+1. **GeoIP database not installed** on some deployments →
+   `country_code` is always empty. Install `geoip2` + the MaxMind
+   GeoLite2-Country database and set `ICV_WAF_GEOIP_PATH`.
+2. **Repeat-offender IPs keep returning** after rate-limit windows
+   expire. Use `manage.py icv_waf_block <ip> --ttl 168 --reason "..."`
+   to promote them to persistent `BlockRule` rows, or add the /24 to
+   the upstream nginx blocklist so they never reach Django.
+3. **Challenge tier firing on ~44% real browsers**: if you see this,
+   lower `ICV_WAF_SCORE_THRESHOLD_CHALLENGE` sensitivity or add more
+   patterns to `ICV_WAF_CHALLENGE_NO_REFERER_EXEMPT_PATHS`.
+
 ## [0.8.1] - 2026-04-11
 
 ### Fixed

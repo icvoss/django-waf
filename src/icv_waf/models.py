@@ -351,6 +351,13 @@ class RequestLog(BaseModel):
         blank=True,
         default="",
         verbose_name=_("matched rule type"),
+        help_text=_(
+            "Which rule table matched — 'block' = a BlockRule, 'allow' = an "
+            "AllowRule. This is the source table, NOT the enforced action: a "
+            "BlockRule with action=challenge produces matched_rule_type='block' "
+            "and verdict='challenged'. Use the verdict column for enforcement "
+            "reporting; use this column for rule-source auditing."
+        ),
     )
     anomaly_score = models.DecimalField(
         max_digits=4,
