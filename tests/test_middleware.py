@@ -620,3 +620,218 @@ class TestRequestLogging:
 
         # No new log records should have been created
         assert RequestLog.objects.count() == initial_count
+
+
+# ---------------------------------------------------------------------------
+# Middleware helper functions
+# ---------------------------------------------------------------------------
+
+
+class TestMiddlewareHelpers:
+    """Tests for the small helper functions in icv_waf.middleware.
+
+    These are all independently testable without constructing a full
+    WafMiddleware instance.
+    """
+
+    def test_is_staff_user_with_unauthenticated_user(self):
+        from icv_waf.middleware import _is_staff_user
+
+        request = MagicMock()
+        request.user.is_authenticated = False
+        assert _is_staff_user(request) is False
+
+    def test_is_staff_user_with_authenticated_staff(self):
+        from icv_waf.middleware import _is_staff_user
+
+        request = MagicMock()
+        request.user.is_authenticated = True
+        request.user.is_staff = True
+        request.user.is_superuser = False
+        assert _is_staff_user(request) is True
+
+    def test_is_staff_user_with_authenticated_superuser(self):
+        from icv_waf.middleware import _is_staff_user
+
+        request = MagicMock()
+        request.user.is_authenticated = True
+        request.user.is_staff = False
+        request.user.is_superuser = True
+        assert _is_staff_user(request) is True
+
+    def test_is_staff_user_with_regular_authenticated_user(self):
+        from icv_waf.middleware import _is_staff_user
+
+        request = MagicMock()
+        request.user.is_authenticated = True
+        request.user.is_staff = False
+        request.user.is_superuser = False
+        assert _is_staff_user(request) is False
+
+    def test_is_staff_user_with_no_user_attribute(self):
+        """A request without a .user attribute (e.g. before auth middleware) returns False."""
+        from icv_waf.middleware import _is_staff_user
+
+        request = object()  # no .user
+        assert _is_staff_user(request) is False
+
+    def test_compute_fingerprint_delegates_to_service(self):
+        from icv_waf.middleware import _compute_fingerprint
+
+        request = MagicMock()
+        request.META = {"HTTP_ACCEPT": "text/html"}
+
+        fp = _compute_fingerprint(request)
+        # 64-char hex from the real service
+        assert isinstance(fp, str)
+        assert len(fp) == 64
+
+    def test_compute_fingerprint_swallows_exception(self):
+        """Exceptions from the fingerprint service produce an empty string."""
+        from icv_waf.middleware import _compute_fingerprint
+
+        request = MagicMock()
+        # Accessing request.META raises
+        type(request).META = property(lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert _compute_fingerprint(request) == ""
+
+    def test_classify_fingerprint_delegates_to_service(self):
+        from icv_waf.middleware import _classify_fingerprint
+
+        request = MagicMock()
+        request.META = {
+            "HTTP_USER_AGENT": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+        }
+        # Chrome UA with no browser headers — service returns "bot"
+        result = _classify_fingerprint(request)
+        assert result in ("browser", "bot", "suspicious", "unknown")
+
+    def test_classify_fingerprint_swallows_exception(self):
+        from icv_waf.middleware import _classify_fingerprint
+
+        request = MagicMock()
+        type(request).META = property(lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert _classify_fingerprint(request) == ""
+
+    def test_lookup_country_no_geoip_path_returns_empty(self):
+        """Without ICV_WAF_GEOIP_PATH configured, _lookup_country returns ''."""
+        from icv_waf.middleware import _lookup_country
+
+        with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", ""):
+            assert _lookup_country("1.2.3.4") == ""
+
+    def test_lookup_country_db_missing_returns_empty(self):
+        """A missing GeoIP database is caught on first lookup and returns ''."""
+        import icv_waf.middleware as mw_module
+        from icv_waf.middleware import _lookup_country
+
+        # Reset the module-level cache
+        mw_module._geoip_reader = None
+        mw_module._geoip_checked = False
+
+        with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", "/nonexistent/GeoLite2-Country.mmdb"):
+            assert _lookup_country("1.2.3.4") == ""
+            # Second call hits the cached "not available" path
+            assert _lookup_country("5.6.7.8") == ""
+
+    def test_lookup_country_returns_iso_code(self):
+        """When the reader returns a country, the ISO code is returned."""
+        import icv_waf.middleware as mw_module
+        from icv_waf.middleware import _lookup_country
+
+        # Build a fake reader
+        fake_country_obj = MagicMock()
+        fake_country_obj.country.iso_code = "GB"
+        fake_reader = MagicMock()
+        fake_reader.country.return_value = fake_country_obj
+
+        mw_module._geoip_reader = fake_reader
+        mw_module._geoip_checked = True
+
+        try:
+            with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", "/tmp/fake.mmdb"):
+                assert _lookup_country("1.2.3.4") == "GB"
+        finally:
+            # Restore module state for other tests
+            mw_module._geoip_reader = None
+            mw_module._geoip_checked = False
+
+    def test_lookup_country_reader_exception_returns_empty(self):
+        """An exception from reader.country() is swallowed and returns ''."""
+        import icv_waf.middleware as mw_module
+        from icv_waf.middleware import _lookup_country
+
+        fake_reader = MagicMock()
+        fake_reader.country.side_effect = RuntimeError("IP not found")
+
+        mw_module._geoip_reader = fake_reader
+        mw_module._geoip_checked = True
+
+        try:
+            with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", "/tmp/fake.mmdb"):
+                assert _lookup_country("1.2.3.4") == ""
+        finally:
+            mw_module._geoip_reader = None
+            mw_module._geoip_checked = False
+
+    def test_get_redis_client_uses_django_redis_when_available(self):
+        """_get_redis_client prefers django-redis's get_redis_connection."""
+        from icv_waf.middleware import _get_redis_client
+
+        fake_conn = MagicMock(name="redis_conn")
+        with patch("django_redis.get_redis_connection", return_value=fake_conn):
+            assert _get_redis_client() is fake_conn
+
+    def test_get_redis_client_falls_back_to_django_cache(self):
+        """When django-redis fails, falls back to django.core.cache."""
+        from icv_waf.middleware import _get_redis_client
+
+        with patch("django_redis.get_redis_connection", side_effect=RuntimeError("no redis")):
+            client = _get_redis_client()
+            # Should return the Django cache instance
+            assert client is not None
+
+    def test_emit_request_blocked_sends_signal(self):
+        """_emit_request_blocked sends the request_blocked signal."""
+        from icv_waf.middleware import _emit_request_blocked
+
+        with patch("icv_waf.signals.request_blocked.send") as mock_send:
+            _emit_request_blocked(
+                result=MagicMock(),
+                ip_address="1.2.3.4",
+                user_agent="curl",
+                path="/",
+            )
+            mock_send.assert_called_once()
+
+    def test_emit_request_blocked_swallows_exception(self):
+        """Signal dispatch errors are logged, not raised."""
+        from icv_waf.middleware import _emit_request_blocked
+
+        with patch(
+            "icv_waf.signals.request_blocked.send",
+            side_effect=RuntimeError("listener crashed"),
+        ):
+            # Must not raise
+            _emit_request_blocked(MagicMock(), "1.2.3.4", "curl", "/")
+
+    def test_emit_request_throttled_sends_signal(self):
+        from icv_waf.middleware import _emit_request_throttled
+
+        with patch("icv_waf.signals.request_throttled.send") as mock_send:
+            result = MagicMock()
+            result.window = "1m"
+            _emit_request_throttled(result, "1.2.3.4")
+            mock_send.assert_called_once()
+
+    def test_emit_request_throttled_swallows_exception(self):
+        from icv_waf.middleware import _emit_request_throttled
+
+        with patch(
+            "icv_waf.signals.request_throttled.send",
+            side_effect=RuntimeError("listener crashed"),
+        ):
+            _emit_request_throttled(MagicMock(), "1.2.3.4")

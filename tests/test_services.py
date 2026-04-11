@@ -30,6 +30,13 @@ from icv_waf.services.challenge_service import (
     validate_pass_cookie,
     verify_challenge_solution,
 )
+from icv_waf.services.fingerprint import (
+    classify_fingerprint,
+    compute_fingerprint,
+    is_known_fingerprint,
+    register_known_fingerprint,
+    score_fingerprint_mismatch,
+)
 from icv_waf.services.rate_limiter import check_rate_limit
 from icv_waf.services.rule_engine import (
     RuleCache,
@@ -2629,3 +2636,609 @@ class TestDetectUnsolvedChallenges:
 
         assert "unsolved_challenge_rules" in result
         assert "total_rules_created" in result
+
+
+# ---------------------------------------------------------------------------
+# fingerprint
+# ---------------------------------------------------------------------------
+
+
+# Reusable realistic browser and bot META dicts.
+_CHROME_META = {
+    "HTTP_ACCEPT": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+    "HTTP_ACCEPT_LANGUAGE": "en-GB,en;q=0.9",
+    "HTTP_ACCEPT_ENCODING": "gzip, deflate, br",
+    "HTTP_SEC_CH_UA": '"Chromium";v="120", "Not?A_Brand";v="8"',
+    "HTTP_SEC_CH_UA_MOBILE": "?0",
+    "HTTP_SEC_CH_UA_PLATFORM": '"macOS"',
+    "HTTP_SEC_FETCH_SITE": "none",
+    "HTTP_SEC_FETCH_MODE": "navigate",
+    "HTTP_SEC_FETCH_DEST": "document",
+    "HTTP_SEC_FETCH_USER": "?1",
+    "HTTP_CONNECTION": "keep-alive",
+    "HTTP_UPGRADE_INSECURE_REQUESTS": "1",
+}
+
+_CHROME_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+class TestComputeFingerprint:
+    """Tests for compute_fingerprint()."""
+
+    def test_returns_sha256_hex_string(self):
+        """Fingerprint is a 64-char hex SHA-256 hash."""
+        fp = compute_fingerprint(_CHROME_META)
+        assert isinstance(fp, str)
+        assert len(fp) == 64
+        assert all(c in "0123456789abcdef" for c in fp)
+
+    def test_identical_meta_produces_identical_hash(self):
+        """Two identical META dicts produce the same fingerprint."""
+        assert compute_fingerprint(_CHROME_META) == compute_fingerprint(dict(_CHROME_META))
+
+    def test_different_meta_produces_different_hash(self):
+        """Different headers produce different fingerprints."""
+        alt = dict(_CHROME_META)
+        alt["HTTP_ACCEPT_LANGUAGE"] = "fr-FR,fr;q=0.9"
+        assert compute_fingerprint(_CHROME_META) != compute_fingerprint(alt)
+
+    def test_empty_meta_produces_stable_hash(self):
+        """An empty META dict still produces a valid (all-empty) fingerprint hash."""
+        fp = compute_fingerprint({})
+        assert len(fp) == 64
+        # Deterministic — repeat call produces the same hash
+        assert compute_fingerprint({}) == fp
+
+    def test_missing_header_is_treated_as_empty(self):
+        """A missing header produces the same hash as an empty-string header."""
+        meta_missing = dict(_CHROME_META)
+        del meta_missing["HTTP_SEC_CH_UA"]
+        meta_empty = dict(_CHROME_META)
+        meta_empty["HTTP_SEC_CH_UA"] = ""
+        assert compute_fingerprint(meta_missing) == compute_fingerprint(meta_empty)
+
+    def test_normalisation_strips_and_lowercases(self):
+        """Header values are stripped and lowercased before hashing."""
+        meta_a = dict(_CHROME_META)
+        meta_a["HTTP_ACCEPT_LANGUAGE"] = "EN-GB,EN;q=0.9"
+        meta_b = dict(_CHROME_META)
+        meta_b["HTTP_ACCEPT_LANGUAGE"] = "  en-gb,en;q=0.9  "
+        assert compute_fingerprint(meta_a) == compute_fingerprint(meta_b)
+
+
+class TestScoreFingerprintMismatch:
+    """Tests for score_fingerprint_mismatch()."""
+
+    def test_empty_ua_returns_zero(self):
+        """No UA claim — nothing to verify against."""
+        assert score_fingerprint_mismatch("", _CHROME_META) == 0.0
+
+    def test_real_chrome_scores_zero(self):
+        """A real Chrome UA with full browser headers scores 0.0."""
+        assert score_fingerprint_mismatch(_CHROME_UA, _CHROME_META) == 0.0
+
+    def test_chrome_ua_without_sec_ch_ua_adds_2(self):
+        """Chrome 89+ must send Sec-CH-UA; its absence is a +2.0 deterministic signal."""
+        meta = dict(_CHROME_META)
+        meta["HTTP_SEC_CH_UA"] = ""
+        score = score_fingerprint_mismatch(_CHROME_UA, meta)
+        assert score >= 2.0
+
+    def test_chrome_under_89_does_not_require_sec_ch_ua(self):
+        """Chrome versions below 89 are not penalised for missing Sec-CH-UA."""
+        old_chrome = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/80.0.3987.149 Safari/537.36"
+        )
+        meta = dict(_CHROME_META)
+        meta["HTTP_SEC_CH_UA"] = ""
+        # Chrome 80 + no Sec-CH-UA must not trigger the +2.0 signal on its own
+        assert score_fingerprint_mismatch(old_chrome, meta) < 2.0
+
+    def test_browser_ua_without_sec_fetch_adds_1_5(self):
+        """A browser UA without any Sec-Fetch-* headers scores at least 1.5."""
+        meta = {k: v for k, v in _CHROME_META.items() if not k.startswith("HTTP_SEC_FETCH_")}
+        score = score_fingerprint_mismatch(_CHROME_UA, meta)
+        assert score >= 1.5
+
+    def test_browser_ua_without_accept_language_adds_1(self):
+        """A browser UA without Accept-Language scores at least 1.0."""
+        meta = dict(_CHROME_META)
+        meta["HTTP_ACCEPT_LANGUAGE"] = ""
+        score = score_fingerprint_mismatch(_CHROME_UA, meta)
+        assert score >= 1.0
+
+    def test_browser_ua_with_star_accept_language_adds_1(self):
+        """Accept-Language: * is treated as missing (bots fall back to this)."""
+        meta = dict(_CHROME_META)
+        meta["HTTP_ACCEPT_LANGUAGE"] = "*"
+        score = score_fingerprint_mismatch(_CHROME_UA, meta)
+        assert score >= 1.0
+
+    def test_browser_ua_with_wildcard_accept_adds_0_5(self):
+        """Accept: */* from a claimed browser is a weak but present signal."""
+        meta = dict(_CHROME_META)
+        meta["HTTP_ACCEPT"] = "*/*"
+        score = score_fingerprint_mismatch(_CHROME_UA, meta)
+        assert score >= 0.5
+
+    def test_python_requests_claiming_chrome_scores_5(self):
+        """A bot (no browser headers) claiming to be Chrome hits the 5.0 cap."""
+        bot_meta = {"HTTP_ACCEPT": "*/*"}
+        score = score_fingerprint_mismatch(_CHROME_UA, bot_meta)
+        assert score == 5.0
+
+    def test_score_is_capped_at_5(self):
+        """The returned score never exceeds 5.0 regardless of signal count."""
+        score = score_fingerprint_mismatch(_CHROME_UA, {})
+        assert score <= 5.0
+
+    def test_non_browser_ua_scores_zero(self):
+        """A UA that doesn't claim to be a browser produces no mismatch signals."""
+        score = score_fingerprint_mismatch("curl/7.88.1", {})
+        assert score == 0.0
+
+
+class TestClassifyFingerprint:
+    """Tests for classify_fingerprint()."""
+
+    def test_real_browser_classifies_as_browser(self):
+        """A real Chrome request scores 0 and classifies as 'browser'."""
+        assert classify_fingerprint(_CHROME_UA, _CHROME_META) == "browser"
+
+    def test_python_requests_claiming_chrome_classifies_as_bot(self):
+        """A bot with Chrome UA scores 5.0 and classifies as 'bot' (>= 3.0)."""
+        assert classify_fingerprint(_CHROME_UA, {"HTTP_ACCEPT": "*/*"}) == "bot"
+
+    def test_partial_mismatch_classifies_as_suspicious(self):
+        """A score between 1.5 and 3.0 classifies as 'suspicious'."""
+        meta = dict(_CHROME_META)
+        meta["HTTP_ACCEPT_LANGUAGE"] = ""  # +1.0
+        meta["HTTP_ACCEPT"] = "*/*"  # +0.5
+        # Total 1.5 — just enters the suspicious band
+        assert classify_fingerprint(_CHROME_UA, meta) == "suspicious"
+
+    def test_no_ua_classifies_as_unknown(self):
+        """An empty UA with no signals classifies as 'unknown'."""
+        assert classify_fingerprint("", {}) == "unknown"
+
+    def test_non_browser_ua_classifies_as_browser(self):
+        """A non-browser UA like curl scores 0.0 and falls through to 'browser'.
+
+        classify_fingerprint reserves 'unknown' for the empty-UA case.
+        """
+        assert classify_fingerprint("curl/7.88.1", {}) == "browser"
+
+
+class TestKnownFingerprintRegistry:
+    """Tests for register_known_fingerprint and is_known_fingerprint."""
+
+    def test_register_calls_incr_and_expire(self):
+        """register_known_fingerprint increments a counter and sets a 30-day TTL."""
+        redis = MagicMock()
+        register_known_fingerprint("abc123", redis)
+
+        redis.incr.assert_called_once_with("waf:known_fp:abc123")
+        redis.expire.assert_called_once()
+        # TTL is 30 days (86400 * 30)
+        assert redis.expire.call_args[0][1] == 86400 * 30
+
+    def test_register_empty_hash_is_noop(self):
+        """Empty fingerprint hash skips the Redis call."""
+        redis = MagicMock()
+        register_known_fingerprint("", redis)
+        redis.incr.assert_not_called()
+
+    def test_register_swallows_redis_exception(self):
+        """A Redis error during register is silently swallowed — never raises."""
+        redis = MagicMock()
+        redis.incr.side_effect = RuntimeError("redis down")
+        # Must not raise
+        register_known_fingerprint("abc123", redis)
+
+    def test_is_known_returns_true_when_counter_present(self):
+        """is_known_fingerprint returns True when the Redis key has a value."""
+        redis = MagicMock()
+        redis.get.return_value = b"1"
+        assert is_known_fingerprint("abc123", redis) is True
+        redis.get.assert_called_once_with("waf:known_fp:abc123")
+
+    def test_is_known_returns_false_when_counter_absent(self):
+        """is_known_fingerprint returns False when the Redis key is missing."""
+        redis = MagicMock()
+        redis.get.return_value = None
+        assert is_known_fingerprint("abc123", redis) is False
+
+    def test_is_known_empty_hash_returns_false(self):
+        """Empty fingerprint hash short-circuits to False without calling Redis."""
+        redis = MagicMock()
+        assert is_known_fingerprint("", redis) is False
+        redis.get.assert_not_called()
+
+    def test_is_known_swallows_redis_exception(self):
+        """A Redis error during lookup returns False — never raises."""
+        redis = MagicMock()
+        redis.get.side_effect = RuntimeError("redis down")
+        assert is_known_fingerprint("abc123", redis) is False
+
+
+# ---------------------------------------------------------------------------
+# rule_engine — internal helpers
+# ---------------------------------------------------------------------------
+
+
+class TestRuleEngineHelpers:
+    """Tests for rule_engine internal helper functions.
+
+    These helpers are pure (or Redis-mockable) and easy to exercise directly
+    without going through the full evaluate_request path.
+    """
+
+    # ------------------------------------------------------------------ _match_ua
+
+    def test_match_ua_exact(self):
+        from icv_waf.services.rule_engine import _match_ua
+
+        assert _match_ua("curl/7.88", "curl/7.88", "exact") is True
+        assert _match_ua("curl/7.88", "curl/7.87", "exact") is False
+
+    def test_match_ua_contains_is_case_insensitive(self):
+        from icv_waf.services.rule_engine import _match_ua
+
+        assert _match_ua("Mozilla/5.0 Chrome/120", "chrome", "contains") is True
+        assert _match_ua("curl/7.88", "chrome", "contains") is False
+
+    def test_match_ua_regex(self):
+        from icv_waf.services.rule_engine import _match_ua
+
+        assert _match_ua("python-requests/2.31", r"python-\w+", "regex") is True
+        assert _match_ua("curl/7.88", r"python-\w+", "regex") is False
+
+    def test_match_ua_invalid_regex_returns_false(self):
+        """An invalid regex pattern is swallowed and returns False."""
+        from icv_waf.services.rule_engine import _match_ua
+
+        assert _match_ua("anything", "[unclosed", "regex") is False
+
+    def test_match_ua_unknown_match_type_returns_false(self):
+        from icv_waf.services.rule_engine import _match_ua
+
+        assert _match_ua("anything", "anything", "bogus") is False
+
+    # ------------------------------------------------------------------ _match_ip
+
+    def test_match_ip_exact(self):
+        from icv_waf.services.rule_engine import _match_ip
+
+        assert _match_ip("203.0.113.1", "203.0.113.1", "exact") is True
+        assert _match_ip("203.0.113.2", "203.0.113.1", "exact") is False
+
+    def test_match_ip_unknown_match_type_returns_false(self):
+        from icv_waf.services.rule_engine import _match_ip
+
+        assert _match_ip("203.0.113.1", "203.0.113.1", "regex") is False
+
+    # ------------------------------------------------------------------ _match_cidr
+
+    def test_match_cidr_within_range(self):
+        from icv_waf.services.rule_engine import _match_cidr
+
+        assert _match_cidr("10.0.0.42", "10.0.0.0/24") is True
+        assert _match_cidr("10.0.1.42", "10.0.0.0/24") is False
+
+    def test_match_cidr_invalid_pattern_returns_false(self):
+        """A garbage CIDR string returns False rather than raising."""
+        from icv_waf.services.rule_engine import _match_cidr
+
+        assert _match_cidr("10.0.0.42", "not-a-cidr") is False
+        assert _match_cidr("not-an-ip", "10.0.0.0/24") is False
+
+    # ------------------------------------------------------------------ _rule_matches
+
+    def test_rule_matches_composite_both_match(self):
+        """A composite rule requires both UA and IP/CIDR to match."""
+        from icv_waf.services.rule_engine import _rule_matches
+
+        rule = {
+            "rule_type": "composite",
+            "match_type": "contains",
+            "pattern": "python-requests||10.0.0.0/8",
+        }
+        assert _rule_matches(rule, "10.5.6.7", "python-requests/2.31") is True
+        # UA matches but IP does not
+        assert _rule_matches(rule, "203.0.113.1", "python-requests/2.31") is False
+        # IP matches but UA does not
+        assert _rule_matches(rule, "10.5.6.7", "Mozilla/5.0") is False
+
+    def test_rule_matches_composite_without_separator_returns_false(self):
+        """A composite rule with no `||` separator is a legacy fallback that cannot match."""
+        from icv_waf.services.rule_engine import _rule_matches
+
+        rule = {"rule_type": "composite", "match_type": "contains", "pattern": "something"}
+        assert _rule_matches(rule, "10.0.0.1", "Mozilla") is False
+
+    def test_rule_matches_unknown_rule_type_returns_false(self):
+        """An unknown rule_type falls through to False (defensive default)."""
+        from icv_waf.services.rule_engine import _rule_matches
+
+        rule = {"rule_type": "bogus", "match_type": "exact", "pattern": "x"}
+        assert _rule_matches(rule, "10.0.0.1", "Mozilla") is False
+
+    # ------------------------------------------------------------------ _record_rule_hit
+
+    def test_record_rule_hit_increments_and_expires(self):
+        from icv_waf.services.rule_engine import _record_rule_hit
+
+        redis = MagicMock()
+        _record_rule_hit("rule-123", redis)
+
+        redis.incr.assert_called_once_with("waf:rule_hits:rule-123")
+        redis.expire.assert_called_once_with("waf:rule_hits:rule-123", 86400 * 2)
+
+    def test_record_rule_hit_swallows_exception(self):
+        """Redis failures during hit recording must not propagate."""
+        from icv_waf.services.rule_engine import _record_rule_hit
+
+        redis = MagicMock()
+        redis.incr.side_effect = RuntimeError("redis down")
+        # Must not raise
+        _record_rule_hit("rule-123", redis)
+
+    # ------------------------------------------------------------------ _verify_rdns
+
+    def test_verify_rdns_cache_miss_resolves_and_caches(self):
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = MagicMock()
+        redis.get.return_value = None  # cache miss
+
+        with patch(
+            "icv_waf.services.rule_engine.socket.gethostbyaddr",
+            return_value=("crawl-1-2-3-4.googlebot.com", [], []),
+        ):
+            result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
+
+        assert result is True
+        redis.setex.assert_called_once()
+
+    def test_verify_rdns_cache_hit_uses_cached_hostname(self):
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = MagicMock()
+        redis.get.return_value = "bingbot-5-6-7-8.search.msn.com"
+
+        result = _verify_rdns("5.6.7.8", r"\.search\.msn\.com$", redis)
+
+        assert result is True
+        # No socket call — cached
+        redis.setex.assert_not_called()
+
+    def test_verify_rdns_cache_hit_bytes_value(self):
+        """A bytes-valued cache entry is decoded before matching."""
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = MagicMock()
+        redis.get.return_value = b"crawl-1-2-3-4.googlebot.com"
+
+        assert _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis) is True
+
+    def test_verify_rdns_resolution_failure_returns_false(self):
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = MagicMock()
+        redis.get.return_value = None
+
+        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr", side_effect=OSError("no ptr")):
+            assert _verify_rdns("203.0.113.1", r"\.googlebot\.com$", redis) is False
+
+    def test_verify_rdns_no_hostname_returns_false(self):
+        """Empty hostname (cached) short-circuits to False."""
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = MagicMock()
+        redis.get.return_value = ""
+        assert _verify_rdns("203.0.113.1", r"\.googlebot\.com$", redis) is False
+
+    def test_verify_rdns_invalid_pattern_returns_false(self):
+        """An invalid rDNS regex pattern is swallowed and returns False."""
+        from icv_waf.services.rule_engine import _verify_rdns
+
+        redis = MagicMock()
+        redis.get.return_value = "something.example.com"
+        assert _verify_rdns("1.2.3.4", "[unclosed", redis) is False
+
+    # ------------------------------------------------------------------ _action_to_verdict
+
+    def test_action_to_verdict_mapping(self):
+        from icv_waf.enums import RuleAction, Verdict
+        from icv_waf.services.rule_engine import _action_to_verdict
+
+        assert _action_to_verdict(RuleAction.BLOCK) == Verdict.BLOCKED
+        assert _action_to_verdict(RuleAction.CHALLENGE) == Verdict.CHALLENGED
+        assert _action_to_verdict(RuleAction.THROTTLE) == Verdict.THROTTLED
+        assert _action_to_verdict(RuleAction.LOG_ONLY) == Verdict.LOGGED
+
+    def test_action_to_verdict_unknown_defaults_to_blocked(self):
+        from icv_waf.enums import Verdict
+        from icv_waf.services.rule_engine import _action_to_verdict
+
+        assert _action_to_verdict("something-weird") == Verdict.BLOCKED
+
+    # ------------------------------------------------------------------ _score_to_verdict
+
+    def test_score_to_verdict_thresholds(self):
+        from icv_waf.enums import RuleAction, Verdict
+        from icv_waf.services.rule_engine import _score_to_verdict
+
+        # Below log threshold → ALLOWED
+        verdict, action = _score_to_verdict(0.0)
+        assert verdict == Verdict.ALLOWED
+        assert action is None
+
+        # Log threshold (default 3.0)
+        verdict, action = _score_to_verdict(3.5)
+        assert verdict == Verdict.LOGGED
+        assert action == RuleAction.LOG_ONLY
+
+        # Challenge threshold (default 5.0)
+        verdict, action = _score_to_verdict(5.5)
+        assert verdict == Verdict.CHALLENGED
+        assert action == RuleAction.CHALLENGE
+
+        # Block threshold (default 7.0)
+        verdict, action = _score_to_verdict(8.0)
+        assert verdict == Verdict.BLOCKED
+        assert action == RuleAction.BLOCK
+
+    # ------------------------------------------------------------------ _score_path
+
+    def test_score_path_matches_suspicious_patterns(self):
+        """Paths matching suspicious patterns accumulate score."""
+        from icv_waf.services.rule_engine import _score_path
+
+        # A clearly suspicious path hits at least one of the default patterns
+        score = _score_path("/wp-admin/")
+        assert score > 0
+
+    def test_score_path_clean_returns_zero(self):
+        from icv_waf.services.rule_engine import _score_path
+
+        assert _score_path("/") == 0.0
+        assert _score_path("/about/team/") == 0.0
+
+    def test_score_path_is_capped_at_10(self):
+        """Accumulated score is capped at 10.0 even when many patterns match."""
+        from icv_waf.services.rule_engine import _score_path
+
+        with (
+            patch(
+                "icv_waf.conf.ICV_WAF_SUSPICIOUS_PATH_PATTERNS",
+                [r"a", r"b", r"c", r"d", r"e", r"f", r"g", r"h", r"i", r"j", r"k"],
+            ),
+            patch("icv_waf.conf.ICV_WAF_SUSPICIOUS_PATH_SCORE", 2.0),
+        ):
+            assert _score_path("abcdefghijk") == 10.0
+
+    def test_score_path_skips_invalid_regex(self):
+        """Invalid regex patterns in config are skipped rather than raising."""
+        from icv_waf.services.rule_engine import _score_path
+
+        with (
+            patch("icv_waf.conf.ICV_WAF_SUSPICIOUS_PATH_PATTERNS", ["[unclosed", r"wp-admin"]),
+            patch("icv_waf.conf.ICV_WAF_SUSPICIOUS_PATH_SCORE", 2.0),
+        ):
+            # Invalid pattern is skipped; the valid one still matches
+            assert _score_path("/wp-admin/") == 2.0
+
+    # ------------------------------------------------------------------ _get_unsolved_challenge_count
+
+    def test_get_unsolved_challenge_count_no_key(self):
+        from icv_waf.services.rule_engine import _get_unsolved_challenge_count
+
+        redis = MagicMock()
+        redis.get.return_value = None
+        assert _get_unsolved_challenge_count("203.0.113.1", redis) == 0
+
+    def test_get_unsolved_challenge_count_returns_count(self):
+        from icv_waf.services.rule_engine import _get_unsolved_challenge_count
+
+        redis = MagicMock()
+        # First .get() returns the challenged counter, second returns the solved flag (None)
+        redis.get.side_effect = [b"5", None]
+        assert _get_unsolved_challenge_count("203.0.113.1", redis) == 5
+
+    def test_get_unsolved_challenge_count_clears_when_solved(self):
+        """If the solved flag is set, the counter is cleared and 0 is returned."""
+        from icv_waf.services.rule_engine import _get_unsolved_challenge_count
+
+        redis = MagicMock()
+        redis.get.side_effect = [b"5", b"1"]  # challenged count, solved flag
+        assert _get_unsolved_challenge_count("203.0.113.1", redis) == 0
+        redis.delete.assert_called_once_with("waf:challenged:203.0.113.1")
+
+    def test_get_unsolved_challenge_count_swallows_exception(self):
+        from icv_waf.services.rule_engine import _get_unsolved_challenge_count
+
+        redis = MagicMock()
+        redis.get.side_effect = RuntimeError("redis down")
+        assert _get_unsolved_challenge_count("203.0.113.1", redis) == 0
+
+    # ------------------------------------------------------------------ _create_escalation_rule
+
+    @pytest.mark.django_db
+    def test_create_escalation_rule_creates_auto_block(self):
+        """An escalation rule is created as source=AUTO with a TTL."""
+        from icv_waf.enums import RuleAction, RuleSource, RuleType
+        from icv_waf.models import BlockRule
+        from icv_waf.services.rule_engine import _create_escalation_rule
+
+        _create_escalation_rule("203.0.113.77")
+
+        rule = BlockRule.objects.get(pattern="203.0.113.77", source=RuleSource.AUTO)
+        assert rule.rule_type == RuleType.IP
+        assert rule.action == RuleAction.BLOCK
+        assert rule.is_active is True
+        assert rule.expires_at is not None
+
+    @pytest.mark.django_db
+    def test_create_escalation_rule_idempotent(self):
+        """Repeated calls update_or_create the same row, not duplicate it."""
+        from icv_waf.enums import RuleSource
+        from icv_waf.models import BlockRule
+        from icv_waf.services.rule_engine import _create_escalation_rule
+
+        _create_escalation_rule("203.0.113.78")
+        _create_escalation_rule("203.0.113.78")
+
+        rules = BlockRule.objects.filter(pattern="203.0.113.78", source=RuleSource.AUTO)
+        assert rules.count() == 1
+
+    @pytest.mark.django_db
+    def test_create_escalation_rule_swallows_db_exception(self):
+        """DB errors during escalation rule creation are logged, not raised."""
+        from icv_waf.services.rule_engine import _create_escalation_rule
+
+        with patch(
+            "icv_waf.models.BlockRule.objects.update_or_create",
+            side_effect=RuntimeError("db down"),
+        ):
+            # Must not raise
+            _create_escalation_rule("203.0.113.79")
+
+    # ------------------------------------------------------------------ _compile_ua_patterns
+
+    def test_compile_ua_patterns_handles_all_match_types(self):
+        """_compile_ua_patterns builds regexes for exact/contains/regex types."""
+        from icv_waf.services.rule_engine import _compile_ua_patterns
+
+        rules = [
+            {"id": "1", "rule_type": "ua", "match_type": "exact", "pattern": "curl/7.88"},
+            {"id": "2", "rule_type": "ua", "match_type": "contains", "pattern": "python"},
+            {"id": "3", "rule_type": "ua", "match_type": "regex", "pattern": r"bot-\d+"},
+            # Non-UA rules are skipped
+            {"id": "4", "rule_type": "ip", "match_type": "exact", "pattern": "1.1.1.1"},
+        ]
+        compiled = _compile_ua_patterns(rules)
+        assert len(compiled) == 3
+
+        # Each compiled entry is a (pattern, rule) tuple
+        patterns = {rule["id"]: pat for pat, rule in compiled}
+        assert patterns["1"].match("curl/7.88") is not None
+        assert patterns["2"].search("python-requests/2.31") is not None
+        assert patterns["3"].search("bot-42") is not None
+
+    def test_compile_ua_patterns_skips_invalid_regex(self):
+        """An invalid regex is logged and skipped, not propagated."""
+        from icv_waf.services.rule_engine import _compile_ua_patterns
+
+        rules = [
+            {"id": "bad", "rule_type": "ua", "match_type": "regex", "pattern": "[unclosed"},
+            {"id": "ok", "rule_type": "ua", "match_type": "contains", "pattern": "python"},
+        ]
+        compiled = _compile_ua_patterns(rules)
+        # Only the valid one makes it through
+        assert len(compiled) == 1
+        assert compiled[0][1]["id"] == "ok"

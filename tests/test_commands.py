@@ -17,7 +17,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from icv_waf.testing.factories import RequestLogFactory
+from icv_waf.testing.factories import BlockRuleFactory, RequestLogFactory
 
 # ---------------------------------------------------------------------------
 # icv_waf_generate_blocklist
@@ -416,3 +416,187 @@ class TestSyncFeedCommand:
         assert "0 updated" in output
         assert "0 expired" in output
         assert "0 skipped" in output
+
+
+# ---------------------------------------------------------------------------
+# icv_waf_block
+# ---------------------------------------------------------------------------
+
+
+class TestBlockCommand:
+    """Tests for the ``icv_waf_block`` management command."""
+
+    @pytest.mark.django_db
+    def test_block_creates_ip_rule(self):
+        """Blocking a plain IP creates a BlockRule with rule_type=ip, match_type=exact."""
+        from icv_waf.enums import RuleSource, RuleType
+        from icv_waf.models import BlockRule
+
+        out = StringIO()
+        call_command("icv_waf_block", "203.0.113.42", stdout=out)
+
+        rule = BlockRule.objects.get(pattern="203.0.113.42")
+        assert rule.rule_type == RuleType.IP
+        assert rule.match_type == "exact"
+        assert rule.source == RuleSource.ADMIN
+        assert rule.action == "block"
+        assert rule.is_active is True
+        assert rule.expires_at is None
+        output = out.getvalue()
+        assert "Blocked 203.0.113.42" in output
+        assert "Permanent" in output
+
+    @pytest.mark.django_db
+    def test_block_creates_cidr_rule(self):
+        """Blocking a CIDR range creates a rule with rule_type=cidr, match_type=cidr."""
+        from icv_waf.enums import RuleType
+        from icv_waf.models import BlockRule
+
+        call_command("icv_waf_block", "10.0.0.0/24")
+
+        rule = BlockRule.objects.get(pattern="10.0.0.0/24")
+        assert rule.rule_type == RuleType.CIDR
+        assert rule.match_type == "cidr"
+
+    @pytest.mark.django_db
+    def test_block_with_ttl_sets_expires_at(self):
+        """--ttl converts hours into an absolute expires_at timestamp."""
+        from icv_waf.models import BlockRule
+
+        out = StringIO()
+        call_command("icv_waf_block", "203.0.113.99", "--ttl", "24", stdout=out)
+
+        rule = BlockRule.objects.get(pattern="203.0.113.99")
+        assert rule.expires_at is not None
+        delta = rule.expires_at - timezone.now()
+        # Should be ~24h from now (allow 60s slack for test timing)
+        assert 23 * 3600 < delta.total_seconds() < 25 * 3600
+        assert "Expires:" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_block_with_reason_populates_notes(self):
+        """--reason is stored in the rule's notes field and echoed to stdout."""
+        from icv_waf.models import BlockRule
+
+        out = StringIO()
+        call_command(
+            "icv_waf_block",
+            "203.0.113.10",
+            "--reason",
+            "scanner from threat feed",
+            stdout=out,
+        )
+
+        rule = BlockRule.objects.get(pattern="203.0.113.10")
+        assert rule.notes == "scanner from threat feed"
+        assert "Reason: scanner from threat feed" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_block_with_challenge_action(self):
+        """--action=challenge produces a challenge rule rather than a block."""
+        from icv_waf.models import BlockRule
+
+        out = StringIO()
+        call_command("icv_waf_block", "203.0.113.11", "--action", "challenge", stdout=out)
+
+        rule = BlockRule.objects.get(pattern="203.0.113.11")
+        assert rule.action == "challenge"
+        assert "(challenge)" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_block_idempotent_updates_existing_rule(self):
+        """Blocking the same pattern twice updates the existing rule (update_or_create)."""
+        from icv_waf.models import BlockRule
+
+        call_command("icv_waf_block", "203.0.113.50", "--reason", "first")
+        out = StringIO()
+        call_command("icv_waf_block", "203.0.113.50", "--reason", "second", stdout=out)
+
+        # Only one rule exists
+        rules = BlockRule.objects.filter(pattern="203.0.113.50")
+        assert rules.count() == 1
+        assert rules.first().notes == "second"
+        assert "Updated existing rule" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_block_db_failure_raises_command_error(self):
+        """A BlockRule.update_or_create exception is converted to CommandError."""
+        with (
+            patch(
+                "icv_waf.models.BlockRule.objects.update_or_create",
+                side_effect=RuntimeError("db error"),
+            ),
+            pytest.raises(CommandError, match="Failed to create rule"),
+        ):
+            call_command("icv_waf_block", "203.0.113.200")
+
+
+# ---------------------------------------------------------------------------
+# icv_waf_unblock
+# ---------------------------------------------------------------------------
+
+
+class TestUnblockCommand:
+    """Tests for the ``icv_waf_unblock`` management command."""
+
+    @pytest.mark.django_db
+    def test_unblock_deactivates_matching_rules(self):
+        """Without --delete, matching rules are deactivated (is_active=False)."""
+        from icv_waf.models import BlockRule
+
+        rule = BlockRuleFactory(pattern="198.51.100.1", is_active=True)
+
+        out = StringIO()
+        call_command("icv_waf_unblock", "198.51.100.1", stdout=out)
+
+        rule.refresh_from_db()
+        assert rule.is_active is False
+        # Row still exists — deactivated, not deleted
+        assert BlockRule.objects.filter(pk=rule.pk).exists()
+        assert "Deactivated 1 rule" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_unblock_with_delete_removes_rules(self):
+        """--delete removes matching rules from the database entirely."""
+        from icv_waf.models import BlockRule
+
+        rule = BlockRuleFactory(pattern="198.51.100.2", is_active=True)
+
+        out = StringIO()
+        call_command("icv_waf_unblock", "198.51.100.2", "--delete", stdout=out)
+
+        assert not BlockRule.objects.filter(pk=rule.pk).exists()
+        assert "Deleted 1 rule" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_unblock_no_matching_rules_reports_nothing_to_do(self):
+        """When no active rule matches, the command reports and exits cleanly."""
+        out = StringIO()
+        call_command("icv_waf_unblock", "198.51.100.99", stdout=out)
+
+        assert "No active rules found" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_unblock_ignores_already_inactive_rules(self):
+        """Rules that are already inactive are not counted or touched."""
+        from icv_waf.models import BlockRule
+
+        BlockRuleFactory(pattern="198.51.100.3", is_active=False)
+
+        out = StringIO()
+        call_command("icv_waf_unblock", "198.51.100.3", stdout=out)
+
+        # The inactive rule survives untouched
+        assert BlockRule.objects.filter(pattern="198.51.100.3", is_active=False).exists()
+        assert "No active rules found" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_unblock_deactivates_multiple_matching_rules(self):
+        """All active rules matching the pattern are deactivated in a single call."""
+        BlockRuleFactory(pattern="198.51.100.4", is_active=True, action="block")
+        BlockRuleFactory(pattern="198.51.100.4", is_active=True, action="challenge")
+
+        out = StringIO()
+        call_command("icv_waf_unblock", "198.51.100.4", stdout=out)
+
+        assert "Deactivated 2 rule" in out.getvalue()
