@@ -3306,3 +3306,462 @@ class TestRuleEngineHelpers:
         # Only the valid one makes it through
         assert len(compiled) == 1
         assert compiled[0][1]["id"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# geoip — MaxMind GeoLite2 install/update service
+# ---------------------------------------------------------------------------
+
+
+class TestGeoIPService:
+    """Tests for ``services.geoip.install_geoip_database`` and its helpers.
+
+    All network I/O is mocked — no real MaxMind HTTP is performed.
+    """
+
+    def _make_fake_archive(self, tmp_path, edition: str = "GeoLite2-Country") -> bytes:
+        """Build an in-memory tar.gz matching MaxMind's archive layout.
+
+        Returns the raw bytes; the inner ``.mmdb`` file contains a
+        placeholder that is NOT a real MaxMind database. Verification
+        must be mocked when this archive is used.
+        """
+        import io
+        import tarfile as tf
+
+        buf = io.BytesIO()
+        with tf.open(fileobj=buf, mode="w:gz") as tar:
+            data = b"placeholder-mmdb-bytes"
+            info = tf.TarInfo(name=f"{edition}_20260411/{edition}.mmdb")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        return buf.getvalue()
+
+    # --------------------------------------------------------------- check_geoip2_available
+
+    def test_check_geoip2_available_raises_when_missing(self):
+        """If geoip2 is not importable, a GeoIPNotInstalledError is raised with install hint."""
+        from icv_waf.services.geoip import GeoIPNotInstalledError, check_geoip2_available
+
+        # Force the import to fail inside the function
+        with (
+            patch.dict("sys.modules", {"geoip2": None, "geoip2.database": None}),
+            pytest.raises(GeoIPNotInstalledError, match="pip install django-waf\\[geoip\\]"),
+        ):
+            check_geoip2_available()
+
+    def test_check_geoip2_available_passes_when_present(self):
+        """If geoip2 is importable, check_geoip2_available is a no-op."""
+        from icv_waf.services.geoip import check_geoip2_available
+
+        # A fake geoip2.database module is enough to satisfy the import
+        fake_module = MagicMock()
+        with patch.dict("sys.modules", {"geoip2": MagicMock(), "geoip2.database": fake_module}):
+            # Must not raise
+            check_geoip2_available()
+
+    # --------------------------------------------------------------- resolve_license_key
+
+    def test_resolve_license_key_prefers_explicit_argument(self):
+        from icv_waf.services.geoip import resolve_license_key
+
+        with patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "from-settings"):
+            assert resolve_license_key("from-cli") == "from-cli"
+
+    def test_resolve_license_key_falls_back_to_setting(self):
+        from icv_waf.services.geoip import resolve_license_key
+
+        with patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "from-settings"):
+            assert resolve_license_key(None) == "from-settings"
+
+    def test_resolve_license_key_missing_raises(self):
+        from icv_waf.services.geoip import GeoIPLicenseMissingError, resolve_license_key
+
+        with (
+            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", ""),
+            pytest.raises(GeoIPLicenseMissingError, match="MaxMind"),
+        ):
+            resolve_license_key(None)
+
+    # --------------------------------------------------------------- resolve_output_path
+
+    def test_resolve_output_path_prefers_explicit_argument(self, tmp_path):
+        from icv_waf.services.geoip import resolve_output_path
+
+        result = resolve_output_path(str(tmp_path / "custom.mmdb"))
+        assert result == tmp_path / "custom.mmdb"
+
+    def test_resolve_output_path_falls_back_to_setting(self, tmp_path):
+        from icv_waf.services.geoip import resolve_output_path
+
+        configured = str(tmp_path / "from-settings.mmdb")
+        with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", configured):
+            assert resolve_output_path(None) == tmp_path / "from-settings.mmdb"
+
+    def test_resolve_output_path_falls_back_to_default(self):
+        from icv_waf.services.geoip import DEFAULT_OUTPUT_PATH, resolve_output_path
+
+        with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", None):
+            assert str(resolve_output_path(None)) == DEFAULT_OUTPUT_PATH
+
+    # --------------------------------------------------------------- is_database_fresh
+
+    def test_is_database_fresh_zero_max_age(self, tmp_path):
+        """max_age_days=0 always returns False (disabled freshness check)."""
+        from icv_waf.services.geoip import is_database_fresh
+
+        path = tmp_path / "db.mmdb"
+        path.write_bytes(b"content")
+        assert is_database_fresh(path, 0) is False
+
+    def test_is_database_fresh_missing_file(self, tmp_path):
+        from icv_waf.services.geoip import is_database_fresh
+
+        assert is_database_fresh(tmp_path / "nope.mmdb", 7) is False
+
+    def test_is_database_fresh_recent_file(self, tmp_path):
+        from icv_waf.services.geoip import is_database_fresh
+
+        path = tmp_path / "db.mmdb"
+        path.write_bytes(b"content")
+        # Just written — fresh within any sensible window
+        assert is_database_fresh(path, 7) is True
+
+    def test_is_database_fresh_old_file(self, tmp_path):
+        import os
+        import time
+
+        from icv_waf.services.geoip import is_database_fresh
+
+        path = tmp_path / "db.mmdb"
+        path.write_bytes(b"content")
+        # Backdate to 10 days ago
+        ten_days_ago = time.time() - (10 * 86400)
+        os.utime(path, (ten_days_ago, ten_days_ago))
+
+        assert is_database_fresh(path, 7) is False
+        assert is_database_fresh(path, 14) is True
+
+    # --------------------------------------------------------------- install_geoip_database (full flow)
+
+    def test_install_geoip_database_full_flow(self, tmp_path):
+        """Happy path: download, extract, verify, atomic rename — all mocked."""
+        from icv_waf.services.geoip import install_geoip_database
+
+        dest = tmp_path / "GeoLite2-Country.mmdb"
+        archive_bytes = self._make_fake_archive(tmp_path)
+
+        # Mock httpx.stream to return the fake archive
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_bytes = lambda chunk_size: [archive_bytes]
+
+        mock_context = MagicMock()
+        mock_context.__enter__ = MagicMock(return_value=mock_response)
+        mock_context.__exit__ = MagicMock(return_value=False)
+
+        # Mock geoip2.database.Reader so verification passes without a real mmdb
+        fake_reader = MagicMock()
+        fake_reader.__enter__ = MagicMock(return_value=fake_reader)
+        fake_reader.__exit__ = MagicMock(return_value=False)
+        fake_reader.metadata.return_value = MagicMock(build_epoch=1_700_000_000)
+
+        fake_geoip2 = MagicMock()
+        fake_geoip2.database.Reader = MagicMock(return_value=fake_reader)
+        fake_errors = MagicMock()
+        fake_errors.AddressNotFoundError = type("AddressNotFoundError", (Exception,), {})
+
+        with (
+            patch("httpx.stream", return_value=mock_context),
+            patch.dict(
+                "sys.modules",
+                {
+                    "geoip2": fake_geoip2,
+                    "geoip2.database": fake_geoip2.database,
+                    "geoip2.errors": fake_errors,
+                },
+            ),
+            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(dest)),
+        ):
+            result = install_geoip_database()
+
+        assert result["skipped"] is False
+        assert result["path"] == str(dest)
+        assert result["size_bytes"] > 0
+        assert result["build_epoch"] == 1_700_000_000
+        assert dest.exists(), "destination file was not written"
+        assert dest.read_bytes() == b"placeholder-mmdb-bytes"
+
+    def test_install_geoip_database_skips_when_fresh(self, tmp_path):
+        """--if-older-than skips the download when the existing file is fresh."""
+        from icv_waf.services.geoip import install_geoip_database
+
+        dest = tmp_path / "GeoLite2-Country.mmdb"
+        dest.write_bytes(b"existing-db-bytes")
+
+        fake_geoip2 = MagicMock()
+        fake_geoip2.database.Reader = MagicMock()
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
+            ),
+            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(dest)),
+            patch("httpx.stream") as mock_stream,
+        ):
+            result = install_geoip_database(if_older_than_days=7)
+
+        assert result["skipped"] is True
+        mock_stream.assert_not_called()
+        # Existing file untouched
+        assert dest.read_bytes() == b"existing-db-bytes"
+
+    def test_install_geoip_database_http_401_surfaces_licence_error(self, tmp_path):
+        """A 401 from MaxMind is converted into a clear GeoIPDownloadError."""
+        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+
+        mock_context = MagicMock()
+        mock_context.__enter__ = MagicMock(return_value=mock_response)
+        mock_context.__exit__ = MagicMock(return_value=False)
+
+        fake_geoip2 = MagicMock()
+        fake_geoip2.database.Reader = MagicMock()
+
+        with (
+            patch("httpx.stream", return_value=mock_context),
+            patch.dict(
+                "sys.modules",
+                {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
+            ),
+            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "bad-key"),
+            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
+            pytest.raises(GeoIPDownloadError, match="401"),
+        ):
+            install_geoip_database()
+
+    def test_install_geoip_database_http_5xx_surfaces_download_error(self, tmp_path):
+        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+
+        mock_response = MagicMock()
+        mock_response.status_code = 503
+
+        mock_context = MagicMock()
+        mock_context.__enter__ = MagicMock(return_value=mock_response)
+        mock_context.__exit__ = MagicMock(return_value=False)
+
+        fake_geoip2 = MagicMock()
+        fake_geoip2.database.Reader = MagicMock()
+
+        with (
+            patch("httpx.stream", return_value=mock_context),
+            patch.dict(
+                "sys.modules",
+                {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
+            ),
+            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
+            pytest.raises(GeoIPDownloadError, match="503"),
+        ):
+            install_geoip_database()
+
+    def test_install_geoip_database_corrupt_archive_does_not_clobber(self, tmp_path):
+        """A corrupt tar.gz raises GeoIPDownloadError and leaves the existing file intact."""
+        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+
+        dest = tmp_path / "GeoLite2-Country.mmdb"
+        dest.write_bytes(b"original-db-bytes")
+        # Backdate so the freshness check (which we're not using) can't skip us
+        import os
+        import time
+
+        os.utime(dest, (time.time() - (30 * 86400),) * 2)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_bytes = lambda chunk_size: [b"not a valid tar.gz"]
+
+        mock_context = MagicMock()
+        mock_context.__enter__ = MagicMock(return_value=mock_response)
+        mock_context.__exit__ = MagicMock(return_value=False)
+
+        fake_geoip2 = MagicMock()
+        fake_geoip2.database.Reader = MagicMock()
+
+        with (
+            patch("httpx.stream", return_value=mock_context),
+            patch.dict(
+                "sys.modules",
+                {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
+            ),
+            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(dest)),
+            pytest.raises(GeoIPDownloadError, match="Failed to read"),
+        ):
+            install_geoip_database()
+
+        # Existing database untouched
+        assert dest.read_bytes() == b"original-db-bytes"
+
+    def test_install_geoip_database_verification_failure_raises(self, tmp_path):
+        """If geoip2.Reader fails to open the extracted file, raise GeoIPDownloadError."""
+        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+
+        archive_bytes = self._make_fake_archive(tmp_path)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_bytes = lambda chunk_size: [archive_bytes]
+
+        mock_context = MagicMock()
+        mock_context.__enter__ = MagicMock(return_value=mock_response)
+        mock_context.__exit__ = MagicMock(return_value=False)
+
+        # Reader raises on construction
+        fake_geoip2 = MagicMock()
+        fake_geoip2.database.Reader = MagicMock(side_effect=ValueError("corrupt header"))
+        fake_errors = MagicMock()
+        fake_errors.AddressNotFoundError = type("AddressNotFoundError", (Exception,), {})
+
+        dest = tmp_path / "GeoLite2-Country.mmdb"
+
+        with (
+            patch("httpx.stream", return_value=mock_context),
+            patch.dict(
+                "sys.modules",
+                {
+                    "geoip2": fake_geoip2,
+                    "geoip2.database": fake_geoip2.database,
+                    "geoip2.errors": fake_errors,
+                },
+            ),
+            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(dest)),
+            pytest.raises(GeoIPDownloadError, match="not a valid GeoIP database"),
+        ):
+            install_geoip_database()
+
+        # Destination never created
+        assert not dest.exists()
+
+    def test_install_geoip_database_httpx_network_error_raises(self, tmp_path):
+        """A transient httpx.HTTPError (timeout, connection reset) becomes GeoIPDownloadError."""
+        import httpx
+
+        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+
+        fake_geoip2 = MagicMock()
+        fake_geoip2.database.Reader = MagicMock()
+
+        with (
+            patch("httpx.stream", side_effect=httpx.ConnectError("connection refused")),
+            patch.dict(
+                "sys.modules",
+                {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
+            ),
+            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
+            pytest.raises(GeoIPDownloadError, match="connection refused"),
+        ):
+            install_geoip_database()
+
+    def test_install_geoip_database_archive_missing_mmdb_raises(self, tmp_path):
+        """If the MaxMind archive contains no .mmdb file, raise with a layout-change hint."""
+        import io
+        import tarfile as tf
+
+        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+
+        # Build an archive with only a README file (no .mmdb)
+        buf = io.BytesIO()
+        with tf.open(fileobj=buf, mode="w:gz") as tar:
+            data = b"not an mmdb"
+            info = tf.TarInfo(name="GeoLite2-Country_20260411/README.txt")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+        archive_bytes = buf.getvalue()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_bytes = lambda chunk_size: [archive_bytes]
+
+        mock_context = MagicMock()
+        mock_context.__enter__ = MagicMock(return_value=mock_response)
+        mock_context.__exit__ = MagicMock(return_value=False)
+
+        fake_geoip2 = MagicMock()
+        fake_geoip2.database.Reader = MagicMock()
+
+        with (
+            patch("httpx.stream", return_value=mock_context),
+            patch.dict(
+                "sys.modules",
+                {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
+            ),
+            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
+            pytest.raises(GeoIPDownloadError, match="does not contain"),
+        ):
+            install_geoip_database()
+
+    def test_install_geoip_database_verification_address_not_found_is_tolerated(self, tmp_path):
+        """AddressNotFoundError on the 8.8.8.8 smoke-test lookup is tolerated (empty DB).
+
+        The Reader still opens successfully and metadata is returned — we
+        don't fail verification on a missed lookup because trimmed test
+        databases legitimately don't contain 8.8.8.8.
+        """
+        from icv_waf.services.geoip import install_geoip_database
+
+        dest = tmp_path / "GeoLite2-Country.mmdb"
+        archive_bytes = self._make_fake_archive(tmp_path)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_bytes = lambda chunk_size: [archive_bytes]
+
+        mock_context = MagicMock()
+        mock_context.__enter__ = MagicMock(return_value=mock_response)
+        mock_context.__exit__ = MagicMock(return_value=False)
+
+        # Reader opens but the country() call raises AddressNotFoundError
+        class FakeAddressNotFoundError(Exception):
+            pass
+
+        fake_reader = MagicMock()
+        fake_reader.__enter__ = MagicMock(return_value=fake_reader)
+        fake_reader.__exit__ = MagicMock(return_value=False)
+        fake_reader.country.side_effect = FakeAddressNotFoundError("not in db")
+        fake_reader.metadata.return_value = MagicMock(build_epoch=1_700_000_000)
+
+        fake_errors = MagicMock()
+        fake_errors.AddressNotFoundError = FakeAddressNotFoundError
+
+        fake_geoip2 = MagicMock()
+        fake_geoip2.database.Reader = MagicMock(return_value=fake_reader)
+        fake_geoip2.errors = fake_errors  # parent attribute must resolve to real module
+
+        with (
+            patch("httpx.stream", return_value=mock_context),
+            patch.dict(
+                "sys.modules",
+                {
+                    "geoip2": fake_geoip2,
+                    "geoip2.database": fake_geoip2.database,
+                    "geoip2.errors": fake_errors,
+                },
+            ),
+            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(dest)),
+        ):
+            result = install_geoip_database()
+
+        # Verification passed despite the missed lookup
+        assert result["skipped"] is False
+        assert result["build_epoch"] == 1_700_000_000
+        assert dest.exists()

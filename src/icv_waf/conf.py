@@ -113,6 +113,13 @@ ICV_WAF_NO_REFERER_EXEMPT_PATHS: list[str] = getattr(
 # Set to None to disable GeoIP (default).
 ICV_WAF_GEOIP_PATH: str | None = getattr(settings, "ICV_WAF_GEOIP_PATH", None)
 
+# MaxMind licence key for downloading GeoLite2 databases via the
+# ``manage.py icv_waf_install_geoip`` command or the
+# ``update_geoip_database`` Celery task. Sign up for a free key at
+# https://www.maxmind.com/en/geolite2/signup and load it from your
+# environment (e.g. ``os.environ.get("MAXMIND_LICENSE_KEY", "")``).
+ICV_WAF_MAXMIND_LICENSE_KEY: str = getattr(settings, "ICV_WAF_MAXMIND_LICENSE_KEY", "")
+
 # HTTP methods allowed through the WAF. Requests with other methods receive
 # a 405 response before any rule evaluation. Set to None to allow all methods.
 ICV_WAF_ALLOWED_METHODS: list[str] | None = getattr(settings, "ICV_WAF_ALLOWED_METHODS", None)

@@ -5,6 +5,78 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-04-11
+
+### Added — GeoIP database installer
+
+- **`manage.py icv_waf_install_geoip`**: downloads, verifies, and
+  atomically installs the MaxMind GeoLite2-Country database for the
+  middleware's `_lookup_country` helper. Flags:
+  - `--license-key=XXX` — overrides the `ICV_WAF_MAXMIND_LICENSE_KEY`
+    setting. Sign up at <https://www.maxmind.com/en/geolite2/signup>.
+  - `--output-path=/path/to/file.mmdb` — overrides `ICV_WAF_GEOIP_PATH`.
+    Defaults to `/var/lib/icv-waf/GeoLite2-Country.mmdb`.
+  - `--if-older-than=DAYS` — skip the download if the existing file
+    is younger than N days (cron-friendly).
+  - `--quiet` — suppress progress output.
+
+- **`update_geoip_database` Celery task** (`icv_waf.tasks.update_geoip_database`):
+  wraps the service with a 6-day freshness check. Recommended schedule:
+  weekly, Sunday 03:00 UTC. Example `CELERY_BEAT_SCHEDULE` entry:
+
+  ```python
+  from celery.schedules import crontab
+
+  CELERY_BEAT_SCHEDULE = {
+      "icv-waf-update-geoip": {
+          "task": "icv_waf.tasks.update_geoip_database",
+          "schedule": crontab(day_of_week=0, hour=3, minute=0),
+      },
+  }
+  ```
+
+- **`services.geoip`** module: `install_geoip_database()` is exposed as
+  a reusable service function. Raises structured exceptions
+  (`GeoIPNotInstalledError`, `GeoIPLicenseMissingError`,
+  `GeoIPDownloadError`) for callers that need fine-grained error
+  handling.
+
+- **New setting `ICV_WAF_MAXMIND_LICENSE_KEY`**: MaxMind licence key
+  for downloading GeoLite2 databases. Default `""`. Read the key from
+  your environment in the consuming project's settings:
+
+  ```python
+  import os
+  ICV_WAF_MAXMIND_LICENSE_KEY = os.environ.get("MAXMIND_LICENSE_KEY", "")
+  ```
+
+### Installation
+
+GeoIP support is an **optional** dependency. Install with:
+
+```bash
+pip install django-waf[geoip]
+```
+
+Then run once to install the database, or wire up the Celery task:
+
+```bash
+export MAXMIND_LICENSE_KEY=your-key-here
+python manage.py icv_waf_install_geoip
+```
+
+### Behaviour notes
+
+- Downloads are atomic: the archive is extracted to a temp directory,
+  verified by opening it with `geoip2.database.Reader` and performing
+  a smoke-test lookup, then `os.replace()`'d into the destination. An
+  existing database is never clobbered if the replacement fails
+  verification.
+- **Running workers must be restarted to pick up a new database** —
+  the MMDB file is mmap'd, so live processes keep their previous
+  handle until restart. The command prints a reminder on success.
+- Licence keys are never logged or echoed back on error.
+
 ## [0.9.0] - 2026-04-11
 
 ### Changed — defaults

@@ -656,3 +656,82 @@ class TestReportThreatTelemetry:
 
             with pytest.raises(ConnectionError, match="timeout"):
                 report_threat_telemetry()
+
+
+# ---------------------------------------------------------------------------
+# update_geoip_database
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateGeoipDatabase:
+    """Tests for the ``update_geoip_database`` Celery task."""
+
+    def test_delegates_to_service_with_6_day_freshness(self):
+        """The task calls install_geoip_database(if_older_than_days=6)."""
+        service_result = {
+            "path": "/var/lib/icv-waf/GeoLite2-Country.mmdb",
+            "size_bytes": 6_291_456,
+            "skipped": False,
+            "edition": "GeoLite2-Country",
+            "build_epoch": 1_700_000_000,
+        }
+        with patch(
+            "icv_waf.services.geoip.install_geoip_database",
+            return_value=service_result,
+        ) as mock_install:
+            from icv_waf.tasks import update_geoip_database
+
+            result = update_geoip_database()
+
+        mock_install.assert_called_once_with(if_older_than_days=6)
+        assert result == service_result
+
+    def test_swallows_geoip_error_and_reports_skipped(self):
+        """A GeoIPError is caught and converted into a skipped dict so cron never fails loudly."""
+        from icv_waf.services.geoip import GeoIPLicenseMissingError
+
+        with patch(
+            "icv_waf.services.geoip.install_geoip_database",
+            side_effect=GeoIPLicenseMissingError("No MaxMind licence key configured."),
+        ):
+            from icv_waf.tasks import update_geoip_database
+
+            result = update_geoip_database()
+
+        assert result["skipped"] is True
+        assert "No MaxMind" in result["error"]
+
+    def test_swallows_download_error(self):
+        """A transient GeoIPDownloadError is caught and logged as skipped."""
+        from icv_waf.services.geoip import GeoIPDownloadError
+
+        with patch(
+            "icv_waf.services.geoip.install_geoip_database",
+            side_effect=GeoIPDownloadError("MaxMind download failed: timeout"),
+        ):
+            from icv_waf.tasks import update_geoip_database
+
+            result = update_geoip_database()
+
+        assert result["skipped"] is True
+        assert "timeout" in result["error"]
+
+    def test_passes_through_skipped_result_from_service(self):
+        """If the service itself returns skipped=True (fresh file), the task returns it verbatim."""
+        service_result = {
+            "path": "/var/lib/icv-waf/GeoLite2-Country.mmdb",
+            "size_bytes": 6_291_456,
+            "skipped": True,
+            "edition": "GeoLite2-Country",
+            "build_epoch": None,
+        }
+        with patch(
+            "icv_waf.services.geoip.install_geoip_database",
+            return_value=service_result,
+        ):
+            from icv_waf.tasks import update_geoip_database
+
+            result = update_geoip_database()
+
+        assert result == service_result
+        assert "error" not in result

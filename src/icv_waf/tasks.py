@@ -14,6 +14,7 @@ Scheduled tasks (Celery Beat):
   - update_ip_reputation    — every 6 hours
   - sync_threat_feed        — daily 04:30
   - report_threat_telemetry — daily 05:00
+  - update_geoip_database   — weekly (Sunday 03:00 UTC recommended)
 """
 
 from __future__ import annotations
@@ -362,6 +363,47 @@ def report_threat_telemetry() -> dict:
         "ua_hashes_count": len(payload.get("ua_hashes", [])),
         "subnets_count": len(payload.get("subnets", [])),
     }
+
+
+@shared_task
+def update_geoip_database() -> dict:
+    """Download and install the MaxMind GeoLite2-Country database.
+
+    Wraps ``services.geoip.install_geoip_database`` with a 6-day freshness
+    check so re-running the task within the recommended weekly window is
+    a no-op. Requires ``ICV_WAF_MAXMIND_LICENSE_KEY`` to be set and the
+    ``geoip2`` package to be installed (``pip install django-waf[geoip]``).
+
+    MaxMind releases GeoLite2 updates twice a week (Tuesday and Friday).
+    A weekly run on Sunday catches both updates with a day's latency.
+
+    Returns:
+        Dict with keys: path, size_bytes, skipped, edition, build_epoch.
+        If the operation failed gracefully (missing key, geoip2 not
+        installed, HTTP error), returns ``{"skipped": True, "error": ...}``.
+
+    Scheduled: weekly — recommended cron: Sunday 03:00 UTC. Example for
+    consuming projects' CELERY_BEAT_SCHEDULE::
+
+        "icv-waf-update-geoip": {
+            "task": "icv_waf.tasks.update_geoip_database",
+            "schedule": crontab(day_of_week=0, hour=3, minute=0),
+        }
+    """
+    from icv_waf.services.geoip import GeoIPError, install_geoip_database
+
+    try:
+        result = install_geoip_database(if_older_than_days=6)
+        logger.info(
+            "icv-waf: update_geoip_database — path=%s skipped=%s size=%d",
+            result["path"],
+            result["skipped"],
+            result["size_bytes"],
+        )
+        return result
+    except GeoIPError as exc:
+        logger.warning("icv-waf: update_geoip_database skipped — %s", exc)
+        return {"skipped": True, "error": str(exc)}
 
 
 @shared_task(bind=True, ignore_result=True)

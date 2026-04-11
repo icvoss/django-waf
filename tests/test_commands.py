@@ -600,3 +600,169 @@ class TestUnblockCommand:
         call_command("icv_waf_unblock", "198.51.100.4", stdout=out)
 
         assert "Deactivated 2 rule" in out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# icv_waf_install_geoip
+# ---------------------------------------------------------------------------
+
+
+class TestInstallGeoipCommand:
+    """Tests for the ``icv_waf_install_geoip`` management command.
+
+    The command delegates all work to ``services.geoip.install_geoip_database``
+    — these tests mock that function and verify argument wiring and output.
+    """
+
+    def test_missing_license_key_raises_command_error(self):
+        """A missing licence key surfaces as a CommandError with the signup link."""
+        from icv_waf.services.geoip import GeoIPLicenseMissingError
+
+        with (
+            patch(
+                "icv_waf.services.geoip.install_geoip_database",
+                side_effect=GeoIPLicenseMissingError(
+                    "No MaxMind licence key configured. Sign up at https://www.maxmind.com/en/geolite2/signup"
+                ),
+            ),
+            pytest.raises(CommandError, match="Sign up at"),
+        ):
+            call_command("icv_waf_install_geoip")
+
+    def test_missing_geoip2_package_raises_command_error(self):
+        """A missing geoip2 import surfaces as a CommandError with the pip hint."""
+        from icv_waf.services.geoip import GeoIPNotInstalledError
+
+        with (
+            patch(
+                "icv_waf.services.geoip.install_geoip_database",
+                side_effect=GeoIPNotInstalledError("pip install django-waf[geoip]"),
+            ),
+            pytest.raises(CommandError, match="pip install"),
+        ):
+            call_command("icv_waf_install_geoip")
+
+    def test_successful_install_prints_path_and_size(self):
+        """A successful install prints the destination path, size, and build date."""
+        with patch(
+            "icv_waf.services.geoip.install_geoip_database",
+            return_value={
+                "path": "/var/lib/icv-waf/GeoLite2-Country.mmdb",
+                "size_bytes": 6_291_456,
+                "skipped": False,
+                "edition": "GeoLite2-Country",
+                "build_epoch": 1_700_000_000,
+            },
+        ) as mock_install:
+            out = StringIO()
+            call_command("icv_waf_install_geoip", stdout=out)
+
+        output = out.getvalue()
+        assert "Installed GeoLite2-Country" in output
+        assert "/var/lib/icv-waf/GeoLite2-Country.mmdb" in output
+        assert "6.0 MB" in output
+        assert "Database build:" in output
+        assert "restart" in output.lower()
+        # Args forwarded with all defaults
+        mock_install.assert_called_once_with(
+            license_key=None,
+            output_path=None,
+            if_older_than_days=0,
+        )
+
+    def test_skipped_output_when_file_is_fresh(self):
+        """When the service reports skipped=True, the command says so and does not print install details."""
+        with patch(
+            "icv_waf.services.geoip.install_geoip_database",
+            return_value={
+                "path": "/var/lib/icv-waf/GeoLite2-Country.mmdb",
+                "size_bytes": 6_291_456,
+                "skipped": True,
+                "edition": "GeoLite2-Country",
+                "build_epoch": None,
+            },
+        ):
+            out = StringIO()
+            call_command("icv_waf_install_geoip", "--if-older-than", "7", stdout=out)
+
+        output = out.getvalue()
+        assert "fresh" in output.lower()
+        assert "Installed" not in output
+
+    def test_license_key_cli_arg_forwarded(self):
+        """--license-key is passed through to the service."""
+        with patch(
+            "icv_waf.services.geoip.install_geoip_database",
+            return_value={
+                "path": "/tmp/out.mmdb",
+                "size_bytes": 1000,
+                "skipped": False,
+                "edition": "GeoLite2-Country",
+                "build_epoch": None,
+            },
+        ) as mock_install:
+            call_command("icv_waf_install_geoip", "--license-key", "my-key")
+
+        assert mock_install.call_args.kwargs["license_key"] == "my-key"
+
+    def test_output_path_cli_arg_forwarded(self):
+        """--output-path is passed through to the service."""
+        with patch(
+            "icv_waf.services.geoip.install_geoip_database",
+            return_value={
+                "path": "/etc/geoip/country.mmdb",
+                "size_bytes": 1000,
+                "skipped": False,
+                "edition": "GeoLite2-Country",
+                "build_epoch": None,
+            },
+        ) as mock_install:
+            call_command("icv_waf_install_geoip", "--output-path", "/etc/geoip/country.mmdb")
+
+        assert mock_install.call_args.kwargs["output_path"] == "/etc/geoip/country.mmdb"
+
+    def test_if_older_than_cli_arg_forwarded(self):
+        """--if-older-than is passed through to the service."""
+        with patch(
+            "icv_waf.services.geoip.install_geoip_database",
+            return_value={
+                "path": "/tmp/out.mmdb",
+                "size_bytes": 1000,
+                "skipped": True,
+                "edition": "GeoLite2-Country",
+                "build_epoch": None,
+            },
+        ) as mock_install:
+            call_command("icv_waf_install_geoip", "--if-older-than", "14")
+
+        assert mock_install.call_args.kwargs["if_older_than_days"] == 14
+
+    def test_quiet_flag_suppresses_output(self):
+        """--quiet emits no stdout on success."""
+        with patch(
+            "icv_waf.services.geoip.install_geoip_database",
+            return_value={
+                "path": "/tmp/out.mmdb",
+                "size_bytes": 1000,
+                "skipped": False,
+                "edition": "GeoLite2-Country",
+                "build_epoch": None,
+            },
+        ):
+            out = StringIO()
+            call_command("icv_waf_install_geoip", "--quiet", stdout=out)
+
+        assert out.getvalue() == ""
+
+    def test_download_error_raises_command_error(self):
+        """A GeoIPDownloadError surfaces as a CommandError with the 'Download failed' prefix."""
+        from icv_waf.services.geoip import GeoIPDownloadError
+
+        with (
+            patch(
+                "icv_waf.services.geoip.install_geoip_database",
+                side_effect=GeoIPDownloadError("MaxMind download failed with HTTP 503."),
+            ),
+            pytest.raises(CommandError, match="Download failed: MaxMind"),
+        ):
+            call_command("icv_waf_install_geoip")
