@@ -109,7 +109,7 @@ def on_allow_rule_delete(sender, instance, **kwargs) -> None:
 
 
 @receiver(request_blocked)
-def on_request_blocked(sender, ip_address: str, path: str, rule, verdict: str, **kwargs) -> None:
+def on_request_blocked(sender, ip_address: str, path: str, rule, verdict: str = "", **kwargs) -> None:
     """Write a structured log entry when a request is blocked."""
     rule_id = str(rule.id) if rule is not None else None
     rule_name = str(rule) if rule is not None else None
@@ -118,6 +118,7 @@ def on_request_blocked(sender, ip_address: str, path: str, rule, verdict: str, *
         extra={
             "waf_event": "request_blocked",
             "ip_address": ip_address,
+            "user_agent": kwargs.get("user_agent", ""),
             "path": path,
             "verdict": verdict,
             "rule_id": rule_id,

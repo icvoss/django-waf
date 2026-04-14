@@ -329,6 +329,7 @@ def _emit_request_blocked(result, ip_address: str, user_agent: str, path: str) -
             user_agent=user_agent,
             path=path,
             rule=None,
+            verdict=result.verdict,
         )
     except Exception:
         logger.exception("icv-waf: failed to emit request_blocked signal")

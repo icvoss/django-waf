@@ -5,6 +5,29 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-04-14
+
+### Fixed
+
+- **`request_blocked` signal missing `verdict` kwarg**: the middleware's
+  `_emit_request_blocked` sent `ip_address`, `user_agent`, `path`, and
+  `rule`, but omitted `verdict`. The `on_request_blocked` handler in
+  `handlers.py` declared `verdict: str` as a required parameter, so
+  Django's signal dispatcher raised `TypeError` on every block event.
+  The exception was swallowed by the bare `except Exception` in
+  `_emit_request_blocked`, meaning the structured log entry was
+  **silently never written** for any blocked request.
+
+  **Fix**: the sender now passes `verdict=result.verdict`. The
+  receiver's `verdict` parameter defaults to `""` for defensive
+  backwards-compatibility with any external code that fires the signal
+  without it.
+
+- **`user_agent` now included in the structured log**: the sender was
+  already passing `user_agent` but the receiver was dropping it into
+  `**kwargs`. The structured log entry now includes `user_agent` for
+  observability.
+
 ## [0.10.1] - 2026-04-14
 
 ### Fixed

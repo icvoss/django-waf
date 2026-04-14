@@ -302,6 +302,48 @@ class TestRequestBlockedHandler:
         assert extra.get("rule_id") == str(rule.id)
         assert extra.get("rule_name") == str(rule)
 
+    def test_on_request_blocked_includes_user_agent(self):
+        """user_agent from the signal is included in the structured log record."""
+        from icv_waf.signals import request_blocked
+
+        with patch("icv_waf.handlers.logger") as mock_logger:
+            request_blocked.send(
+                sender=None,
+                ip_address="1.2.3.4",
+                user_agent="SuspiciousBot/2.0",
+                path="/probe/",
+                rule=None,
+                verdict="blocked",
+            )
+
+        _args, kwargs = mock_logger.info.call_args
+        extra = kwargs.get("extra", {})
+        assert extra.get("user_agent") == "SuspiciousBot/2.0"
+
+    def test_on_request_blocked_defaults_verdict_when_missing(self):
+        """If verdict is not passed in the signal (external caller), the handler
+        defaults to empty string rather than crashing.
+
+        Regression: the receiver declared ``verdict: str`` as a required
+        parameter without a default. If any external code fired the signal
+        without verdict, the receiver would raise TypeError.
+        """
+        from icv_waf.signals import request_blocked
+
+        with patch("icv_waf.handlers.logger") as mock_logger:
+            # Deliberately omit verdict
+            request_blocked.send(
+                sender=None,
+                ip_address="1.2.3.4",
+                path="/",
+                rule=None,
+            )
+
+        mock_logger.info.assert_called_once()
+        _args, kwargs = mock_logger.info.call_args
+        extra = kwargs.get("extra", {})
+        assert extra.get("verdict") == ""
+
 
 # ---------------------------------------------------------------------------
 # _invalidate_rule_cache — unit tests for the helper directly

@@ -794,18 +794,32 @@ class TestMiddlewareHelpers:
             # Should return the Django cache instance
             assert client is not None
 
-    def test_emit_request_blocked_sends_signal(self):
-        """_emit_request_blocked sends the request_blocked signal."""
+    def test_emit_request_blocked_sends_signal_with_verdict(self):
+        """_emit_request_blocked sends the request_blocked signal with verdict from result.
+
+        Regression: the sender was missing the 'verdict' kwarg that the
+        on_request_blocked handler requires, causing a silent TypeError
+        swallowed by the except Exception wrapper.
+        """
         from icv_waf.middleware import _emit_request_blocked
+
+        result = MagicMock()
+        result.verdict = "blocked"
 
         with patch("icv_waf.signals.request_blocked.send") as mock_send:
             _emit_request_blocked(
-                result=MagicMock(),
+                result=result,
                 ip_address="1.2.3.4",
                 user_agent="curl",
                 path="/",
             )
             mock_send.assert_called_once()
+            call_kwargs = mock_send.call_args[1]
+            assert call_kwargs["verdict"] == "blocked"
+            assert call_kwargs["ip_address"] == "1.2.3.4"
+            assert call_kwargs["user_agent"] == "curl"
+            assert call_kwargs["path"] == "/"
+            assert call_kwargs["rule"] is None
 
     def test_emit_request_blocked_swallows_exception(self):
         """Signal dispatch errors are logged, not raised."""
