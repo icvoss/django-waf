@@ -597,6 +597,9 @@ def _create_escalation_rule(ip_address: str) -> None:
 
     Uses update_or_create so concurrent escalations don't duplicate.
     The rule is picked up by the nginx blocklist generator on its next run.
+
+    If duplicate rows already exist for this (rule_type, pattern, source,
+    action) key, deduplicates by keeping the newest and retrying.
     """
     from datetime import timedelta
 
@@ -607,22 +610,48 @@ def _create_escalation_rule(ip_address: str) -> None:
     from icv_waf.enums import RuleAction, RuleSource, RuleType
     from icv_waf.models import BlockRule
 
+    lookup = {
+        "rule_type": RuleType.IP,
+        "pattern": ip_address,
+        "source": RuleSource.AUTO,
+        "action": RuleAction.BLOCK,
+    }
+    defaults = {
+        "name": f"Auto: escalated from unsolved challenges ({ip_address})",
+        "match_type": "exact",
+        "is_active": True,
+        "expires_at": timezone.now() + timedelta(seconds=conf.ICV_WAF_ESCALATION_BLOCK_TTL),
+    }
+
     try:
         with transaction.atomic():
-            BlockRule.objects.update_or_create(
-                rule_type=RuleType.IP,
-                pattern=ip_address,
-                source=RuleSource.AUTO,
-                action=RuleAction.BLOCK,
-                defaults={
-                    "name": f"Auto: escalated from unsolved challenges ({ip_address})",
-                    "match_type": "exact",
-                    "is_active": True,
-                    "expires_at": timezone.now() + timedelta(seconds=conf.ICV_WAF_ESCALATION_BLOCK_TTL),
-                },
-            )
+            BlockRule.objects.update_or_create(**lookup, defaults=defaults)
+    except BlockRule.MultipleObjectsReturned:
+        logger.warning(
+            "icv-waf: duplicate BlockRule rows for escalation of %s — deduplicating",
+            ip_address,
+        )
+        _deduplicate_escalation_rules(**lookup)
+        try:
+            with transaction.atomic():
+                BlockRule.objects.update_or_create(**lookup, defaults=defaults)
+        except Exception:
+            logger.exception("icv-waf: failed to create escalation rule for %s after dedup", ip_address)
     except Exception:
         logger.exception("icv-waf: failed to create escalation rule for %s", ip_address)
+
+
+def _deduplicate_escalation_rules(**lookup) -> int:
+    """Keep the newest BlockRule matching ``lookup`` and delete the rest."""
+    from icv_waf.models import BlockRule
+
+    qs = BlockRule.objects.filter(**lookup).order_by("-created_at")
+    if qs.count() <= 1:
+        return 0
+    keep_pk = qs.first().pk
+    deleted, _ = qs.exclude(pk=keep_pk).delete()
+    logger.info("icv-waf: deleted %d duplicate escalation BlockRule rows for %s", deleted, lookup)
+    return deleted
 
 
 # ---------------------------------------------------------------------------

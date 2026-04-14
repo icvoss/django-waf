@@ -5,6 +5,57 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-04-14
+
+### Fixed
+
+- **`BlockRule.MultipleObjectsReturned` in `detect_anomalies`**: if
+  duplicate `BlockRule` rows existed for the same
+  `(rule_type, pattern, source, action)` key — created before the
+  anomaly detector existed, or via a race condition —
+  `_get_or_create_auto_rule()` would crash with
+  `MultipleObjectsReturned`, causing `detect_anomalies` and all
+  downstream anomaly detection tasks to fail silently. The fix catches
+  `MultipleObjectsReturned`, deduplicates by keeping the newest row
+  and deleting the rest, then retries `update_or_create`.
+
+- **Same bug in `_create_escalation_rule` (rule_engine.py)**: the
+  challenge-escalation path used the same `update_or_create` pattern
+  and was vulnerable to the same crash. Previously masked by a bare
+  `except Exception`, meaning escalation rules were silently never
+  created when duplicates existed. Now deduplicates and retries.
+
+### Upgrade
+
+```bash
+pip install -U django-waf
+```
+
+No migration required.
+
+### Production workaround
+
+If you hit this bug before upgrading, clean up existing duplicates:
+
+```python
+from django.db.models import Count
+from icv_waf.models import BlockRule
+
+dupes = (
+    BlockRule.objects
+    .values("rule_type", "pattern", "source", "action")
+    .annotate(cnt=Count("id"))
+    .filter(cnt__gt=1)
+)
+for d in dupes:
+    qs = BlockRule.objects.filter(
+        **{k: d[k] for k in ["rule_type", "pattern", "source", "action"]}
+    )
+    qs.exclude(pk=qs.order_by("-created_at").first().pk).delete()
+```
+
+After upgrading to 0.10.1 the package handles this automatically.
+
 ## [0.10.0] - 2026-04-11
 
 ### Added — GeoIP database installer

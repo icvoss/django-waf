@@ -1393,6 +1393,85 @@ class TestEmitAnomalySignalExceptionPath:
 
 
 # ---------------------------------------------------------------------------
+# _get_or_create_auto_rule — deduplication on MultipleObjectsReturned
+# ---------------------------------------------------------------------------
+
+
+class TestGetOrCreateAutoRuleDedup:
+    """Regression tests for duplicate BlockRule handling in _get_or_create_auto_rule.
+
+    If duplicate rows exist for the same (rule_type, pattern, source, action)
+    key, update_or_create raises MultipleObjectsReturned. The fix catches this,
+    deduplicates by keeping the newest row, and retries.
+    """
+
+    @pytest.mark.django_db
+    def test_deduplicates_and_retries_on_multiple_objects_returned(self):
+        """Pre-existing duplicates are cleaned up, then the rule is created normally."""
+        from icv_waf.enums import RuleAction, RuleSource, RuleType
+        from icv_waf.models import BlockRule
+        from icv_waf.services.anomaly_detector import _get_or_create_auto_rule
+
+        # Create two duplicate rows manually
+        for _ in range(2):
+            BlockRule.objects.create(
+                name="dupe",
+                rule_type=RuleType.UA,
+                pattern="bad-bot/1.0",
+                match_type="contains",
+                action=RuleAction.CHALLENGE,
+                source=RuleSource.AUTO,
+                is_active=True,
+            )
+        assert BlockRule.objects.filter(pattern="bad-bot/1.0", source=RuleSource.AUTO).count() == 2
+
+        # This would previously raise MultipleObjectsReturned
+        rule, created = _get_or_create_auto_rule(
+            name="Auto: UA rotation",
+            rule_type=RuleType.UA,
+            match_type="contains",
+            pattern="bad-bot/1.0",
+            action=RuleAction.CHALLENGE,
+            expiry=timezone.now() + timezone.timedelta(hours=24),
+        )
+
+        # Duplicates resolved — exactly one row, refreshed
+        remaining = BlockRule.objects.filter(pattern="bad-bot/1.0", source=RuleSource.AUTO)
+        assert remaining.count() == 1
+        assert remaining.first().pk == rule.pk
+        assert rule.name == "Auto: UA rotation"
+
+    @pytest.mark.django_db
+    def test_no_duplicates_uses_normal_update_or_create(self):
+        """Without duplicates, _get_or_create_auto_rule works normally."""
+        from icv_waf.enums import RuleAction, RuleType
+        from icv_waf.services.anomaly_detector import _get_or_create_auto_rule
+
+        rule, created = _get_or_create_auto_rule(
+            name="Auto: test",
+            rule_type=RuleType.IP,
+            match_type="exact",
+            pattern="203.0.113.99",
+            action=RuleAction.BLOCK,
+            expiry=timezone.now() + timezone.timedelta(hours=24),
+        )
+        assert created is True
+
+        # Second call refreshes, not creates
+        rule2, created2 = _get_or_create_auto_rule(
+            name="Auto: test refreshed",
+            rule_type=RuleType.IP,
+            match_type="exact",
+            pattern="203.0.113.99",
+            action=RuleAction.BLOCK,
+            expiry=timezone.now() + timezone.timedelta(hours=48),
+        )
+        assert created2 is False
+        assert rule2.pk == rule.pk
+        assert rule2.name == "Auto: test refreshed"
+
+
+# ---------------------------------------------------------------------------
 # detect_subnet_burst — branch coverage for non-burst path
 # ---------------------------------------------------------------------------
 
@@ -3271,6 +3350,37 @@ class TestRuleEngineHelpers:
         ):
             # Must not raise
             _create_escalation_rule("203.0.113.79")
+
+    @pytest.mark.django_db
+    def test_create_escalation_rule_deduplicates_existing_rows(self):
+        """Pre-existing duplicate BlockRule rows are deduplicated, then the rule is created.
+
+        Regression: update_or_create raises MultipleObjectsReturned if
+        duplicate rows exist for the same (rule_type, pattern, source, action)
+        key. The fix catches this, deduplicates, and retries.
+        """
+        from icv_waf.enums import RuleAction, RuleSource, RuleType
+        from icv_waf.models import BlockRule
+        from icv_waf.services.rule_engine import _create_escalation_rule
+
+        # Manually create two duplicate rows (simulating a pre-existing race)
+        for _ in range(2):
+            BlockRule.objects.create(
+                name="dupe",
+                rule_type=RuleType.IP,
+                pattern="203.0.113.80",
+                match_type="exact",
+                action=RuleAction.BLOCK,
+                source=RuleSource.AUTO,
+                is_active=True,
+            )
+        assert BlockRule.objects.filter(pattern="203.0.113.80", source=RuleSource.AUTO).count() == 2
+
+        # This would previously raise MultipleObjectsReturned
+        _create_escalation_rule("203.0.113.80")
+
+        # Duplicates resolved — exactly one row remains
+        assert BlockRule.objects.filter(pattern="203.0.113.80", source=RuleSource.AUTO).count() == 1
 
     # ------------------------------------------------------------------ _compile_ua_patterns
 

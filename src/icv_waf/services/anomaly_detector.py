@@ -482,26 +482,60 @@ def _get_or_create_auto_rule(
     so concurrent detector runs cannot create duplicates. If the rule already
     exists, its expiry and is_active flag are refreshed.
 
+    If duplicate rows already exist (created before this function existed, or
+    via a race condition), catches MultipleObjectsReturned, deduplicates by
+    keeping the newest row and deleting the rest, then retries.
+
     Returns:
         (rule, created) tuple.
     """
     from icv_waf.enums import RuleSource
     from icv_waf.models import BlockRule
 
-    with transaction.atomic():
-        rule, created = BlockRule.objects.update_or_create(
-            rule_type=rule_type,
-            pattern=pattern,
-            source=RuleSource.AUTO,
-            action=action,
-            defaults={
-                "name": name,
-                "match_type": match_type,
-                "is_active": True,
-                "expires_at": expiry,
-            },
+    lookup = {
+        "rule_type": rule_type,
+        "pattern": pattern,
+        "source": RuleSource.AUTO,
+        "action": action,
+    }
+    defaults = {
+        "name": name,
+        "match_type": match_type,
+        "is_active": True,
+        "expires_at": expiry,
+    }
+
+    try:
+        with transaction.atomic():
+            rule, created = BlockRule.objects.update_or_create(**lookup, defaults=defaults)
+        return rule, created
+    except BlockRule.MultipleObjectsReturned:
+        logger.warning(
+            "icv-waf: duplicate BlockRule rows for %s/%s — deduplicating",
+            rule_type,
+            pattern,
         )
-    return rule, created
+        _deduplicate_block_rules(**lookup)
+        with transaction.atomic():
+            rule, created = BlockRule.objects.update_or_create(**lookup, defaults=defaults)
+        return rule, created
+
+
+def _deduplicate_block_rules(**lookup) -> int:
+    """Keep the newest BlockRule matching ``lookup`` and delete the rest.
+
+    Returns:
+        Number of duplicate rows deleted.
+    """
+    from icv_waf.models import BlockRule
+
+    qs = BlockRule.objects.filter(**lookup).order_by("-created_at")
+    if qs.count() <= 1:
+        return 0
+    keep_pk = qs.first().pk
+    deleted, _ = qs.exclude(pk=keep_pk).delete()
+    logger.info("icv-waf: deleted %d duplicate BlockRule rows for %s", deleted, lookup)
+    return deleted
 
 
 def _emit_anomaly_signal(rule, anomaly_type: str, details: dict) -> None:
