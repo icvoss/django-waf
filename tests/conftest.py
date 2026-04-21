@@ -28,6 +28,12 @@ def pytest_configure(config):
         settings.MIGRATION_MODULES = {}
     settings.MIGRATION_MODULES.setdefault("icv_waf", None)
 
+    # Ensure ROOT_URLCONF is always set — Django 6 removed the global default,
+    # and override_settings can lose it if a site-packages "tests" package
+    # shadows the project's tests/ directory during re-resolution.
+    if not hasattr(settings, "ROOT_URLCONF"):
+        settings.ROOT_URLCONF = "tests.urls"
+
     # Ensure WAF settings exist for tests
     defaults = {
         "ICV_WAF_ENABLED": True,

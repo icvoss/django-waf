@@ -22,6 +22,7 @@ import logging
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
+from django.urls import reverse
 from django.utils.decorators import method_decorator
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.translation import gettext as _
@@ -127,7 +128,7 @@ class ChallengeView(TemplateView):
                 "token": challenge_token.token,
                 "difficulty": conf.ICV_WAF_CHALLENGE_DIFFICULTY,
                 "next_url": next_url,
-                "post_url": request.build_absolute_uri("/waf/verify/"),
+                "post_url": request.build_absolute_uri(reverse("icv_waf:verify")),
             }
         )
         response["Cache-Control"] = "no-store"
@@ -251,8 +252,6 @@ class DashboardView(StaffRequiredMixin, TemplateView):
     template_name = "icv_waf/dashboard.html"
 
     def get_context_data(self, **kwargs) -> dict:
-        from django.urls import reverse
-
         ctx = super().get_context_data(**kwargs)
         ctx["stats_url"] = reverse("icv_waf:dashboard-stats")
         ctx["top_blocked_url"] = reverse("icv_waf:dashboard-top-blocked")

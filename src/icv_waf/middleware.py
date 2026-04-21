@@ -13,6 +13,7 @@ import logging
 import random
 
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
+from django.urls import reverse
 
 logger = logging.getLogger("icv_waf.middleware")
 
@@ -31,6 +32,15 @@ class WafMiddleware:
 
     def __init__(self, get_response):
         self.get_response = get_response
+        self._challenge_path: str | None = None
+        self._verify_path: str | None = None
+
+    def _get_challenge_paths(self) -> tuple[str, str]:
+        """Return (challenge_path, verify_path), resolved once and cached."""
+        if self._challenge_path is None:
+            self._challenge_path = reverse("icv_waf:challenge")
+            self._verify_path = reverse("icv_waf:verify")
+        return self._challenge_path, self._verify_path
 
     def __call__(self, request):
         from icv_waf import conf
@@ -41,6 +51,7 @@ class WafMiddleware:
 
         # BR-EVAL-001: exempt paths — prefix match
         path = request.path_info
+
         for prefix in conf.ICV_WAF_EXEMPT_PATHS:
             if path.startswith(prefix):
                 return self.get_response(request)
@@ -145,6 +156,14 @@ class WafMiddleware:
             return response
 
         if verdict == Verdict.CHALLENGED:
+            challenge_path, verify_path = self._get_challenge_paths()
+
+            # Suppress challenge redirect when already on a challenge/verify
+            # path to prevent infinite redirect loops. BLOCKED and THROTTLED
+            # verdicts still apply — only the redirect is suppressed.
+            if path.startswith(challenge_path) or path.startswith(verify_path):
+                return self.get_response(request)
+
             # Increment unsolved-challenge counter for escalation tracking
             try:
                 key = f"waf:challenged:{ip_address}"
@@ -152,8 +171,7 @@ class WafMiddleware:
                 redis_client.expire(key, 3600)  # 1-hour window
             except Exception:
                 pass
-            next_path = path
-            challenge_url = f"/waf/challenge/?next={next_path}"
+            challenge_url = f"{challenge_path}?next={path}"
             return HttpResponseRedirect(challenge_url)
 
         # ALLOWED, PASSED, LOGGED — pass through to the view

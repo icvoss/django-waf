@@ -39,7 +39,7 @@ pytestmark = pytest.mark.django_db
 def waf_urls(settings):
     """Override ROOT_URLCONF to the test URL conf that includes icv_waf under /waf/
     with the 'icv_waf' namespace, enabling reverse('icv_waf:...') to resolve."""
-    settings.ROOT_URLCONF = "urls"  # tests/urls.py (on pythonpath via pyproject.toml)
+    settings.ROOT_URLCONF = "tests.urls"
 
 
 # ---------------------------------------------------------------------------

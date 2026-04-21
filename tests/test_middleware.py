@@ -378,7 +378,74 @@ class TestVerdictDispatch:
         response = self._run_with_verdict("challenged")
 
         assert response.status_code == 302
-        assert "/waf/challenge/" in response["Location"]
+        assert "/challenge/" in response["Location"]
+
+    @override_settings(ICV_WAF_ENABLED=True)
+    def test_challenged_verdict_on_challenge_path_passes_through(self):
+        """Challenge verdict on /waf/challenge/ must not redirect to itself (loop prevention)."""
+        import importlib
+
+        import icv_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        for path in ["/waf/challenge/", "/waf/verify/"]:
+            request = factory.get(path)
+            request.user = MagicMock(is_authenticated=False)
+            request.COOKIES = {}
+            get_response = MagicMock(return_value=HttpResponse("challenge page"))
+
+            with (
+                patch("icv_waf.middleware._get_redis_client") as mock_redis_fn,
+                patch("icv_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+                patch("icv_waf.services.rule_engine.evaluate_request") as mock_eval,
+                patch("icv_waf.middleware._emit_request_blocked"),
+                patch("icv_waf.middleware._emit_request_throttled"),
+            ):
+                mock_redis_fn.return_value = _mock_redis()
+                mock_validate.return_value = False
+                mock_eval.return_value = _make_result("challenged")
+
+                middleware = _make_middleware(get_response)
+                response = middleware(request)
+
+            # Should pass through to the view, not redirect
+            assert response.status_code == 200, f"{path} should not redirect when already challenged"
+            get_response.assert_called_once_with(request)
+
+    @override_settings(ICV_WAF_ENABLED=True)
+    def test_blocked_verdict_on_challenge_path_still_blocks(self):
+        """Blocked IPs must NOT be able to access /waf/challenge/ or /waf/verify/."""
+        import importlib
+
+        import icv_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        for path in ["/waf/challenge/", "/waf/verify/"]:
+            request = factory.get(path)
+            request.user = MagicMock(is_authenticated=False)
+            request.COOKIES = {}
+            get_response = MagicMock(return_value=HttpResponse("should not reach"))
+
+            with (
+                patch("icv_waf.middleware._get_redis_client") as mock_redis_fn,
+                patch("icv_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+                patch("icv_waf.services.rule_engine.evaluate_request") as mock_eval,
+                patch("icv_waf.middleware._emit_request_blocked"),
+                patch("icv_waf.middleware._emit_request_throttled"),
+            ):
+                mock_redis_fn.return_value = _mock_redis()
+                mock_validate.return_value = False
+                mock_eval.return_value = _make_result("blocked")
+
+                middleware = _make_middleware(get_response)
+                response = middleware(request)
+
+            assert response.status_code == 403, f"{path} should still block when verdict is BLOCKED"
+            get_response.assert_not_called()
 
     @override_settings(ICV_WAF_ENABLED=True)
     def test_allowed_verdict_passes_to_get_response(self):
