@@ -328,7 +328,8 @@ class RequestLog(BaseModel):
         verbose_name=_("path"),
     )
     method = models.CharField(
-        max_length=10,
+        # 16 fits the longest IANA-registered method (BASELINE-CONTROL).
+        max_length=16,
         default="GET",
         verbose_name=_("method"),
     )

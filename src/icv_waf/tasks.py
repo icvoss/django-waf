@@ -122,7 +122,7 @@ def parse_access_log(log_path: str | None = None) -> dict:
 
                 ip_address = match.group(1)
                 # timestamp_str = match.group(2)  # e.g. 23/Mar/2026:10:00:00 +0000
-                method = match.group(3)
+                method = match.group(3)[:16]
                 path_str = match.group(4)[:2048]
                 status_code = int(match.group(5))
                 user_agent = (match.group(6) or "")[:1024]

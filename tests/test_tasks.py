@@ -160,6 +160,31 @@ class TestParseAccessLog:
         assert RequestLog.objects.count() == before + 2
 
     @pytest.mark.django_db
+    def test_truncates_overlong_method(self):
+        """A scanner method longer than the column width is truncated, not dropped.
+
+        Regression: scanners send junk HTTP methods (>16 chars). The method
+        field is max_length=16, so the value must be clipped before insert or
+        the record creation raises a varchar overflow.
+        """
+        long_method = "A" * 50
+        log_content = f'9.9.9.9 - - [07/Apr/2026:10:00:00 +0000] "{long_method} /x HTTP/1.1" 400 0 "-" "scanner/1.0"\n'
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as fh:
+            fh.write(log_content)
+            log_path = fh.name
+
+        from icv_waf.models import RequestLog
+        from icv_waf.tasks import parse_access_log
+
+        result = parse_access_log(log_path=log_path)
+
+        assert result["created_records"] == 1
+        record = RequestLog.objects.latest("id")
+        assert record.method == "A" * 16
+        assert len(record.method) == 16
+
+    @pytest.mark.django_db
     def test_skips_malformed_lines(self):
         """Lines that do not match the log regex are counted as skipped."""
         log_content = "this is not a valid nginx log line\n"

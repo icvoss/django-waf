@@ -5,6 +5,35 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4] - 2026-05-22
+
+### Fixed
+
+- **`varchar(10)` overflow on overlong HTTP methods**: `parse_access_log`
+  truncated `path` and `user_agent` before insert but passed the HTTP method
+  through unmodified into `RequestLog.method` (`max_length=10`). Scanners
+  routinely send junk methods longer than 10 characters, causing a database
+  overflow on insert and dropping the log line.
+
+  **Fix**: `RequestLog.method` is widened to `max_length=16` (migration
+  `0006`), which fits the longest IANA-registered method
+  (`BASELINE-CONTROL`), and `parse_access_log` now clips the parsed method to
+  16 characters before constructing the record.
+
+### Added
+
+- **`make_migrations.py`**: committed helper for authoring migrations against
+  the bundled test settings (this package ships no `manage.py`). See
+  CONTRIBUTING.
+
+## [0.10.3] - 2026-04-14
+
+### Fixed
+
+- **Challenge redirect loop**: the challenge view could redirect a client back
+  to a WAF-protected URL that re-triggered the challenge. WAF URLs are now
+  resolved via `reverse()` and excluded from the challenge flow.
+
 ## [0.10.2] - 2026-04-14
 
 ### Fixed

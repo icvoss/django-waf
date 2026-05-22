@@ -97,6 +97,20 @@ type: description
 3. Add it to the settings table in `README.md`
 4. Add a test that exercises the setting
 
+## Generating Migrations
+
+This package ships no `manage.py`, and `tests/settings.py` disables migrations
+so the test database builds straight from the models. To author or update
+migrations after a model change, use the committed helper:
+
+```bash
+python make_migrations.py            # write/update migrations
+python make_migrations.py --check    # CI-style: fail if migrations are missing
+```
+
+Commit the generated file under `src/icv_waf/migrations/` alongside the model
+change.
+
 ## Adding a New Anomaly Detector
 
 1. Add the detector function in `src/icv_waf/services/anomaly_detector.py`
