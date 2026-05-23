@@ -32,15 +32,26 @@ class WafMiddleware:
 
     def __init__(self, get_response):
         self.get_response = get_response
-        self._challenge_path: str | None = None
-        self._verify_path: str | None = None
 
     def _get_challenge_paths(self) -> tuple[str, str]:
-        """Return (challenge_path, verify_path), resolved once and cached."""
-        if self._challenge_path is None:
-            self._challenge_path = reverse("icv_waf:challenge")
-            self._verify_path = reverse("icv_waf:verify")
-        return self._challenge_path, self._verify_path
+        """Return (challenge_path, verify_path) for the current request.
+
+        Resolved fresh on every call rather than cached on the middleware
+        instance, because projects using per-request urlconf routing (e.g.
+        django-hosts) need ``reverse()`` to consult the active thread-local
+        urlconf each time. Caching would freeze whichever host first hit a
+        challenge into the resolved path for the lifetime of the process.
+
+        Operators can short-circuit ``reverse()`` entirely by setting
+        ``ICV_WAF_CHALLENGE_URL`` / ``ICV_WAF_VERIFY_URL`` to literal paths,
+        which is the recommended approach for multi-urlconf projects that
+        don't mount the icv_waf URLs on every host.
+        """
+        from icv_waf import conf
+
+        challenge = conf.ICV_WAF_CHALLENGE_URL or reverse("icv_waf:challenge")
+        verify = conf.ICV_WAF_VERIFY_URL or reverse("icv_waf:verify")
+        return challenge, verify
 
     def __call__(self, request):
         from icv_waf import conf

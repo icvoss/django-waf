@@ -114,19 +114,21 @@ class ChallengeView(TemplateView):
     template_name = "icv_waf/challenge.html"
 
     def get(self, request: HttpRequest, *args, **kwargs) -> HttpResponse:
-        from icv_waf import conf
         from icv_waf.services.challenge_service import issue_challenge
 
         ip = _get_ip(request)
         next_url = _validate_next_url(request, request.GET.get("next"))
         redis_client = _get_redis_client()
+        user_agent = request.META.get("HTTP_USER_AGENT", "")
 
-        challenge_token = issue_challenge(ip, redis_client)
+        challenge_token = issue_challenge(ip, redis_client, user_agent=user_agent)
 
         response = self.render_to_response(
             {
                 "token": challenge_token.token,
-                "difficulty": conf.ICV_WAF_CHALLENGE_DIFFICULTY,
+                # Use the token's stored difficulty so the solver always
+                # matches the verifier, even if conf changes mid-flight.
+                "difficulty": challenge_token.difficulty,
                 "next_url": next_url,
                 "post_url": request.build_absolute_uri(reverse("icv_waf:verify")),
             }
@@ -187,7 +189,8 @@ class VerifyView(View):
         except (ChallengeExpiredError, ChallengeMismatchError, ChallengeInvalidError) as exc:
             reason = str(exc)
             try:
-                new_token = issue_challenge(ip, redis_client)
+                user_agent = request.META.get("HTTP_USER_AGENT", "")
+                new_token = issue_challenge(ip, redis_client, user_agent=user_agent)
                 return JsonResponse({"error": reason, "new_token": new_token.token}, status=400)
             except Exception:
                 logger.exception("icv-waf: failed to issue replacement challenge token")

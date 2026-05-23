@@ -9,4 +9,4 @@ class IcvWafConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
 
     def ready(self) -> None:
-        from . import handlers  # noqa: F401 — connect signal handlers
+        from . import checks, handlers  # noqa: F401 — register handlers & system checks

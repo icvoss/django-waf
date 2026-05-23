@@ -762,6 +762,111 @@ class TestEvaluateRequest:
 
 
 # ---------------------------------------------------------------------------
+# Device-aware difficulty selection (v0.10.5)
+# ---------------------------------------------------------------------------
+
+
+class TestPickDifficulty:
+    def test_mobile_ua_selects_mobile_difficulty(self):
+        import icv_waf.conf as conf_mod
+        from icv_waf.services.challenge_service import _pick_difficulty
+
+        with (
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 20),
+        ):
+            iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605"
+            android_phone = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Mobile"
+            assert _pick_difficulty(iphone) == 18
+            assert _pick_difficulty(android_phone) == 18
+
+    def test_desktop_ua_selects_desktop_difficulty(self):
+        import icv_waf.conf as conf_mod
+        from icv_waf.services.challenge_service import _pick_difficulty
+
+        with (
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 20),
+        ):
+            mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605 Version/16 Safari"
+            windows = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/120.0"
+            android_tablet = "Mozilla/5.0 (Linux; Android 13; SM-T970) AppleWebKit/537.36 Safari"
+            assert _pick_difficulty(mac) == 22
+            assert _pick_difficulty(windows) == 22
+            # "Android" without "Mobi" → tablet → desktop band.
+            assert _pick_difficulty(android_tablet) == 22
+
+    def test_empty_ua_falls_back_to_desktop(self):
+        import icv_waf.conf as conf_mod
+        from icv_waf.services.challenge_service import _pick_difficulty
+
+        with (
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 20),
+        ):
+            assert _pick_difficulty("") == 22
+
+    def test_device_key_none_falls_back_to_single_value(self):
+        """Setting desktop/mobile to None makes _pick_difficulty fall through
+        to ICV_WAF_CHALLENGE_DIFFICULTY — the legacy single-value path."""
+        import icv_waf.conf as conf_mod
+        from icv_waf.services.challenge_service import _pick_difficulty
+
+        with (
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 20),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", None),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", None),
+        ):
+            assert _pick_difficulty("Mozilla/5.0 (iPhone) Mobi") == 20
+            assert _pick_difficulty("Mozilla/5.0 (Windows)") == 20
+
+
+# ---------------------------------------------------------------------------
+# PoW bit-counting helper (regression: v0.10.4 counted bytes, not bits)
+# ---------------------------------------------------------------------------
+
+
+class TestDigestHasLeadingZeroBits:
+    def test_zero_bits_always_true(self):
+        """Difficulty 0 means no work — every digest passes."""
+        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+
+        assert _digest_has_leading_zero_bits(b"\xff\xff", 0) is True
+
+    def test_one_bit_checks_msb_of_first_byte(self):
+        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+
+        # 0x7F = 0111_1111 — MSB is zero, passes 1-bit.
+        assert _digest_has_leading_zero_bits(b"\x7f", 1) is True
+        # 0x80 = 1000_0000 — MSB is one, fails 1-bit.
+        assert _digest_has_leading_zero_bits(b"\x80", 1) is False
+
+    def test_eight_bits_requires_full_zero_byte(self):
+        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+
+        assert _digest_has_leading_zero_bits(b"\x00\xff", 8) is True
+        assert _digest_has_leading_zero_bits(b"\x01\xff", 8) is False
+
+    def test_partial_byte_boundary(self):
+        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+
+        # 12 bits = one zero byte + top 4 bits of next byte zero.
+        # 0x00 0x0F = 0000_0000 0000_1111 — top 4 bits of second byte zero, passes.
+        assert _digest_has_leading_zero_bits(b"\x00\x0f", 12) is True
+        # 0x00 0x10 = 0000_0000 0001_0000 — bit 11 (from MSB) is one, fails.
+        assert _digest_has_leading_zero_bits(b"\x00\x10", 12) is False
+
+    def test_short_digest_returns_false(self):
+        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+
+        # Need at least one byte to check 1 bit.
+        assert _digest_has_leading_zero_bits(b"", 1) is False
+
+
+# ---------------------------------------------------------------------------
 # issue_challenge
 # ---------------------------------------------------------------------------
 
@@ -776,6 +881,8 @@ class TestIssueChallenge:
 
         with (
             patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 4),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 4),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 4),
             patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 3600),
         ):
             token_obj = issue_challenge("10.0.0.1", redis)
@@ -794,6 +901,8 @@ class TestIssueChallenge:
 
         with (
             patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 4),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 4),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 4),
             patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 3600),
         ):
             issue_challenge("10.0.0.2", redis)
@@ -817,6 +926,8 @@ class TestIssueChallenge:
 
         with (
             patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 6),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 6),
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 6),
             patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 3600),
         ):
             token_obj = issue_challenge("10.0.0.3", redis)
@@ -876,11 +987,16 @@ class TestIssueChallenge:
 
 class TestVerifyChallengeService:
     def _valid_nonce(self, token: str, difficulty: int) -> str:
-        """Brute-force a nonce that satisfies the proof-of-work for the given token."""
+        """Brute-force a nonce that satisfies the proof-of-work for the given token.
+
+        Counts leading zero **bits** to match the production verifier.
+        """
+        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+
         for n in range(1_000_000):
             nonce = str(n)
             digest = hashlib.sha256(f"{token}{nonce}".encode()).digest()
-            if all(b == 0 for b in digest[:difficulty]):
+            if _digest_has_leading_zero_bits(digest, difficulty):
                 return nonce
         raise RuntimeError("Could not find a valid nonce within 1,000,000 iterations")
 
@@ -985,7 +1101,8 @@ class TestVerifyChallengeService:
         """A nonce that fails proof-of-work raises ChallengeInvalidError."""
         token_obj = ChallengeTokenFactory(
             ip_address="1.2.3.4",
-            difficulty=4,  # Difficult enough that "wrong_nonce" won't pass
+            # 24 bits — chance of accidental pass with a fixed wrong nonce is 1/16M.
+            difficulty=24,
             status=ChallengeStatus.PENDING,
         )
 
