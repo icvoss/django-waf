@@ -11,8 +11,28 @@ from django.conf import settings
 # Enable or disable the WAF middleware entirely.
 ICV_WAF_ENABLED: bool = getattr(settings, "ICV_WAF_ENABLED", True)
 
-# Proof-of-work challenge difficulty (leading zero bits required).
-ICV_WAF_CHALLENGE_DIFFICULTY: int = getattr(settings, "ICV_WAF_CHALLENGE_DIFFICULTY", 4)
+# Proof-of-work challenge difficulty — number of leading zero **bits** the
+# SHA-256(token + nonce) digest must contain. Average solve cost is
+# ``2 ** difficulty`` hashes. Acts as the single-value fallback when the
+# desktop/mobile overrides below are unset.
+ICV_WAF_CHALLENGE_DIFFICULTY: int = getattr(settings, "ICV_WAF_CHALLENGE_DIFFICULTY", 20)
+
+# Desktop-class clients (default 22 bits ≈ 4M hashes, ~1–2s on a laptop).
+# Slightly stronger than mobile because desktops have more CPU headroom.
+# Set to ``None`` to fall back to ``ICV_WAF_CHALLENGE_DIFFICULTY``.
+ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP: int | None = getattr(settings, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22)
+
+# Mobile-class clients (default 18 bits ≈ 260k hashes, ~1–3s on a phone).
+# Set lower than desktop so budget devices don't time out.
+# Set to ``None`` to fall back to ``ICV_WAF_CHALLENGE_DIFFICULTY``.
+ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE: int | None = getattr(settings, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18)
+
+# Optional literal-path overrides for the WAF's own challenge/verify URLs.
+# When set, the middleware uses these strings directly instead of calling
+# ``reverse()``. Recommended for projects using per-request urlconf routing
+# (django-hosts and similar) that don't mount icv_waf URLs on every host.
+ICV_WAF_CHALLENGE_URL: str = getattr(settings, "ICV_WAF_CHALLENGE_URL", "")
+ICV_WAF_VERIFY_URL: str = getattr(settings, "ICV_WAF_VERIFY_URL", "")
 
 # TTL in seconds for a solved-challenge cookie.
 ICV_WAF_CHALLENGE_COOKIE_TTL: int = getattr(settings, "ICV_WAF_CHALLENGE_COOKIE_TTL", 86400)

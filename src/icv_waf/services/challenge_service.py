@@ -48,7 +48,60 @@ _CHALLENGE_KEY = "waf:challenge:{token}"
 # ---------------------------------------------------------------------------
 
 
-def issue_challenge(ip_address: str, redis_client) -> object:
+def _is_mobile_user_agent(user_agent: str) -> bool:
+    """Cheap UA-string heuristic for mobile-class devices.
+
+    Honest about its limits: UA strings lie, "tablet" sits in the middle,
+    and a high-end phone can outpace a low-end laptop. Used only to pick a
+    PoW difficulty band — wrong guesses cost a 1–3s solve discrepancy, not
+    a lockout. Refer to ``ICV_WAF_CHALLENGE_DIFFICULTY_*`` to tune.
+    """
+    if not user_agent:
+        return False
+    ua = user_agent.lower()
+    # "Mobi" covers Firefox Mobile + Chrome Mobile per their official UAs;
+    # "Android" without "Mobi" is a tablet, which we treat as desktop-class.
+    return "mobi" in ua or "iphone" in ua or "ipod" in ua
+
+
+def _pick_difficulty(user_agent: str) -> int:
+    """Return the configured PoW difficulty for a request's device class.
+
+    Resolves in this order:
+      1. The device-class setting (mobile vs desktop) if it is set (non-None).
+      2. The single-value fallback ``ICV_WAF_CHALLENGE_DIFFICULTY``.
+
+    Lets operators either use the device-aware split (default) or pin a
+    single value by setting the desktop/mobile keys to ``None``.
+    """
+    from icv_waf import conf
+
+    if _is_mobile_user_agent(user_agent):
+        value = conf.ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE
+    else:
+        value = conf.ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP
+    if value is None:
+        value = conf.ICV_WAF_CHALLENGE_DIFFICULTY
+    return value
+
+
+def _digest_has_leading_zero_bits(digest: bytes, bits: int) -> bool:
+    """Return True iff ``digest`` starts with at least ``bits`` zero bits."""
+    if bits <= 0:
+        return True
+    full_bytes, remainder = divmod(bits, 8)
+    if len(digest) < full_bytes + (1 if remainder else 0):
+        return False
+    if any(b != 0 for b in digest[:full_bytes]):
+        return False
+    if remainder == 0:
+        return True
+    # Top `remainder` bits of the next byte must be zero.
+    mask = 0xFF << (8 - remainder) & 0xFF
+    return (digest[full_bytes] & mask) == 0
+
+
+def issue_challenge(ip_address: str, redis_client, *, user_agent: str = "") -> object:
     """Create a new challenge token for the given IP address.
 
     Stores the token in both the DB and Redis. Emits challenge_issued signal.
@@ -56,6 +109,8 @@ def issue_challenge(ip_address: str, redis_client) -> object:
     Args:
         ip_address: Client IP address that will be challenged.
         redis_client: Configured Redis client instance.
+        user_agent: Optional User-Agent string; selects mobile vs desktop
+            difficulty. Falls back to the desktop value when empty or unset.
 
     Returns:
         ChallengeToken model instance.
@@ -64,7 +119,7 @@ def issue_challenge(ip_address: str, redis_client) -> object:
     from icv_waf.models import ChallengeToken
 
     token = secrets.token_hex(64)
-    difficulty = conf.ICV_WAF_CHALLENGE_DIFFICULTY
+    difficulty = _pick_difficulty(user_agent)
     ttl = conf.ICV_WAF_CHALLENGE_COOKIE_TTL
     expires_at = timezone.now() + timezone.timedelta(seconds=ttl)
 
@@ -110,7 +165,7 @@ def verify_challenge_solution(
     Lookup order: Redis first, fallback to DB.
 
     Per BR-CHAL-002, verifies SHA-256(token + nonce) has `difficulty` leading
-    zero bytes. Per BR-CHAL-003, verification is always server-side.
+    zero **bits**. Per BR-CHAL-003, verification is always server-side.
 
     Args:
         token: The challenge token string.
@@ -170,8 +225,7 @@ def verify_challenge_solution(
 
     # --- Proof-of-work verification (BR-CHAL-002, BR-CHAL-003) ---
     digest = hashlib.sha256(f"{token}{nonce}".encode()).digest()
-    leading_zero_bytes = difficulty
-    if any(b != 0 for b in digest[:leading_zero_bytes]):
+    if not _digest_has_leading_zero_bits(digest, difficulty):
         # Solution incorrect
         db_token_obj.status = ChallengeStatus.FAILED
         db_token_obj.save(update_fields=["status"])

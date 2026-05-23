@@ -142,7 +142,11 @@ All settings are namespaced under `ICV_WAF_*` and have sensible defaults.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ICV_WAF_CHALLENGE_DIFFICULTY` | `4` | Proof-of-work leading zero bits |
+| `ICV_WAF_CHALLENGE_DIFFICULTY` | `20` | Fallback proof-of-work leading zero **bits** when the desktop/mobile overrides are not set. Average work is `2 ** bits` SHA-256 hashes |
+| `ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP` | `22` | PoW difficulty (bits) for non-mobile User-Agents. ~4M hashes, ~1–2s on a laptop |
+| `ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE` | `18` | PoW difficulty (bits) for mobile User-Agents. ~260k hashes, ~1–3s on a budget phone |
+| `ICV_WAF_CHALLENGE_URL` | `""` | Optional literal path to the challenge view. Set this in projects using per-request urlconf routing (django-hosts and similar) where `reverse("icv_waf:challenge")` cannot resolve. Empty = use `reverse()` |
+| `ICV_WAF_VERIFY_URL` | `""` | Optional literal path to the verify view. Empty = use `reverse()` |
 | `ICV_WAF_CHALLENGE_COOKIE_TTL` | `86400` | Seconds a solved-challenge cookie remains valid |
 | `ICV_WAF_CHALLENGE_NO_REFERER` | `False` | Challenge requests that have no `Referer` header |
 | `ICV_WAF_NO_REFERER_EXEMPT_PATHS` | `["/", "/search/", "/robots.txt", "/sitemap.xml", "/favicon.ico"]` | Paths exempt from the no-referer challenge (only evaluated when `ICV_WAF_CHALLENGE_NO_REFERER` is `True`) |

@@ -5,6 +5,60 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.5] - 2026-05-23
+
+### Fixed
+
+- **Proof-of-work difficulty counted in bytes instead of bits** (lockout
+  regression). `verify_challenge_solution` and the JS solver both required
+  `difficulty` leading zero **bytes** in the SHA-256 digest, while the
+  README and inline comments documented the field as leading zero **bits**.
+  At the default of 4, average work was `256^4 ≈ 4.3 billion` hashes —
+  unsolvable in a browser. Combined with `ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD=10`,
+  legitimate users challenged by the WAF were auto-blocked within seconds.
+
+  **Fix**: server verifier and JS solver now count leading zero **bits**,
+  matching the documented semantics. Difficulty selection is now
+  device-aware: desktop UAs get `ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP`
+  (default 22, ~1–2s on a laptop), mobile UAs get `..._MOBILE` (default 18,
+  ~1–3s on a budget phone). The legacy `ICV_WAF_CHALLENGE_DIFFICULTY`
+  remains as a single-value fallback (default 20). The token's stored
+  difficulty drives the solver, so it never drifts from the verifier.
+
+- **Per-request urlconf routing broke challenge redirects**
+  (django-hosts and similar). The middleware called
+  `reverse("icv_waf:challenge")` with no `urlconf` argument and cached the
+  result on the middleware instance. With per-request urlconf routing the
+  first host to trigger a challenge froze its resolved path for every
+  subsequent request on every host, until the process restarted.
+
+  **Fix**: the resolved paths are no longer cached — `_get_challenge_paths`
+  consults the active urlconf on every call. Two new settings,
+  `ICV_WAF_CHALLENGE_URL` and `ICV_WAF_VERIFY_URL`, let operators bypass
+  `reverse()` entirely with literal paths when the icv_waf URLs are not
+  mounted on every host.
+
+### Added
+
+- **Device-aware challenge difficulty**: `ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP`
+  and `ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE` (set either to `None` to fall
+  back to the single-value setting).
+- **Challenge URL overrides**: `ICV_WAF_CHALLENGE_URL` /
+  `ICV_WAF_VERIFY_URL` for projects with per-request urlconf routing.
+- **Challenge UI progress bar + ETA**, so slow devices see legible progress
+  rather than a stalled spinner.
+- **Django system check** (`icv_waf.E002` / `W001` / `W002` / `E001` /
+  `icv_waf.checks.check_challenge_difficulty`) that refuses to start with a
+  PoW difficulty that would lock users out, and warns on values that are
+  too high for low-end phones or too low to deter bots.
+
+### Changed
+
+- **Default difficulty raised** from `4` to `20` bits. With the previous
+  byte-counting bug fixed, 4 bits ≈ 16 hashes — effectively no PoW. The
+  new default targets ~1–2s of work, visible as a "verifying" signal
+  without being painful.
+
 ## [0.10.4] - 2026-05-22
 
 ### Fixed

@@ -916,3 +916,79 @@ class TestMiddlewareHelpers:
             side_effect=RuntimeError("listener crashed"),
         ):
             _emit_request_throttled(MagicMock(), "1.2.3.4")
+
+
+# ---------------------------------------------------------------------------
+# _get_challenge_paths — urlconf handling (regression: v0.10.4 cached the
+# resolved path on the middleware instance, breaking per-request urlconf
+# routing such as django-hosts).
+# ---------------------------------------------------------------------------
+
+
+class TestGetChallengePaths:
+    def test_setting_overrides_reverse(self):
+        """ICV_WAF_CHALLENGE_URL / _VERIFY_URL short-circuit reverse()."""
+        import icv_waf.conf as conf_mod
+
+        middleware = _make_middleware()
+        with (
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_URL", "/custom/challenge/"),
+            patch.object(conf_mod, "ICV_WAF_VERIFY_URL", "/custom/verify/"),
+            patch("icv_waf.middleware.reverse") as mock_reverse,
+        ):
+            challenge, verify = middleware._get_challenge_paths()
+
+        assert challenge == "/custom/challenge/"
+        assert verify == "/custom/verify/"
+        # reverse() must not be called when overrides are set — that's the
+        # whole point for projects with per-request urlconf routing.
+        mock_reverse.assert_not_called()
+
+    def test_falls_back_to_reverse_when_unset(self):
+        """With overrides empty, reverse() is called fresh each request."""
+        import icv_waf.conf as conf_mod
+
+        middleware = _make_middleware()
+        with (
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_URL", ""),
+            patch.object(conf_mod, "ICV_WAF_VERIFY_URL", ""),
+            patch(
+                "icv_waf.middleware.reverse",
+                side_effect=["/waf/challenge/", "/waf/verify/"],
+            ) as mock_reverse,
+        ):
+            challenge, verify = middleware._get_challenge_paths()
+
+        assert challenge == "/waf/challenge/"
+        assert verify == "/waf/verify/"
+        assert mock_reverse.call_count == 2
+
+    def test_paths_not_cached_between_calls(self):
+        """Each call resolves fresh — required for per-request urlconf routing.
+
+        Regression: v0.10.4 memoised the result on the middleware instance,
+        so the first host to trigger a challenge under django-hosts froze its
+        path for every subsequent request on every host.
+        """
+        import icv_waf.conf as conf_mod
+
+        middleware = _make_middleware()
+        with (
+            patch.object(conf_mod, "ICV_WAF_CHALLENGE_URL", ""),
+            patch.object(conf_mod, "ICV_WAF_VERIFY_URL", ""),
+            patch(
+                "icv_waf.middleware.reverse",
+                side_effect=[
+                    "/host-a/challenge/",
+                    "/host-a/verify/",
+                    "/host-b/challenge/",
+                    "/host-b/verify/",
+                ],
+            ) as mock_reverse,
+        ):
+            first = middleware._get_challenge_paths()
+            second = middleware._get_challenge_paths()
+
+        assert first == ("/host-a/challenge/", "/host-a/verify/")
+        assert second == ("/host-b/challenge/", "/host-b/verify/")
+        assert mock_reverse.call_count == 4
