@@ -11,6 +11,20 @@ from django.conf import settings
 # Enable or disable the WAF middleware entirely.
 ICV_WAF_ENABLED: bool = getattr(settings, "ICV_WAF_ENABLED", True)
 
+# Package-wide HMAC signing secret. Used by every signed artefact the WAF
+# issues — form render tokens (v0.11.0), and any future signed verdicts
+# or challenge tokens that migrate off ``SECRET_KEY``. Kept deliberately
+# separate from Django's ``SECRET_KEY`` so operators can rotate WAF
+# signatures on a security-driven cadence without invalidating sessions.
+#
+# When empty (the default for backwards compatibility) callers must use
+# the helper in ``icv_waf.services.tokens.get_signing_key()`` which falls
+# back to a ``SECRET_KEY``-derived value and the ``icv_waf.W003`` system
+# check emits a warning at startup. In production, set this to a value
+# generated with ``python -c "import secrets; print(secrets.token_urlsafe(64))"``
+# and load it from environment.
+ICV_WAF_SIGNING_KEY: str = getattr(settings, "ICV_WAF_SIGNING_KEY", "")
+
 # Proof-of-work challenge difficulty — number of leading zero **bits** the
 # SHA-256(token + nonce) digest must contain. Average solve cost is
 # ``2 ** difficulty`` hashes. Acts as the single-value fallback when the
