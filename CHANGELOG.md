@@ -5,6 +5,113 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-05-27
+
+### Added
+
+- **Form-protection subsystem.** Defence-in-depth at the form layer,
+  composing eight defences into a single chain per protected form. See
+  README "Form protection" for the operator guide. Highlights:
+
+    - **Eight defences**: `render_token` (signed payload + Redis
+      one-shot marker), `honeypot` (rotating hidden fields per form_id),
+      `time_trap` (too-fast / too-slow / expired), `ua_consistency`
+      (UA hash captured at render vs. submit), `js_touch` (sentinel
+      cleared by JS to detect headless clients), `credential_throttle`
+      (per-IP + per-account login-failure counters — enumeration-safe),
+      `signup_velocity` (per-IP completed-signup throttle), `pow_gate`
+      (per-submission proof-of-work, ~50ms desktop / ~200ms mobile).
+
+    - **Three entry points**: `ProtectedForm` Django Form mixin (the
+      recommended path), `@waf_protect_post` view decorator (for views
+      that bypass Django's Form layer), `{% waf_protect %}` template
+      tag (pairs with the decorator on handwritten HTML forms). All
+      three route to the same `FormProtection` orchestrator.
+
+    - **HTMX-aware token lifecycle**: the render-token Redis marker is
+      consumed only on a PASS verdict. Failed validations preserve the
+      marker so re-submitting the corrected form works without
+      re-tokening.
+
+    - **Challenge-replay** (opt-in via
+      `ICV_WAF_FORM_CHALLENGE_ON_FLAG=True`, default): FLAGGED
+      submissions stash their POST data in `request.session`, redirect
+      the user through `/waf/challenge/?form_replay=<token>`, and
+      automatically re-issue the original POST after the challenge
+      passes. Sensitive fields (password / secret / csrf / api_key /
+      token) are stripped before storage — operators see "please
+      re-enter your password" on login replays. Replay token is signed,
+      IP-bound, 60s TTL, one-shot.
+
+    - **Per-form configuration** via `FormProtection(...)` kwargs:
+      `defences=`, `defence_weights=`, `skip_for_authenticated=`, plus
+      any per-defence override (e.g. `min_fill_seconds=0.8` for short
+      newsletter forms).
+
+    - **Four signals**: `form_submission_passed` (opt-in via
+      `ICV_WAF_FORM_EMIT_PASSED_SIGNAL`, off by default — hot path),
+      `form_submission_flagged`, `form_submission_blocked`, and
+      `credential_attack_observed` (observation-only, never affects
+      user-visible response — operators wire up email-to-owner
+      handlers here).
+
+    - **Structured logging**: one `waf.form_submission` log entry per
+      submission with verdict, total score, per-defence outcomes and
+      reasons. PASSED entries sampled at `ICV_WAF_LOG_SAMPLE_RATE`;
+      FLAGGED + BLOCKED always logged. `X-WAF-Form-Verdict` debug
+      header attached in `DEBUG=True` only.
+
+- **`ICV_WAF_SIGNING_KEY`** — package-wide HMAC secret, separate from
+  Django's `SECRET_KEY`. Used by every signed artefact the WAF issues
+  (currently form render tokens + replay tokens). Defaults to a
+  `SECRET_KEY`-derived value with a new `icv_waf.W003` system check
+  warning so v0.10.x → v0.11.0 upgrades are seamless. Set to a
+  dedicated key in production to rotate WAF signatures independently
+  of Django sessions.
+
+- **`icv_waf.W003`** system check — warns when `ICV_WAF_SIGNING_KEY`
+  is unset and the package is falling back to a `SECRET_KEY`-derived
+  value.
+
+### Internal
+
+- Defence-chain canonical ordering ensures `render_token` always runs
+  first, with its verified payload threaded onto subsequent defences'
+  `EvaluateContext` so `time_trap`, `ua_consistency`, `js_touch`, and
+  `pow_gate` can read it without re-verifying.
+
+- A defence exception is caught + logged + treated as a silent pass.
+  A bug in any one defence cannot lock legitimate users out.
+
+- `pow_gate` reuses `_digest_has_leading_zero_bits` from v0.10.5 (the
+  page-level challenge's bit-counting helper) rather than maintaining
+  a parallel implementation — no drift risk between the two PoWs.
+
+### Documentation
+
+- README gains a "Form protection" section under Settings Reference
+  with usage examples for all three entry points, plus per-form
+  configuration patterns and HTMX integration notes.
+
+- PRD lives at `docs/specs/forms/PRD.md` (the design that drove this
+  release).
+
+### Backwards compatibility
+
+- **No DB migrations.** All state is in Redis (counters, token markers)
+  or in signed tokens (no server-side state for the token itself).
+
+- **Opt-in per form.** Adding `ProtectedForm` to a form is one line.
+  Upgrading django-waf to v0.11.0 changes nothing until a form opts
+  in via the mixin / decorator / template tag.
+
+- **No changes to existing settings.** All new settings are additive.
+
+- **Existing signals unchanged.** The four new signals
+  (`form_submission_passed/_flagged/_blocked`, `credential_attack_observed`)
+  are additions; existing `request_blocked`, `challenge_failed`, etc.
+  are untouched.
+
 ## [0.10.6] - 2026-05-27
 
 ### Fixed

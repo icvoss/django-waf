@@ -38,6 +38,11 @@ all configurable without a reverse-proxy vendor.
 - **Collective threat feed** — opt-in sync of anonymised threat intelligence
   across deployments
 - **Staff dashboard** — HTMX-powered real-time analytics with anomaly management
+- **Form protection** — defence-in-depth at the form layer: signed render
+  tokens, honeypots, time-trap, UA-consistency, JS-touch, credential
+  throttle (enumeration-safe), signup velocity, per-submission PoW.
+  Mixin / decorator / template-tag entry points; per-form configuration;
+  optional challenge-replay for false-positive rescue
 - **Fail-open design** — Redis outage never breaks the site
 
 ## Requirements
@@ -196,6 +201,114 @@ All settings are namespaced under `ICV_WAF_*` and have sensible defaults.
 | `ICV_WAF_FEED_REPORT` | `False` | Report local detections back to the feed (opt-in) |
 | `ICV_WAF_FEED_REPORT_URL` | `"https://threats.icv.dev/v1/report"` | Telemetry reporting endpoint |
 | `ICV_WAF_FEED_API_KEY` | `""` | API key for feed authentication |
+
+### Form protection (v0.11.0)
+
+The form-protection subsystem is **opt-in per form**. Defaults are inert
+until a form opts in via the mixin, decorator, or template tag.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `ICV_WAF_SIGNING_KEY` | `""` | Package-wide HMAC secret. Separate from Django's `SECRET_KEY` so rotation lifecycles are independent. Empty → derives from `SECRET_KEY` and `icv_waf.W003` warns at startup |
+| `ICV_WAF_FORM_PROTECTION_ENABLED` | `True` | Master kill switch. `False` makes the mixin/decorator/tag short-circuit to pass without running defences |
+| `ICV_WAF_FORM_FLAG_THRESHOLD` | `2.0` | Aggregate score crossing this triggers FLAGGED |
+| `ICV_WAF_FORM_BLOCK_THRESHOLD` | `5.0` | Aggregate score crossing this triggers BLOCKED |
+| `ICV_WAF_FORM_CHALLENGE_ON_FLAG` | `True` | Redirect FLAGGED submissions through `/waf/challenge/` (then replay the POST). `False` returns a generic rejection |
+| `ICV_WAF_FORM_EMIT_PASSED_SIGNAL` | `False` | Fire `form_submission_passed` on every PASS. Off by default — busy sites would burn cycles on the hot path; the structured log already records (sampled) passes |
+| `ICV_WAF_FORM_TOKEN_TTL` | `3600` | Render-token lifetime in seconds; also the Redis marker TTL |
+| `ICV_WAF_FORM_HONEYPOT_FIELD_NAMES` | `["url", "website", "homepage", "email_confirm"]` | Pool of names for the per-form rotating honeypot fields |
+| `ICV_WAF_FORM_TIME_TRAP_MIN_SECONDS` | `1.5` | Below this → flag; below 0.5 → block (hard floor) |
+| `ICV_WAF_FORM_TIME_TRAP_MAX_SECONDS` | `3600` | Above this → flag (stale form) |
+| `ICV_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW` | `900` | Sliding window for credential-failure counters (seconds) |
+| `ICV_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT` | `5` | Per-account threshold. Observation-only (drives `credential_attack_observed` signal); never user-visible |
+| `ICV_WAF_FORM_CREDENTIAL_IP_LIMIT` | `20` | Per-IP threshold. **Drives the user-visible challenge** — same behaviour regardless of which accounts were tried (enumeration-safe) |
+| `ICV_WAF_FORM_SIGNUP_VELOCITY_WINDOW` | `86400` | Window for completed-signup counter (24h) |
+| `ICV_WAF_FORM_SIGNUP_VELOCITY_LIMIT` | `5` | Successful signups per IP before next attempt is flagged |
+| `ICV_WAF_FORM_POW_DIFFICULTY` | `12` | Per-submission PoW difficulty (bits). 12 ≈ 4k SHA-256 hashes ≈ 50ms desktop / ~200ms mobile |
+| `ICV_WAF_FORM_REPLAY_STORE` | `"session"` | Where to stash FLAGGED POST data for replay. Only `"session"` is implemented |
+| `ICV_WAF_FORM_DEFENCE_WEIGHTS` | (see code) | Per-defence score weights; overridable per-form via `FormProtection(defence_weights={...})` |
+
+**Usage** — Django Form mixin (recommended for new forms):
+
+```python
+from django import forms
+from icv_waf.forms import FormProtection, ProtectedForm
+
+class ContactForm(ProtectedForm, forms.Form):
+    name = forms.CharField()
+    email = forms.EmailField()
+    message = forms.CharField(widget=forms.Textarea)
+
+    waf = FormProtection(
+        form_id="contact",
+        defences=("render_token", "honeypot", "time_trap", "ua_consistency"),
+    )
+```
+
+In the view:
+
+```python
+def contact_view(request):
+    form = ContactForm(request.POST or None, request=request)
+    if request.method == "POST" and form.is_valid():
+        # form.waf_result holds the FormEvaluationResult.
+        ...
+```
+
+In the template:
+
+```html
+<form method="post">
+  {% csrf_token %}
+  {{ form.waf_fields }}
+  {{ form.as_p }}
+  <button type="submit">Send</button>
+</form>
+```
+
+**Handwritten HTML** (forms that bypass Django's Form layer):
+
+```python
+# views.py
+from icv_waf.forms import waf_protect_post
+
+@waf_protect_post(form_id="contact-handwritten",
+                  defences=("honeypot", "time_trap"))
+def contact_view(request):
+    if request.method == "POST":
+        ...
+```
+
+```html
+<!-- contact.html -->
+{% load waf_form_tags %}
+<form method="post">
+  {% csrf_token %}
+  {% waf_protect form_id="contact-handwritten" %}
+  <input type="email" name="email">
+  <button type="submit">Send</button>
+</form>
+```
+
+**HTMX compatibility** — the form-protection render token persists
+across HTMX re-renders of the same form (a user fixing a validation
+error keeps the same token). The Redis marker that backs replay
+protection is consumed only on a PASS verdict, so submitting twice
+in succession after a validation error works correctly. Operators
+must ensure the HTMX target includes `{{ form.waf_fields }}` /
+`{% waf_protect %}` in the swapped fragment.
+
+**Authenticated forms** — set `skip_for_authenticated=True` on
+`FormProtection` to drop the spam-style defences for logged-in users
+while keeping `render_token` for integrity:
+
+```python
+waf = FormProtection(
+    form_id="team-invite",
+    defences=("render_token",),
+    skip_for_authenticated=True,
+)
+```
 
 ## Celery Beat Schedule
 
