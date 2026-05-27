@@ -151,10 +151,15 @@ class ProtectedForm:
 
         # Run the orchestrator against the raw POST data — defences
         # read their own hidden fields by name, not the cleaned form
-        # fields.
+        # fields. Scalarise via ``scalarise_submitted_data`` because
+        # ``self.data`` is a ``QueryDict`` for real bound forms and
+        # ``dict(QueryDict)`` produces list-valued entries that crash
+        # the defence chain (v0.11.0 + v0.11.1 production bug).
+        from icv_waf.forms.protection import scalarise_submitted_data
+
         result = self.waf.evaluate(
             self._waf_request,
-            submitted_data=dict(self.data),
+            submitted_data=scalarise_submitted_data(self.data),
         )
         self.waf_result = result
 

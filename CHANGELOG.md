@@ -5,6 +5,73 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.2] - 2026-05-27
+
+### Fixed
+
+- **`dict(QueryDict)` produced list-valued entries that crashed the
+  defence chain on every real submission.** Critical bug in v0.11.0
+  and v0.11.1. The mixin's `clean()` (`mixin.py:157`) and the
+  decorator's POST handler (`decorators.py:114`) both called
+  `dict(self.data)` / `dict(request.POST)` — but Django's `QueryDict`
+  stores values as lists internally, and `dict(querydict)` iterates
+  the underlying storage producing entries like `{"waf_token":
+  ["Y29udGFjdHx..."]}`. The defences then crashed (`TypeError: can
+  only concatenate list (not "str") to list` at
+  `base64.urlsafe_b64decode`) or silently mis-evaluated (honeypot
+  saw `[""]`, treating empty fields as filled).
+
+  Production effect: every real-browser POST through a protected
+  form returned a 500 with the TypeError above. Production-affecting
+  for anyone running v0.11.0 or v0.11.1 with form protection
+  enabled.
+
+  Reported by Vendably during the v0.11.1 production rollout —
+  same form, second-consecutive-day breakage. The previous release
+  (v0.11.1) had fixed the render-side bug; this one fixes the
+  submit-side bug. Both bugs passed every unit test in their
+  respective releases because the tests built POST payloads as
+  plain Python dicts, never as actual `QueryDict` instances.
+
+  **Fix**: added `icv_waf.forms.protection.scalarise_submitted_data()`
+  — a single seam between the entry points (mixin, decorator,
+  replay-store) and the orchestrator that calls
+  `QueryDict.dict()` for last-value-per-key string semantics, or
+  falls through to `dict(...)` for plain mappings. Wired into all
+  three call sites. No public-API change.
+
+### Added
+
+- **`tests/forms/test_querydict_round_trip.py`** — regression suite
+  that exercises the mixin and decorator with **real Django
+  `QueryDict` instances**, going through `RequestFactory.post()` and
+  `Client.post()`. Verified to fail loudly without the fix and pass
+  with it. Covers:
+
+    1. `scalarise_submitted_data` contract — `QueryDict` →
+       last-value-per-key strings, plain dicts pass through, `None`
+       → `{}`.
+    2. Mixin path — `Form(request.POST, request=request)` where
+       `request.POST` is a real `QueryDict`.
+    3. Decorator path — `RequestFactory.post()` + Django test
+       `Client.post()`.
+
+  The test suite that would have caught both the v0.11.0 and v0.11.1
+  bugs before either release.
+
+### Upgrade
+
+Anyone running v0.11.0 or v0.11.1 with form protection enabled has
+500s on every real form submission:
+
+```bash
+pip install -U django-waf
+```
+
+No settings or migration changes. The operator-side workaround if
+upgrade is blocked is `ICV_WAF_FORM_PROTECTION_ENABLED=False`, but
+that disables protection entirely — the proper fix is to upgrade.
+
 ## [0.11.1] - 2026-05-27
 
 ### Fixed

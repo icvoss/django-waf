@@ -111,7 +111,15 @@ def _handle_post(request, view_func, args, kwargs, form_id, protection):
     Extracted from the wrapper so the GET-replay path can reuse it
     without duplicating the verdict logic.
     """
-    result = protection.evaluate(request, submitted_data=dict(request.POST))
+    # Scalarise via ``scalarise_submitted_data`` — see protection.py
+    # for the rationale. ``dict(request.POST)`` would produce list
+    # values that crash the defence chain.
+    from icv_waf.forms.protection import scalarise_submitted_data
+
+    result = protection.evaluate(
+        request,
+        submitted_data=scalarise_submitted_data(request.POST),
+    )
 
     # Structured log — happens regardless of verdict so logs
     # always reflect the chain's verdict.
@@ -216,7 +224,19 @@ def _maybe_redirect_to_challenge(*, request, form_id: str, result):
     post_url = request.path
     ip = request.META.get("REMOTE_ADDR", "")
 
-    session_key = store_in_session(request, form_id=form_id, post_url=post_url, data=dict(request.POST))
+    # Scalarise so the stored session record contains plain strings,
+    # not QueryDict-style list values. The QueryDict reconstruction
+    # in _try_replay tolerates either shape, but storing scalars
+    # keeps the on-disk record minimal and prevents the
+    # ``dict(QueryDict)`` shape bug from being recreated on replay.
+    from icv_waf.forms.protection import scalarise_submitted_data
+
+    session_key = store_in_session(
+        request,
+        form_id=form_id,
+        post_url=post_url,
+        data=scalarise_submitted_data(request.POST),
+    )
     if session_key is None:
         # Session storage unavailable. Fall back to letting the view
         # handle FLAGGED — operators see the verdict in the log.

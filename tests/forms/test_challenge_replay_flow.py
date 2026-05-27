@@ -106,12 +106,14 @@ class TestFlaggedRedirect:
         location = response["Location"]
         assert "/waf/challenge/" in location
         assert "form_replay=" in location
-        # Session now has the stashed data. dict(QueryDict) returns
-        # list-valued values, which is what we want for round-trip.
+        # Session now has the stashed data. scalarise_submitted_data
+        # gives last-value-per-key strings — pre-v0.11.2 this was
+        # ``dict(QueryDict)`` producing list-valued entries, which
+        # was the upstream of the bug that broke every real submission.
         stash = request.session.get("waf_form_replay", {})
         assert len(stash) == 1
         only_record = next(iter(stash.values()))
-        assert only_record["data"]["name"] == ["alice"]
+        assert only_record["data"]["name"] == "alice"
         assert only_record["post_url"] == "/contact/"
 
     def test_flagged_without_session_falls_back_to_view(self, settings):
