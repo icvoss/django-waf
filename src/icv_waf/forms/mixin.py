@@ -158,14 +158,29 @@ class ProtectedForm:
         )
         self.waf_result = result
 
-        # The view code decides what to do with FLAGGED (challenge
-        # redirect vs. plain rejection). The mixin only raises on
-        # BLOCKED, which terminates form validation outright.
+        # Structured log + signal dispatch. Done here (not in the
+        # orchestrator) because logging is an entry-point concern —
+        # mixin vs. decorator decide their own format choices, the
+        # orchestrator just produces the result.
+        from icv_waf.forms.logging import log_form_submission
+
+        log_form_submission(
+            form_id=self.waf.form_id,
+            request=self._waf_request,
+            result=result,
+        )
+
+        # Consume the token marker on PASS. FLAGGED keeps the marker
+        # so the user can retry (challenge replay or operator-decided
+        # rejection); BLOCKED never reaches here (raises below).
         from icv_waf.forms.protection import FormVerdict
+
+        if result.verdict == FormVerdict.PASSED:
+            self.waf.consume_token_marker(result.token_payload)
 
         if result.verdict == FormVerdict.BLOCKED:
             # Don't reveal which defence blocked. Operators consult
-            # the structured log (block 6) for the detail.
+            # the structured log for the detail.
             raise forms.ValidationError(_BLOCKED_MESSAGE, code="waf_blocked")
 
         return cleaned
