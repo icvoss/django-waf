@@ -165,6 +165,34 @@ class TestChallengeView:
 
         assert response.context["next_url"] == "/"
 
+    def test_post_url_honours_verify_url_override(self, settings):
+        """Challenge page's post_url must respect ICV_WAF_VERIFY_URL.
+
+        Regression: pre-v0.10.6 the challenge view hardcoded
+        ``reverse("icv_waf:verify")`` while the middleware (post-v0.10.5)
+        honoured the override. Under django-hosts the page would render
+        but the solver POSTed to the wrong urlconf; the token stayed
+        PENDING forever because VerifyView never ran.
+        """
+        import icv_waf.conf as conf_mod
+
+        settings.ICV_WAF_ENABLED = True
+
+        client = Client()
+
+        with (
+            patch.object(conf_mod, "ICV_WAF_VERIFY_URL", "/custom/verify/"),
+            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
+            patch("icv_waf.services.challenge_service.issue_challenge") as mock_issue,
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_issue.return_value = _mock_challenge_token("tok")
+
+            response = client.get("/waf/challenge/")
+
+        # post_url is build_absolute_uri'd — assert the path component matches.
+        assert response.context["post_url"].endswith("/custom/verify/")
+
     def test_response_has_no_cache_control(self, settings):
         """Challenge page must not be cached (contains a one-time token)."""
         settings.ICV_WAF_ENABLED = True

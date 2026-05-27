@@ -5,6 +5,58 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.6] - 2026-05-27
+
+### Fixed
+
+- **Challenge tokens stuck PENDING under per-request urlconf routing.**
+  `ChallengeView` rendered the challenge page with `post_url =
+  reverse("icv_waf:verify")` — sibling of the middleware bug fixed in
+  v0.10.5, but on the other side of the flow. Under django-hosts (or
+  any other per-request urlconf setup) the page rendered fine, the
+  browser solved the PoW, but the form POSTed to a path on the wrong
+  host's urlconf, so `VerifyView` never ran. Tokens accumulated in the
+  `PENDING` state forever, `solved_at` was never set, and the
+  challenge counter never reset.
+
+  **Fix**: `ChallengeView.get` now honours `ICV_WAF_VERIFY_URL` (the
+  literal-path override added in v0.10.5) before falling back to
+  `reverse()`. Operators with multi-host setups can pin the verify
+  path explicitly the same way they already pin the challenge path.
+
+- **`BlockRule.hit_count` not incrementing for repeat blocks.** The
+  Redis blocked-IP fast-path (step 5 of `evaluate_request`) blocked
+  cached IPs without identifying the matching rule — so subsequent
+  hits to the same blocked IP never reached
+  `_check_block_rules`, which is where `_record_rule_hit` runs. Once
+  an IP was in the cache, its rule's hit counter froze at whatever
+  value the first match recorded.
+
+  **Fix**: `record_block_verdict` now stores the matched rule's UUID
+  as the cache value (was a literal `"1"`). The fast-path decodes it
+  on read, calls `_record_rule_hit`, and threads the rule id into the
+  `EvaluationResult` so downstream signals and logs carry proper
+  attribution too. Legacy `"1"` cache entries are tolerated and block
+  anonymously until they roll over (5-minute TTL by default).
+
+### Added
+
+- **Richer `IPReputation` admin list view.** New columns: `country`
+  (via GeoIP, when database installed), `challenge_passes`,
+  `challenge_failures`, plus derived `block_rate` and
+  `challenge_success_rate` percentages. New list filters for triage:
+  threat tier (high/medium/low), recent activity window
+  (hour/day/week), and "has unsolved challenges". Old fields stay; no
+  data changes.
+
+### Changed
+
+- **`icv_waf.services.geoip.lookup_country`** is now the public entry
+  point for IP-to-country lookups (was a private
+  `_lookup_country` helper inside the middleware). The middleware
+  still exposes a `_lookup_country` shim for backwards compatibility,
+  so any external callers continue to work.
+
 ## [0.10.5] - 2026-05-23
 
 ### Fixed

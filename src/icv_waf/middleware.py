@@ -150,7 +150,14 @@ class WafMiddleware:
             try:
                 from icv_waf.services.rule_engine import record_block_verdict
 
-                record_block_verdict(ip_address, redis_client)
+                # Thread the matched rule id through so the fast-path can
+                # attribute subsequent cached blocks back to the rule, not
+                # just block them anonymously (regression fixed in v0.10.6).
+                record_block_verdict(
+                    ip_address,
+                    redis_client,
+                    rule_id=str(result.matched_rule_id) if result.matched_rule_id else None,
+                )
             except Exception:
                 logger.exception("icv-waf: error recording block verdict")
             _emit_request_blocked(result, ip_address, user_agent, path)
@@ -229,42 +236,13 @@ class WafMiddleware:
 # ---------------------------------------------------------------------------
 
 
-# GeoIP reader — lazily initialised, cached for the process lifetime.
-_geoip_reader = None
-_geoip_checked = False
-
-
 def _lookup_country(ip_address: str) -> str:
-    """Return the 2-letter ISO country code for an IP, or '' if unavailable.
+    """Backwards-compatibility shim — the real implementation lives in
+    ``icv_waf.services.geoip.lookup_country`` (moved in v0.10.6 so the
+    admin can share the same lazy reader)."""
+    from icv_waf.services.geoip import lookup_country
 
-    Uses MaxMind GeoLite2-Country database at the path specified by
-    ICV_WAF_GEOIP_PATH. Degrades gracefully if the database is missing,
-    geoip2 is not installed, or the IP is not found.
-    """
-    global _geoip_reader, _geoip_checked  # noqa: PLW0603
-
-    from icv_waf import conf
-
-    if not conf.ICV_WAF_GEOIP_PATH:
-        return ""
-
-    if not _geoip_checked:
-        _geoip_checked = True
-        try:
-            import geoip2.database
-
-            _geoip_reader = geoip2.database.Reader(conf.ICV_WAF_GEOIP_PATH)
-        except Exception:
-            logger.warning("icv-waf: GeoIP database not available at %s", conf.ICV_WAF_GEOIP_PATH)
-
-    if _geoip_reader is None:
-        return ""
-
-    try:
-        response = _geoip_reader.country(ip_address)
-        return response.country.iso_code or ""
-    except Exception:
-        return ""
+    return lookup_country(ip_address)
 
 
 def _compute_fingerprint(request) -> str:

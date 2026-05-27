@@ -114,6 +114,7 @@ class ChallengeView(TemplateView):
     template_name = "icv_waf/challenge.html"
 
     def get(self, request: HttpRequest, *args, **kwargs) -> HttpResponse:
+        from icv_waf import conf
         from icv_waf.services.challenge_service import issue_challenge
 
         ip = _get_ip(request)
@@ -123,6 +124,16 @@ class ChallengeView(TemplateView):
 
         challenge_token = issue_challenge(ip, redis_client, user_agent=user_agent)
 
+        # Resolve the verify URL the same way the middleware does
+        # (icv_waf.middleware._get_challenge_paths) — honour the operator
+        # override first, fall back to reverse() per-request. Critical for
+        # projects with per-request urlconf routing (django-hosts), where
+        # reverse() inside this view runs against whichever host's urlconf
+        # is active; if the icv_waf URLs aren't mounted on that host, the
+        # solver POSTs to the wrong path, never reaches VerifyView, and
+        # tokens stay PENDING forever.
+        verify_path = conf.ICV_WAF_VERIFY_URL or reverse("icv_waf:verify")
+
         response = self.render_to_response(
             {
                 "token": challenge_token.token,
@@ -130,7 +141,7 @@ class ChallengeView(TemplateView):
                 # matches the verifier, even if conf changes mid-flight.
                 "difficulty": challenge_token.difficulty,
                 "next_url": next_url,
-                "post_url": request.build_absolute_uri(reverse("icv_waf:verify")),
+                "post_url": request.build_absolute_uri(verify_path),
             }
         )
         response["Cache-Control"] = "no-store"

@@ -792,12 +792,13 @@ class TestMiddlewareHelpers:
 
     def test_lookup_country_db_missing_returns_empty(self):
         """A missing GeoIP database is caught on first lookup and returns ''."""
-        import icv_waf.middleware as mw_module
+        import icv_waf.services.geoip as geoip_module
         from icv_waf.middleware import _lookup_country
 
-        # Reset the module-level cache
-        mw_module._geoip_reader = None
-        mw_module._geoip_checked = False
+        # Reset the module-level cache (now lives on services.geoip after
+        # the v0.10.6 extraction; middleware exposes a shim for back-compat).
+        geoip_module._reader = None
+        geoip_module._reader_checked = False
 
         with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", "/nonexistent/GeoLite2-Country.mmdb"):
             assert _lookup_country("1.2.3.4") == ""
@@ -806,7 +807,7 @@ class TestMiddlewareHelpers:
 
     def test_lookup_country_returns_iso_code(self):
         """When the reader returns a country, the ISO code is returned."""
-        import icv_waf.middleware as mw_module
+        import icv_waf.services.geoip as geoip_module
         from icv_waf.middleware import _lookup_country
 
         # Build a fake reader
@@ -815,34 +816,34 @@ class TestMiddlewareHelpers:
         fake_reader = MagicMock()
         fake_reader.country.return_value = fake_country_obj
 
-        mw_module._geoip_reader = fake_reader
-        mw_module._geoip_checked = True
+        geoip_module._reader = fake_reader
+        geoip_module._reader_checked = True
 
         try:
             with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", "/tmp/fake.mmdb"):
                 assert _lookup_country("1.2.3.4") == "GB"
         finally:
             # Restore module state for other tests
-            mw_module._geoip_reader = None
-            mw_module._geoip_checked = False
+            geoip_module._reader = None
+            geoip_module._reader_checked = False
 
     def test_lookup_country_reader_exception_returns_empty(self):
         """An exception from reader.country() is swallowed and returns ''."""
-        import icv_waf.middleware as mw_module
+        import icv_waf.services.geoip as geoip_module
         from icv_waf.middleware import _lookup_country
 
         fake_reader = MagicMock()
         fake_reader.country.side_effect = RuntimeError("IP not found")
 
-        mw_module._geoip_reader = fake_reader
-        mw_module._geoip_checked = True
+        geoip_module._reader = fake_reader
+        geoip_module._reader_checked = True
 
         try:
             with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", "/tmp/fake.mmdb"):
                 assert _lookup_country("1.2.3.4") == ""
         finally:
-            mw_module._geoip_reader = None
-            mw_module._geoip_checked = False
+            geoip_module._reader = None
+            geoip_module._reader_checked = False
 
     def test_get_redis_client_uses_django_redis_when_available(self):
         """_get_redis_client prefers django-redis's get_redis_connection."""

@@ -597,9 +597,15 @@ class TestEvaluateRequest:
         assert result.verdict == Verdict.THROTTLED
 
     def test_redis_blocked_ip_fast_path(self, db):
-        """An IP in the Redis blocked-IP cache is rejected immediately."""
+        """An IP in the Redis blocked-IP cache is rejected immediately.
+
+        Legacy cache value of ``"1"`` (written by pre-v0.10.6 code) carries
+        no rule attribution — matched_rule_id stays None and no hit counter
+        is bumped. Newer entries store the rule id; see the
+        ``test_fast_path_attributes_hit_to_rule`` test below for that path.
+        """
         redis = _make_redis()
-        # Simulate a blocked IP cache hit
+        # Simulate a legacy blocked-IP cache hit (value "1")
         redis.get.side_effect = lambda key: b"1" if "blocked" in key else None
 
         result = evaluate_request(
@@ -611,7 +617,60 @@ class TestEvaluateRequest:
         )
 
         assert result.verdict == Verdict.BLOCKED
-        assert result.matched_rule_id is None  # Fast-path block has no rule ID
+        assert result.matched_rule_id is None  # Legacy cache entries carry no attribution
+
+    def test_fast_path_attributes_hit_to_rule(self, db):
+        """When the fast-path cache stores a rule UUID, the hit is attributed.
+
+        Regression: pre-v0.10.6 the fast-path always blocked anonymously,
+        so any IP blocked once stopped contributing to BlockRule.hit_count.
+        From v0.10.6, the cache stores the matched rule_id and the fast
+        path calls ``_record_rule_hit`` so the rule's counter still
+        increments on repeat blocks.
+        """
+        import uuid
+
+        rule_uuid = uuid.uuid4()
+        redis = _make_redis()
+        redis.get.side_effect = lambda key: str(rule_uuid).encode() if "blocked" in key else None
+
+        result = evaluate_request(
+            ip_address="5.5.5.6",
+            user_agent="Mozilla/5.0",
+            path="/",
+            method="GET",
+            redis_client=redis,
+        )
+
+        assert result.verdict == Verdict.BLOCKED
+        assert result.matched_rule_id == rule_uuid
+        assert result.matched_rule_type == "block"
+
+        # Confirm the hit counter was bumped.
+        incr_keys = [c.args[0] for c in redis.incr.call_args_list]
+        assert f"waf:rule_hits:{rule_uuid}" in incr_keys
+
+    def test_fast_path_malformed_cache_value_falls_back(self, db):
+        """A malformed cache value still blocks but carries no attribution.
+
+        Defensive: someone could write garbage to the cache key (replication
+        race, manual ops intervention). The fast path must still block —
+        failing open on a malformed cache value would be worse than failing
+        closed without attribution.
+        """
+        redis = _make_redis()
+        redis.get.side_effect = lambda key: b"not-a-uuid" if "blocked" in key else None
+
+        result = evaluate_request(
+            ip_address="5.5.5.7",
+            user_agent="Mozilla/5.0",
+            path="/",
+            method="GET",
+            redis_client=redis,
+        )
+
+        assert result.verdict == Verdict.BLOCKED
+        assert result.matched_rule_id is None
 
     def test_rate_limit_exceeded_returns_throttled(self, db):
         """When rate limit is exceeded, result is THROTTLED."""
@@ -2647,6 +2706,28 @@ class TestRecordBlockVerdict:
 
         call_args = redis.setex.call_args.args
         assert call_args[1] == 300
+
+    def test_stores_rule_id_when_provided(self):
+        """When called with rule_id, the cache value is the rule UUID string.
+
+        This is what gives the fast-path its hit attribution from v0.10.6
+        onward — see test_fast_path_attributes_hit_to_rule.
+        """
+        from icv_waf.services.rule_engine import record_block_verdict
+
+        redis = _make_redis()
+        record_block_verdict("9.8.7.5", redis, ttl=300, rule_id="abc-123")
+
+        redis.setex.assert_called_once_with("waf:blocked:9.8.7.5", 300, "abc-123")
+
+    def test_stores_sentinel_when_rule_id_missing(self):
+        """When rule_id is None or empty, falls back to the legacy "1" sentinel."""
+        from icv_waf.services.rule_engine import record_block_verdict
+
+        redis = _make_redis()
+        record_block_verdict("9.8.7.4", redis, ttl=300, rule_id=None)
+
+        redis.setex.assert_called_once_with("waf:blocked:9.8.7.4", 300, "1")
 
 
 # ---------------------------------------------------------------------------
