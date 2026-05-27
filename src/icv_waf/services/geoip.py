@@ -52,6 +52,54 @@ class GeoIPDownloadError(GeoIPError):
     """The download from MaxMind failed or returned an invalid archive."""
 
 
+# ---------------------------------------------------------------------------
+# Runtime lookup
+# ---------------------------------------------------------------------------
+
+# Lazily initialised reader, cached for the process lifetime. The middleware
+# and the admin both consult this; no per-request reader construction.
+_reader = None
+_reader_checked = False
+
+
+def lookup_country(ip_address: str) -> str:
+    """Return the 2-letter ISO country code for an IP, or '' if unavailable.
+
+    Uses the MaxMind GeoLite2-Country database at ``ICV_WAF_GEOIP_PATH``.
+    Degrades gracefully if the database is missing, ``geoip2`` is not
+    installed, the IP is private, or the lookup fails — every failure
+    mode returns the empty string so callers can treat the function as
+    best-effort.
+    """
+    global _reader, _reader_checked  # noqa: PLW0603
+
+    from icv_waf import conf
+
+    if not conf.ICV_WAF_GEOIP_PATH:
+        return ""
+
+    if not _reader_checked:
+        _reader_checked = True
+        try:
+            import geoip2.database
+
+            _reader = geoip2.database.Reader(conf.ICV_WAF_GEOIP_PATH)
+        except Exception:
+            logger.warning(
+                "icv-waf: GeoIP database not available at %s",
+                conf.ICV_WAF_GEOIP_PATH,
+            )
+
+    if _reader is None:
+        return ""
+
+    try:
+        response = _reader.country(ip_address)
+        return response.country.iso_code or ""
+    except Exception:
+        return ""
+
+
 def check_geoip2_available() -> None:
     """Raise GeoIPNotInstalledError if the ``geoip2`` package is missing.
 

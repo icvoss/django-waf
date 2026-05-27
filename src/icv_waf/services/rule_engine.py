@@ -254,12 +254,25 @@ def evaluate_request(
 
     # Step 5: Redis blocked-IP fast-path (BR-EVAL-005)
     blocked_key = _BLOCKED_IP_KEY.format(ip=ip_address)
-    if redis_client.get(blocked_key):
+    cached_value = redis_client.get(blocked_key)
+    if cached_value:
+        # Cache value is the originally-matched rule_id (when known) so
+        # fast-path hits get attributed back to the rule. Legacy "1"
+        # entries (written by pre-0.10.6 code) carry no attribution.
+        rule_id_str = cached_value.decode() if isinstance(cached_value, bytes) else cached_value
+        matched_rule_id = None
+        if rule_id_str and rule_id_str != "1":
+            try:
+                matched_rule_id = UUID(rule_id_str)
+                _record_rule_hit(rule_id_str, redis_client)
+            except ValueError:
+                # Malformed cache value — log nothing, still block.
+                pass
         return EvaluationResult(
             verdict=Verdict.BLOCKED,
             action=RuleAction.BLOCK,
-            matched_rule_id=None,
-            matched_rule_type="",
+            matched_rule_id=matched_rule_id,
+            matched_rule_type="block" if matched_rule_id else "",
             anomaly_score=None,
         )
 
@@ -347,8 +360,13 @@ def evaluate_request(
     # Creates a persistent auto BlockRule + Redis fast-path with configurable TTL.
     challenged_count = _get_unsolved_challenge_count(ip_address, redis_client)
     if challenged_count >= conf.ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD:
-        record_block_verdict(ip_address, redis_client, ttl=conf.ICV_WAF_ESCALATION_BLOCK_TTL)
-        _create_escalation_rule(ip_address)
+        escalation_rule = _create_escalation_rule(ip_address)
+        record_block_verdict(
+            ip_address,
+            redis_client,
+            ttl=conf.ICV_WAF_ESCALATION_BLOCK_TTL,
+            rule_id=str(escalation_rule.id) if escalation_rule else None,
+        )
         return EvaluationResult(
             verdict=Verdict.BLOCKED,
             action=RuleAction.BLOCK,
@@ -592,7 +610,10 @@ def _get_unsolved_challenge_count(ip_address: str, redis_client) -> int:
         return 0
 
 
-def _create_escalation_rule(ip_address: str) -> None:
+def _create_escalation_rule(ip_address: str):  # -> BlockRule | None
+    # Returns the created/updated BlockRule so callers can attribute the
+    # fast-path cache entry to its id (see record_block_verdict). Returns
+    # None on failure; callers should treat that as "block but unknown rule".
     """Create a persistent auto BlockRule for an escalated IP.
 
     Uses update_or_create so concurrent escalations don't duplicate.
@@ -625,7 +646,8 @@ def _create_escalation_rule(ip_address: str) -> None:
 
     try:
         with transaction.atomic():
-            BlockRule.objects.update_or_create(**lookup, defaults=defaults)
+            rule, _ = BlockRule.objects.update_or_create(**lookup, defaults=defaults)
+        return rule
     except BlockRule.MultipleObjectsReturned:
         logger.warning(
             "icv-waf: duplicate BlockRule rows for escalation of %s — deduplicating",
@@ -634,11 +656,14 @@ def _create_escalation_rule(ip_address: str) -> None:
         _deduplicate_escalation_rules(**lookup)
         try:
             with transaction.atomic():
-                BlockRule.objects.update_or_create(**lookup, defaults=defaults)
+                rule, _ = BlockRule.objects.update_or_create(**lookup, defaults=defaults)
+            return rule
         except Exception:
             logger.exception("icv-waf: failed to create escalation rule for %s after dedup", ip_address)
+            return None
     except Exception:
         logger.exception("icv-waf: failed to create escalation rule for %s", ip_address)
+        return None
 
 
 def _deduplicate_escalation_rules(**lookup) -> int:
@@ -663,6 +688,7 @@ def record_block_verdict(
     ip_address: str,
     redis_client,
     ttl: int = 300,
+    rule_id: str | None = None,
 ) -> None:
     """Write the blocked-IP cache entry for fast-path rejection on subsequent requests.
 
@@ -674,7 +700,13 @@ def record_block_verdict(
         ip_address: The blocked IP address.
         redis_client: Configured Redis client instance.
         ttl: Cache TTL in seconds (default 300 = 5 minutes).
+        rule_id: Optional matched rule id. Stored as the cache value so the
+            fast-path can attribute subsequent hits to the original rule
+            via ``_record_rule_hit``. Defaults to a sentinel string when
+            unknown; cache reads tolerate the legacy ``"1"`` value as the
+            same sentinel.
     """
     blocked_key = _BLOCKED_IP_KEY.format(ip=ip_address)
-    redis_client.setex(blocked_key, ttl, "1")
+    value = str(rule_id) if rule_id else "1"
+    redis_client.setex(blocked_key, ttl, value)
     redis_client.hincrby(_STATS_KEY, "blocked", 1)
