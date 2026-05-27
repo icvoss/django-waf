@@ -5,6 +5,49 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] - 2026-05-27
+
+### Fixed
+
+- **`RenderTokenDefence.render_fields` shipped the raw token string
+  instead of a hidden `<input>` tag** — a critical bug in v0.11.0 that
+  made every protected form unusable for real users. The orchestrator
+  concatenated the raw token into the DOM as visible page text; no
+  `<input name="waf_token">` ever rendered, so browsers never
+  submitted a `waf_token` field, and every real-user POST was rejected
+  with `render_token:missing`.
+
+  The unit tests in v0.11.0 missed this because they constructed POST
+  payloads directly — none ever parsed the rendered HTML and submitted
+  what a browser would actually submit. The strengthened tests in this
+  release (see "Added" below) close that gap.
+
+  **Fix**: `RenderTokenDefence.render_fields` now returns
+  `format_html('<input type="hidden" name="{}" value="{}">', ...)`.
+  The orchestrator extracts the nonce back out of the rendered `<input>`
+  via a `value="..."` regex when threading it to subsequent defences
+  (honeypot, js_touch, pow_gate). No public-API change.
+
+### Added
+
+- **DOM round-trip test suite** (`tests/forms/test_dom_round_trip.py`).
+  Renders a protected form, parses the HTML the way a browser would
+  (via `html.parser`), builds a POST from the discovered `<input>`
+  values, and verifies `PASSED`. This is the test class that would
+  have caught the v0.11.0 bug before release; future render-side
+  regressions across any defence are now covered.
+
+### Upgrade
+
+Anyone who shipped v0.11.0 with form protection enabled has broken
+forms — upgrade immediately:
+
+```bash
+pip install -U django-waf
+```
+
+No settings or migration changes.
+
 ## [0.11.0] - 2026-05-27
 
 ### Added

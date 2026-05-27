@@ -148,6 +148,27 @@ _CANONICAL_ORDER = (
 )
 
 
+_TOKEN_VALUE_RE = None  # lazy-compiled on first call
+
+
+def _extract_token_value(fragment: str) -> str:
+    """Return the contents of ``value="..."`` from a rendered <input> fragment.
+
+    The orchestrator uses this to read back the token nonce after
+    ``RenderTokenDefence.render_fields`` returns its hidden-input
+    HTML. Returns the empty string if no value attribute is found
+    (treated as 'no token available', and the orchestrator falls
+    through without threading a nonce to later defences).
+    """
+    import re
+
+    global _TOKEN_VALUE_RE  # noqa: PLW0603 — single-shot lazy compile is fine
+    if _TOKEN_VALUE_RE is None:
+        _TOKEN_VALUE_RE = re.compile(r'value="([^"]*)"')
+    match = _TOKEN_VALUE_RE.search(fragment)
+    return match.group(1) if match else ""
+
+
 def _order_defences(names: tuple[str, ...]) -> tuple[str, ...]:
     """Return the configured names in canonical order.
 
@@ -337,19 +358,30 @@ class FormProtection:
             try:
                 fragments = defence.render_fields(ctx)
                 all_fields.update(fragments)
-                # The token is in fragments[TOKEN_FIELD_NAME] — but
-                # the nonce is internal to it. Extract via the
-                # parse_submitted_payload helper (works because we
-                # just issued the token).
+                # The token rides inside the rendered <input>'s
+                # ``value`` attribute. Extract it back out so the
+                # nonce can be threaded onto subsequent defences'
+                # ctx.config — they need it to bind their hidden
+                # fields to this render (PowGateDefence + JsTouchDefence).
+                #
+                # We could ask the defence to expose the payload via
+                # a side channel, but parsing what we just rendered
+                # keeps the contract uniform: every defence's
+                # ``render_fields`` returns a name → HTML mapping,
+                # and the orchestrator's only structural assumption
+                # is that the token sits in a ``value="..."`` attr —
+                # which is also the assumption browsers will make.
                 from icv_waf.forms.defences.render_token import (
                     TOKEN_FIELD_NAME,
                     parse_submitted_payload,
                 )
 
-                token_str = fragments.get(TOKEN_FIELD_NAME, "")
-                payload = parse_submitted_payload({TOKEN_FIELD_NAME: token_str})
-                if payload is not None:
-                    token_nonce = payload.nonce
+                fragment = fragments.get(TOKEN_FIELD_NAME, "")
+                token_str = _extract_token_value(fragment)
+                if token_str:
+                    payload = parse_submitted_payload({TOKEN_FIELD_NAME: token_str})
+                    if payload is not None:
+                        token_nonce = payload.nonce
             except Exception:
                 # Per fail-open policy: render_token failure must not
                 # break form rendering. The form just renders without

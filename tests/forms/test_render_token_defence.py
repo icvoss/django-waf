@@ -53,8 +53,17 @@ def _eval_ctx(req, submitted_data, form_id="contact", config=None):
 
 
 class TestRenderFields:
-    def test_returns_token_hidden_field(self, settings):
-        """The hidden field name is waf_token (stable for grep)."""
+    def test_returns_token_hidden_input_tag(self, settings):
+        """The fragment must be a hidden <input>, not the raw token.
+
+        Regression: v0.11.0 returned ``mark_safe(token)`` — the bare
+        base64url string. The orchestrator concatenated it into the
+        DOM as visible text, no <input> ever rendered, and every real
+        user POST was rejected with render_token:missing. The
+        original test only checked the fragment was 'a string longer
+        than 20 chars', which the raw token satisfies. Tightened to
+        assert the actual DOM contract.
+        """
         import icv_waf.conf as conf_mod
         from icv_waf.forms.defences.render_token import TOKEN_FIELD_NAME
 
@@ -64,8 +73,27 @@ class TestRenderFields:
 
         assert TOKEN_FIELD_NAME == "waf_token"
         assert TOKEN_FIELD_NAME in fields
-        assert isinstance(fields[TOKEN_FIELD_NAME], str)
-        assert len(fields[TOKEN_FIELD_NAME]) > 20  # base64-encoded payload+sig
+        fragment = fields[TOKEN_FIELD_NAME]
+
+        # Must be a complete hidden <input>, named correctly, with a
+        # non-empty value attribute.
+        assert fragment.startswith(f'<input type="hidden" name="{TOKEN_FIELD_NAME}"'), (
+            f"expected hidden input tag, got: {fragment!r}"
+        )
+        assert 'value="' in fragment
+        assert fragment.rstrip().endswith(">")
+
+        # The token must be inside value="...", not bare in the
+        # fragment text — defends against a future regression that
+        # leaves the token sitting next to (rather than inside) the
+        # input tag.
+        import re
+
+        match = re.search(r'value="([^"]+)"', fragment)
+        assert match, "no value attribute found"
+        token = match.group(1)
+        # base64url-ish (some implementations include padding `=`).
+        assert len(token) > 20
 
     def test_issues_redis_marker_for_token(self, settings):
         """A fresh render must SETEX the one-shot marker."""
