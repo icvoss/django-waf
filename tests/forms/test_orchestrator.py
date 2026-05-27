@@ -182,9 +182,18 @@ class TestEvaluate:
                 defences=("render_token", "honeypot"),
                 redis_client_factory=lambda: redis,
             )
-            # Render to get a valid token.
+            # Render the form, then build the submission the way a
+            # browser would — by reading the rendered <input>'s
+            # value attribute. Submitting the raw HTML fragment as
+            # the field value (what this test originally did) is what
+            # masked the v0.11.0 bug — pre-bug it accidentally worked
+            # because fields[...] was the raw token, post-bug it stops
+            # working. Use the orchestrator's own _extract_token_value
+            # helper so this test always reflects what browsers do.
+            from icv_waf.forms.protection import _extract_token_value
+
             fields = protection.render_fields(_request())
-            token = fields["waf_token"]
+            token = _extract_token_value(fields["waf_token"])
 
             result = protection.evaluate(
                 _request(),

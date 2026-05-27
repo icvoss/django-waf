@@ -25,7 +25,8 @@ import contextlib
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from django.utils.safestring import SafeString, mark_safe
+from django.utils.html import format_html
+from django.utils.safestring import SafeString
 
 from icv_waf.forms.defences.base import (
     EvaluateContext,
@@ -125,9 +126,22 @@ class RenderTokenDefence:
         with contextlib.suppress(Exception):
             issue_marker(self._redis(), nonce=payload.nonce, ttl_seconds=ttl)
 
-        # The token is base64url-encoded — no HTML-special characters
-        # can appear in it, so mark_safe is XSS-safe by construction.
-        return {TOKEN_FIELD_NAME: mark_safe(token)}  # noqa: S308
+        # Return a full <input> tag, not just the token. v0.11.0
+        # shipped this returning the raw token string, which the
+        # orchestrator's ''.join() concatenated into the page as bare
+        # text — so the browser never submitted a waf_token field and
+        # every real user POST was rejected with render_token:missing.
+        # ``format_html`` HTML-escapes the value defensively; tokens
+        # are base64url so the escape is a no-op today, but the
+        # explicit safety documents the intent and survives a future
+        # change in token format.
+        return {
+            TOKEN_FIELD_NAME: format_html(
+                '<input type="hidden" name="{}" value="{}">',
+                TOKEN_FIELD_NAME,
+                token,
+            ),
+        }
 
     def evaluate(self, ctx: EvaluateContext) -> Outcome:
         """Verify the submitted token + check expiry, marker, IP."""
