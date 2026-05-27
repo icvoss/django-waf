@@ -114,6 +114,8 @@ class ChallengeView(TemplateView):
     template_name = "icv_waf/challenge.html"
 
     def get(self, request: HttpRequest, *args, **kwargs) -> HttpResponse:
+        from urllib.parse import urlencode
+
         from icv_waf import conf
         from icv_waf.services.challenge_service import issue_challenge
 
@@ -123,6 +125,16 @@ class ChallengeView(TemplateView):
         user_agent = request.META.get("HTTP_USER_AGENT", "")
 
         challenge_token = issue_challenge(ip, redis_client, user_agent=user_agent)
+
+        # Form-replay token: when the form-protection orchestrator
+        # redirected here on a FLAGGED submission, the original POST
+        # data is parked in the session and ``form_replay=<token>`` is
+        # in the URL. Preserve it through to next_url so the
+        # post-challenge landing page can resubmit.
+        form_replay = request.GET.get("form_replay", "")
+        if form_replay:
+            separator = "&" if "?" in next_url else "?"
+            next_url = f"{next_url}{separator}{urlencode({'form_replay': form_replay})}"
 
         # Resolve the verify URL the same way the middleware does
         # (icv_waf.middleware._get_challenge_paths) — honour the operator
