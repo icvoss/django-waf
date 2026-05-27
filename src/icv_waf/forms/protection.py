@@ -148,6 +148,34 @@ _CANONICAL_ORDER = (
 )
 
 
+def scalarise_submitted_data(data) -> dict[str, str]:
+    """Return a single-value-per-key dict from form-submission data.
+
+    Defences read their hidden fields as scalar strings —
+    ``ctx.submitted_data.get("waf_token")`` is expected to return the
+    token, not ``[token]``. Django's ``QueryDict`` stores values as
+    lists internally; ``dict(querydict)`` iterates the underlying
+    storage and produces list-valued entries, which silently passes
+    the truthy ``or ""`` check in defences and then crashes when the
+    defence tries to ``base64.urlsafe_b64decode`` a list (v0.11.0 +
+    v0.11.1 bug found in production).
+
+    The fix: call ``.dict()`` on a ``QueryDict`` (last-value-per-key
+    string semantics), else just ``dict(data)`` for plain mappings
+    that tests sometimes pass.
+
+    This function is the single seam between the entry points
+    (mixin, decorator, replay) and the orchestrator. Adding it once
+    here closes the class of bug: every defence-facing path goes
+    through this.
+    """
+    # ``QueryDict.dict()`` is the scalarising accessor; we duck-type
+    # against any other MultiValueDict-shaped input that exposes it.
+    if hasattr(data, "dict") and callable(data.dict):
+        return data.dict()
+    return dict(data) if data else {}
+
+
 _TOKEN_VALUE_RE = None  # lazy-compiled on first call
 
 
