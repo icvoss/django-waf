@@ -11,6 +11,121 @@ from django.conf import settings
 # Enable or disable the WAF middleware entirely.
 ICV_WAF_ENABLED: bool = getattr(settings, "ICV_WAF_ENABLED", True)
 
+# Package-wide HMAC signing secret. Used by every signed artefact the WAF
+# issues — form render tokens (v0.11.0), and any future signed verdicts
+# or challenge tokens that migrate off ``SECRET_KEY``. Kept deliberately
+# separate from Django's ``SECRET_KEY`` so operators can rotate WAF
+# signatures on a security-driven cadence without invalidating sessions.
+#
+# When empty (the default for backwards compatibility) callers must use
+# the helper in ``icv_waf.services.tokens.get_signing_key()`` which falls
+# back to a ``SECRET_KEY``-derived value and the ``icv_waf.W003`` system
+# check emits a warning at startup. In production, set this to a value
+# generated with ``python -c "import secrets; print(secrets.token_urlsafe(64))"``
+# and load it from environment.
+ICV_WAF_SIGNING_KEY: str = getattr(settings, "ICV_WAF_SIGNING_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Form-protection subsystem (v0.11.0)
+# ---------------------------------------------------------------------------
+# All settings below are read by the form-protection defences and
+# orchestrator. Nothing in the existing middleware uses them. Adding
+# ``ProtectedForm`` (or the decorator / template tag) to a form is the
+# opt-in step; until that happens these settings are inert.
+
+# Master kill switch for the form-protection subsystem. When False,
+# ``ProtectedForm.clean()`` and the decorator/template-tag short-circuit
+# to pass without running any defences. Useful for incident response.
+ICV_WAF_FORM_PROTECTION_ENABLED: bool = getattr(settings, "ICV_WAF_FORM_PROTECTION_ENABLED", True)
+
+# Aggregate-score thresholds. The orchestrator sums ``flag`` scores;
+# crossing FLAG triggers logging + signal + (optionally) challenge
+# redirect; crossing BLOCK rejects the submission outright. A single
+# defence returning ``block`` short-circuits the chain regardless of
+# total.
+ICV_WAF_FORM_FLAG_THRESHOLD: float = getattr(settings, "ICV_WAF_FORM_FLAG_THRESHOLD", 2.0)
+ICV_WAF_FORM_BLOCK_THRESHOLD: float = getattr(settings, "ICV_WAF_FORM_BLOCK_THRESHOLD", 5.0)
+
+# Whether to redirect flagged submissions through the existing
+# /waf/challenge/ flow rather than rejecting them. When True (default)
+# false-positive users get a way through; when False they get a
+# generic form error.
+ICV_WAF_FORM_CHALLENGE_ON_FLAG: bool = getattr(settings, "ICV_WAF_FORM_CHALLENGE_ON_FLAG", True)
+
+# Whether the orchestrator fires the ``form_submission_passed`` signal.
+# Off by default — busy sites have 1000× more passed submissions than
+# flagged/blocked ones and firing in the hot path is wasted work. The
+# structured log still records passes (sampled). Operators who want
+# pass-event analytics opt in here.
+ICV_WAF_FORM_EMIT_PASSED_SIGNAL: bool = getattr(settings, "ICV_WAF_FORM_EMIT_PASSED_SIGNAL", False)
+
+# Lifetime of a render token. After this many seconds the token is
+# expired and the user gets a fresh one on the next render. Also the
+# TTL of the Redis marker that backs replay protection.
+ICV_WAF_FORM_TOKEN_TTL: int = getattr(settings, "ICV_WAF_FORM_TOKEN_TTL", 3600)
+
+# Honeypot field-name pool. The HoneypotDefence picks names from this
+# list by hashing form_id, so a given form gets a stable set of names
+# (cache-friendly) but different forms get different names (bots can't
+# learn one global set).
+ICV_WAF_FORM_HONEYPOT_FIELD_NAMES: list[str] = getattr(
+    settings,
+    "ICV_WAF_FORM_HONEYPOT_FIELD_NAMES",
+    ["url", "website", "homepage", "email_confirm"],
+)
+
+# Time-trap thresholds in seconds. Submissions faster than the min are
+# flagged; faster than 0.5s are blocked outright. Submissions older
+# than the max have either been sitting open too long (UA changed, IP
+# changed) or are replays — flagged either way.
+ICV_WAF_FORM_TIME_TRAP_MIN_SECONDS: float = getattr(settings, "ICV_WAF_FORM_TIME_TRAP_MIN_SECONDS", 1.5)
+ICV_WAF_FORM_TIME_TRAP_MAX_SECONDS: float = getattr(settings, "ICV_WAF_FORM_TIME_TRAP_MAX_SECONDS", 3600)
+
+# Credential-throttle settings. Per-IP threshold drives the visible
+# challenge (enumeration-safe — same behaviour whether the typed
+# username exists). Per-account threshold drives an observation-only
+# ``credential_attack_observed`` signal so consumers can email the
+# legitimate owner.
+ICV_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW: int = getattr(settings, "ICV_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW", 900)
+ICV_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT: int = getattr(settings, "ICV_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT", 5)
+ICV_WAF_FORM_CREDENTIAL_IP_LIMIT: int = getattr(settings, "ICV_WAF_FORM_CREDENTIAL_IP_LIMIT", 20)
+
+# Signup-velocity settings. Counts *successful* signups per IP, so the
+# user crossing the threshold sees a challenge on their *next* attempt.
+ICV_WAF_FORM_SIGNUP_VELOCITY_WINDOW: int = getattr(settings, "ICV_WAF_FORM_SIGNUP_VELOCITY_WINDOW", 86400)
+ICV_WAF_FORM_SIGNUP_VELOCITY_LIMIT: int = getattr(settings, "ICV_WAF_FORM_SIGNUP_VELOCITY_LIMIT", 5)
+
+# Form-level PoW difficulty (leading zero bits). Lighter than the
+# page-level challenge because it runs per-submission rather than once
+# per session. 12 bits ≈ 4k SHA-256 hashes ≈ 50ms desktop, ~200ms
+# mobile. Reuses the same _digest_has_leading_zero_bits verifier as
+# the page challenge (no parallel implementation, no drift risk).
+ICV_WAF_FORM_POW_DIFFICULTY: int = getattr(settings, "ICV_WAF_FORM_POW_DIFFICULTY", 12)
+
+# Replay-store backend. ``session`` uses Django's session framework
+# (signed cookie + server-side data); ``redis`` uses the same Redis
+# the rest of the WAF talks to. Most sites use session.
+ICV_WAF_FORM_REPLAY_STORE: str = getattr(settings, "ICV_WAF_FORM_REPLAY_STORE", "session")
+
+# Global per-defence score weights. Overridable per-form via the
+# ``defence_weights={...}`` kwarg on ``FormProtection``. The dict
+# collapses what would otherwise be eight separate weight settings
+# into one declaration.
+ICV_WAF_FORM_DEFENCE_WEIGHTS: dict[str, float] = getattr(
+    settings,
+    "ICV_WAF_FORM_DEFENCE_WEIGHTS",
+    {
+        "honeypot": 5.0,
+        "time_trap": 2.0,
+        "render_token": 5.0,
+        "ua_consistency": 2.0,
+        "js_touch": 1.5,
+        "credential_throttle": 5.0,
+        "signup_velocity": 5.0,
+        "pow_gate": 5.0,
+    },
+)
+
 # Proof-of-work challenge difficulty — number of leading zero **bits** the
 # SHA-256(token + nonce) digest must contain. Average solve cost is
 # ``2 ** difficulty`` hashes. Acts as the single-value fallback when the

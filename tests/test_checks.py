@@ -17,6 +17,12 @@ def _run_checks():
     return check_challenge_difficulty(app_configs=None)
 
 
+def _run_signing_key_check():
+    from icv_waf.checks import check_signing_key
+
+    return check_signing_key(app_configs=None)
+
+
 class TestChallengeDifficultyCheck:
     def test_recommended_defaults_produce_no_messages(self):
         import icv_waf.conf as conf_mod
@@ -87,3 +93,32 @@ class TestChallengeDifficultyCheck:
             messages = _run_checks()
 
         assert any(m.id == "icv_waf.E001" for m in messages)
+
+
+class TestSigningKeyCheck:
+    """W003 — warns when ICV_WAF_SIGNING_KEY is unset.
+
+    Falling back to a SECRET_KEY-derived value is supported (and is
+    what makes v0.10.x → v0.11.0 upgrades seamless) but it ties WAF
+    signature rotation to Django's session secret. The check nudges
+    operators toward an explicit dedicated key.
+    """
+
+    def test_explicit_key_produces_no_messages(self):
+        import icv_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "an-explicit-key-value"):
+            assert _run_signing_key_check() == []
+
+    def test_empty_key_emits_w003_warning(self):
+        import icv_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", ""):
+            messages = _run_signing_key_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "icv_waf.W003"
+        # The hint must tell operators how to fix it — pin the actionable
+        # part of the message so future edits don't lose the remediation.
+        assert "secrets.token_urlsafe" in messages[0].hint
+        assert "ICV_WAF_SIGNING_KEY" in messages[0].hint

@@ -11,6 +11,11 @@ Expected attempts is ``2 ** difficulty``. Thresholds:
 * ``> 28`` (~268M hashes, > 60s on most laptops) — Error.
 * ``> 24`` (~16M hashes, ~5–20s on phones) — Warning.
 * ``< 8``  (256 hashes, no real bot deterrence) — Warning.
+
+The signing-key check (``icv_waf.W003``) was added in v0.11.0 alongside
+the form-protection subsystem. It surfaces when the package is falling
+back to a ``SECRET_KEY``-derived signing key — fine for development but
+worth a deliberate decision in production.
 """
 
 from __future__ import annotations
@@ -73,3 +78,32 @@ def check_challenge_difficulty(app_configs, **kwargs):
             )
 
     return messages
+
+
+@register()
+def check_signing_key(app_configs, **kwargs):
+    """Warn when ``ICV_WAF_SIGNING_KEY`` is unset and the package falls back
+    to a ``SECRET_KEY``-derived value.
+
+    Falling back is supported — it's how v0.10.x → v0.11.0 upgrades stay
+    seamless — but tying WAF signatures to ``SECRET_KEY`` means rotating
+    one forces rotating the other and logs every user out. The W003
+    warning nudges operators toward an explicit dedicated key.
+    """
+    from icv_waf import conf
+
+    if not conf.ICV_WAF_SIGNING_KEY:
+        return [
+            Warning(
+                "ICV_WAF_SIGNING_KEY is not set — falling back to a SECRET_KEY-derived signing key for WAF tokens.",
+                hint=(
+                    'Generate a dedicated key with `python -c "import '
+                    'secrets; print(secrets.token_urlsafe(64))"` and set '
+                    "ICV_WAF_SIGNING_KEY in your environment. Keeping the "
+                    "WAF key separate from SECRET_KEY lets you rotate "
+                    "either independently."
+                ),
+                id="icv_waf.W003",
+            )
+        ]
+    return []
