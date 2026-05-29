@@ -191,6 +191,16 @@ ICV_WAF_EXEMPT_PATHS: list[str] = getattr(
     ["/static/", "/media/", "/health/", "/favicon.ico"],
 )
 
+# Hostnames that bypass WAF evaluation entirely. Matching mirrors Django's
+# ALLOWED_HOSTS convention: an exact host match, or a leading-dot entry
+# (".example.com") that matches the domain and any subdomain. The port is
+# stripped before matching. Empty by default (no host is exempt).
+ICV_WAF_EXEMPT_HOSTS: list[str] = getattr(
+    settings,
+    "ICV_WAF_EXEMPT_HOSTS",
+    [],
+)
+
 # Trust the X-Forwarded-For header when extracting the real client IP.
 ICV_WAF_TRUST_X_FORWARDED_FOR: bool = getattr(settings, "ICV_WAF_TRUST_X_FORWARDED_FOR", False)
 

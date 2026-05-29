@@ -131,6 +131,7 @@ All settings are namespaced under `ICV_WAF_*` and have sensible defaults.
 |---------|---------|-------------|
 | `ICV_WAF_ENABLED` | `True` | Master switch — disable to pass all requests through |
 | `ICV_WAF_EXEMPT_PATHS` | `["/static/", "/media/", "/health/", "/favicon.ico"]` | URL prefixes that bypass WAF evaluation entirely |
+| `ICV_WAF_EXEMPT_HOSTS` | `[]` | Hostnames that bypass WAF evaluation entirely. Exact match, or a leading-dot entry (`.example.com`) matching the domain and any subdomain (mirrors Django's `ALLOWED_HOSTS`). Port is stripped before matching |
 | `ICV_WAF_TRUST_X_FORWARDED_FOR` | `False` | Trust `X-Forwarded-For` header for client IP extraction |
 | `ICV_WAF_REDIS_ALIAS` | `"default"` | Django cache alias for Redis connections |
 | `ICV_WAF_ALLOWED_METHODS` | `None` | Allowed HTTP methods; requests with other methods receive 405 before rule evaluation. `None` allows all methods. |
@@ -388,7 +389,7 @@ Client → nginx (C-level blocklist, < 0.01 ms)
 
 The middleware evaluates requests in this order:
 
-1. **Exempt paths bypass** — static assets and health endpoints skip all evaluation
+1. **Exempt paths/hosts bypass** — static assets, health endpoints, and exempt hosts skip all evaluation
 2. **HTTP method filtering** — disallowed methods receive 405 immediately
 3. **Master switch check** — `ICV_WAF_ENABLED = False` passes all requests through
 4. **Staff/superuser bypass** — authenticated staff skip rule evaluation

@@ -22,7 +22,7 @@ class WafMiddleware:
     """Django WAF middleware — new-style __init__/__call__ pattern.
 
     Evaluation order per BR-EVAL-003:
-    1. Exempt paths bypass all WAF checks (BR-EVAL-001)
+    1. Exempt paths and hosts bypass all WAF checks (BR-EVAL-001)
     2. Master switch ICV_WAF_ENABLED (BR-EVAL-002)
     3. Staff/superuser bypass rate limiting (BR-RATE-003)
     4. Valid waf_pass cookie → pass through (BR-CHAL-006)
@@ -66,6 +66,10 @@ class WafMiddleware:
         for prefix in conf.ICV_WAF_EXEMPT_PATHS:
             if path.startswith(prefix):
                 return self.get_response(request)
+
+        # BR-EVAL-001: exempt hosts — exact or subdomain match
+        if conf.ICV_WAF_EXEMPT_HOSTS and _is_exempt_host(request, conf.ICV_WAF_EXEMPT_HOSTS):
+            return self.get_response(request)
 
         # HTTP method filtering — 405 for disallowed methods
         allowed = conf.ICV_WAF_ALLOWED_METHODS
@@ -283,6 +287,37 @@ def _extract_ip(request) -> str:
             return forwarded_for.split(",")[0].strip()
 
     return request.META.get("REMOTE_ADDR", "")
+
+
+def _is_exempt_host(request, exempt_hosts) -> bool:
+    """Return True if the request host matches an entry in exempt_hosts.
+
+    Matching mirrors Django's ALLOWED_HOSTS: an exact host match, or a
+    leading-dot entry (".example.com") matching the domain and any subdomain.
+    The port is stripped before matching. Falls back to the raw HTTP_HOST
+    header if get_host() raises (e.g. host not in ALLOWED_HOSTS).
+    """
+    try:
+        host = request.get_host()
+    except Exception:
+        host = request.META.get("HTTP_HOST", "")
+
+    # Strip port. IPv6 literals are bracketed ("[::1]:8000") so split on the
+    # last colon only when it follows a closing bracket or there is no bracket.
+    if host.startswith("["):
+        host = host.partition("]")[0].lstrip("[")
+    else:
+        host = host.rsplit(":", 1)[0] if ":" in host else host
+    host = host.lower()
+
+    for entry in exempt_hosts:
+        entry = entry.lower()
+        if entry.startswith("."):
+            if host == entry[1:] or host.endswith(entry):
+                return True
+        elif host == entry:
+            return True
+    return False
 
 
 def _is_staff_user(request) -> bool:

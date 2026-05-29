@@ -5,6 +5,19 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-05-28
+
+### Added
+
+- **Host exclusions** via `ICV_WAF_EXEMPT_HOSTS`. Requests to a listed
+  host bypass WAF evaluation entirely, complementing the existing
+  `ICV_WAF_EXEMPT_PATHS`. The check runs at the same early stage
+  (BR-EVAL-001), immediately after the exempt-paths check. Matching
+  mirrors Django's `ALLOWED_HOSTS`: an exact host match, or a
+  leading-dot entry (`.example.com`) matching the domain and any
+  subdomain. The port is stripped before matching, and IPv6 literals
+  are handled. Empty by default (no host exempt).
+
 ## [0.11.2] - 2026-05-27
 
 ### Fixed

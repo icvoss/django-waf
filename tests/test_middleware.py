@@ -162,6 +162,121 @@ class TestExemptPaths:
 
 
 # ---------------------------------------------------------------------------
+# Exempt hosts
+# ---------------------------------------------------------------------------
+
+
+class TestExemptHosts:
+    """Requests to exempt hosts bypass all WAF logic (BR-EVAL-001)."""
+
+    @override_settings(
+        ICV_WAF_ENABLED=True,
+        ICV_WAF_EXEMPT_HOSTS=["admin.example.com"],
+        ALLOWED_HOSTS=["admin.example.com", "app.example.com"],
+    )
+    def test_exact_host_is_exempt(self):
+        import importlib
+
+        import icv_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        request = factory.get("/api/data/", HTTP_HOST="admin.example.com")
+        get_response = MagicMock(return_value=HttpResponse("ok"))
+        middleware = _make_middleware(get_response)
+
+        middleware(request)
+
+        get_response.assert_called_once_with(request)
+
+    @override_settings(
+        ICV_WAF_ENABLED=True,
+        ICV_WAF_EXEMPT_HOSTS=["admin.example.com"],
+        ALLOWED_HOSTS=["admin.example.com:8000"],
+    )
+    def test_port_is_stripped_before_matching(self):
+        import importlib
+
+        import icv_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        request = factory.get("/api/data/", HTTP_HOST="admin.example.com:8000")
+        get_response = MagicMock(return_value=HttpResponse("ok"))
+        middleware = _make_middleware(get_response)
+
+        middleware(request)
+
+        get_response.assert_called_once_with(request)
+
+    @override_settings(
+        ICV_WAF_ENABLED=True,
+        ICV_WAF_EXEMPT_HOSTS=[".example.com"],
+        ALLOWED_HOSTS=[".example.com"],
+    )
+    def test_leading_dot_matches_subdomains(self):
+        import importlib
+
+        import icv_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        get_response = MagicMock(return_value=HttpResponse("ok"))
+        middleware = _make_middleware(get_response)
+
+        for host in ("example.com", "internal.example.com", "a.b.example.com"):
+            get_response.reset_mock()
+            request = factory.get("/api/data/", HTTP_HOST=host)
+            middleware(request)
+            get_response.assert_called_once_with(request)
+
+    @override_settings(
+        ICV_WAF_ENABLED=True,
+        ICV_WAF_EXEMPT_HOSTS=["admin.example.com"],
+        ALLOWED_HOSTS=["public.example.com", "admin.example.com"],
+    )
+    def test_non_exempt_host_continues_to_evaluation(self):
+        import importlib
+
+        import icv_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        request = factory.get("/api/data/", HTTP_HOST="public.example.com")
+        with patch("icv_waf.middleware._get_redis_client") as mock_redis_fn:
+            mock_redis_fn.return_value = None  # trigger fail-open
+            middleware = _make_middleware()
+            response = middleware(request)
+
+        assert response.status_code == 200
+
+    @override_settings(
+        ICV_WAF_ENABLED=True,
+        ICV_WAF_EXEMPT_HOSTS=[],
+        ALLOWED_HOSTS=["app.example.com"],
+    )
+    def test_empty_exempt_hosts_continues_to_evaluation(self):
+        import importlib
+
+        import icv_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        request = factory.get("/api/data/", HTTP_HOST="app.example.com")
+        with patch("icv_waf.middleware._get_redis_client") as mock_redis_fn:
+            mock_redis_fn.return_value = None
+            middleware = _make_middleware()
+            response = middleware(request)
+
+        assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # Staff bypass
 # ---------------------------------------------------------------------------
 
