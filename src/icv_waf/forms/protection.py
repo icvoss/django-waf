@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from icv_waf.forms.defences.base import (
@@ -43,7 +43,7 @@ logger = logging.getLogger("icv_waf.forms")
 # ---------------------------------------------------------------------------
 
 
-class FormVerdict(str, Enum):
+class FormVerdict(StrEnum):
     """Final verdict after all defences have run.
 
     String values so logs / signals carry stable identifiers without
