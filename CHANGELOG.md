@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leading-dot entry (`.example.com`) matching the domain and any
   subdomain. The port is stripped before matching, and IPv6 literals
   are handled. Empty by default (no host exempt).
+- **Django 6.0 support.** Added to the CI matrix (on Python 3.12+) and
+  trove classifiers.
+
+### Changed
+
+- **Dropped Django 4.2 support.** The supported range is now Django
+  5.0–6.0. Python floor stays at 3.11; Django 6.0 requires Python 3.12+.
+- `FormVerdict` now subclasses `enum.StrEnum` instead of `(str, Enum)`.
+  Behaviour is unchanged — `.value` and string equality are identical.
 
 ## [0.11.2] - 2026-05-27
 
