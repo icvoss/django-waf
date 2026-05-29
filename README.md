@@ -48,7 +48,7 @@ all configurable without a reverse-proxy vendor.
 ## Requirements
 
 - Python >= 3.11
-- Django >= 5.0
+- Django >= 5.2
 - Redis (via `django-redis >= 5.4`)
 - `httpx >= 0.27` (for threat feed sync)
 - Optional: `celery >= 5.3` (for scheduled tasks)

@@ -22,8 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Dropped Django 4.2 support.** The supported range is now Django
-  5.0–6.0. Python floor stays at 3.11; Django 6.0 requires Python 3.12+.
+- **Dropped Django 4.2, 5.0, and 5.1 support.** The supported range is
+  now Django 5.2 (LTS) and 6.0 — the only series with upstream support.
+  Python floor stays at 3.11; Django 6.0 requires Python 3.12+.
 - `FormVerdict` now subclasses `enum.StrEnum` instead of `(str, Enum)`.
   Behaviour is unchanged — `.value` and string equality are identical.
 
