@@ -41,7 +41,7 @@ class TestDecorator:
     def test_get_request_passes_through(self):
         """GET requests don't trigger defence evaluation — render is
         the template tag's job, not the decorator's."""
-        from icv_waf.forms.decorators import waf_protect_post
+        from django_waf.forms.decorators import waf_protect_post
 
         @waf_protect_post(
             form_id="contact-get-test",
@@ -58,10 +58,10 @@ class TestDecorator:
 
     def test_clean_post_calls_view(self, settings):
         """Honeypot empty → PASSED → view runs."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import waf_protect_post
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import waf_protect_post
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
 
             @waf_protect_post(
                 form_id="contact-clean-post",
@@ -81,13 +81,13 @@ class TestDecorator:
 
     def test_blocked_post_returns_403(self, settings):
         """Filled honeypot → BLOCKED → 403, view not called."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import waf_protect_post
-        from icv_waf.forms.defences.honeypot import _pick_field_names
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import waf_protect_post
+        from django_waf.forms.defences.honeypot import _pick_field_names
 
         view_called = MagicMock()
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             form_id = "contact-blocked-post"
 
             @waf_protect_post(
@@ -99,7 +99,7 @@ class TestDecorator:
                 view_called()
                 return MagicMock(status_code=200)
 
-            honeypot = _pick_field_names(form_id, conf_mod.ICV_WAF_FORM_HONEYPOT_FIELD_NAMES, 2)[0]
+            honeypot = _pick_field_names(form_id, conf_mod.DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES, 2)[0]
             request = _build_request("POST", "/contact/", post={honeypot: "spam"})
             response = view(request)
 
@@ -112,10 +112,10 @@ class TestDecorator:
 
     def test_decorator_registers_form_id_in_registry(self, settings):
         """The template tag needs to find the FormProtection by form_id."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import _registry_get, waf_protect_post
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import _registry_get, waf_protect_post
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
 
             @waf_protect_post(
                 form_id="contact-registry-test",
@@ -138,12 +138,12 @@ class TestDebugHeader:
     def test_header_attached_in_debug(self, settings):
         from django.http import HttpResponse
 
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import waf_protect_post
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import waf_protect_post
 
         settings.DEBUG = True
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
 
             @waf_protect_post(
                 form_id="contact-debug-header",
@@ -164,12 +164,12 @@ class TestDebugHeader:
     def test_header_absent_in_production(self, settings):
         from django.http import HttpResponse
 
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import waf_protect_post
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import waf_protect_post
 
         settings.DEBUG = False
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
 
             @waf_protect_post(
                 form_id="contact-prod-header",

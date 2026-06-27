@@ -1,4 +1,4 @@
-"""Tests for icv-waf Celery tasks.
+"""Tests for django-waf Celery tasks.
 
 Redis is not available in the test environment. All external calls (Redis,
 httpx, filesystem) are mocked using unittest.mock. Database operations use
@@ -15,8 +15,8 @@ from unittest.mock import patch
 import pytest
 from django.utils import timezone
 
-from icv_waf.enums import Verdict
-from icv_waf.testing.factories import (
+from django_waf.enums import Verdict
+from django_waf.testing.factories import (
     BlockRuleFactory,
     IPReputationFactory,
     RequestLogFactory,
@@ -31,10 +31,10 @@ class TestGenerateBlocklist:
     def test_calls_generate_and_reload(self):
         """Task calls generate_nginx_blocklist() and reload_nginx(), returns their results."""
         with (
-            patch("icv_waf.services.blocklist_generator.generate_nginx_blocklist", return_value=42) as mock_gen,
-            patch("icv_waf.services.blocklist_generator.reload_nginx", return_value=True) as mock_reload,
+            patch("django_waf.services.blocklist_generator.generate_nginx_blocklist", return_value=42) as mock_gen,
+            patch("django_waf.services.blocklist_generator.reload_nginx", return_value=True) as mock_reload,
         ):
-            from icv_waf.tasks import generate_blocklist
+            from django_waf.tasks import generate_blocklist
 
             result = generate_blocklist()
 
@@ -45,10 +45,10 @@ class TestGenerateBlocklist:
     def test_returns_reload_failure(self):
         """Task surfaces a False reload result without raising."""
         with (
-            patch("icv_waf.services.blocklist_generator.generate_nginx_blocklist", return_value=0),
-            patch("icv_waf.services.blocklist_generator.reload_nginx", return_value=False),
+            patch("django_waf.services.blocklist_generator.generate_nginx_blocklist", return_value=0),
+            patch("django_waf.services.blocklist_generator.reload_nginx", return_value=False),
         ):
-            from icv_waf.tasks import generate_blocklist
+            from django_waf.tasks import generate_blocklist
 
             result = generate_blocklist()
 
@@ -62,12 +62,12 @@ class TestGenerateBlocklist:
         """
         with (
             patch(
-                "icv_waf.services.blocklist_generator.generate_nginx_blocklist",
+                "django_waf.services.blocklist_generator.generate_nginx_blocklist",
                 side_effect=OSError("disk full"),
             ),
-            patch("icv_waf.services.blocklist_generator.reload_nginx"),
+            patch("django_waf.services.blocklist_generator.reload_nginx"),
         ):
-            from icv_waf.tasks import generate_blocklist
+            from django_waf.tasks import generate_blocklist
 
             with pytest.raises(OSError):
                 generate_blocklist()
@@ -87,8 +87,8 @@ class TestDetectAnomalies:
             "challenge_farm_rules": 0,
             "total_rules_created": 4,
         }
-        with patch("icv_waf.services.anomaly_detector.run_all_detectors", return_value=expected) as mock_det:
-            from icv_waf.tasks import detect_anomalies
+        with patch("django_waf.services.anomaly_detector.run_all_detectors", return_value=expected) as mock_det:
+            from django_waf.tasks import detect_anomalies
 
             result = detect_anomalies()
 
@@ -103,8 +103,8 @@ class TestDetectAnomalies:
             "challenge_farm_rules": 0,
             "total_rules_created": 0,
         }
-        with patch("icv_waf.services.anomaly_detector.run_all_detectors", return_value=empty):
-            from icv_waf.tasks import detect_anomalies
+        with patch("django_waf.services.anomaly_detector.run_all_detectors", return_value=empty):
+            from django_waf.tasks import detect_anomalies
 
             result = detect_anomalies()
 
@@ -119,8 +119,8 @@ class TestDetectAnomalies:
 class TestParseAccessLog:
     def test_skips_when_path_not_given(self):
         """Task returns zero counts when no log path is configured."""
-        with patch("icv_waf.conf.ICV_WAF_ACCESS_LOG_PATH", ""):
-            from icv_waf.tasks import parse_access_log
+        with patch("django_waf.conf.DJANGO_WAF_ACCESS_LOG_PATH", ""):
+            from django_waf.tasks import parse_access_log
 
             result = parse_access_log()
 
@@ -128,7 +128,7 @@ class TestParseAccessLog:
 
     def test_skips_when_file_does_not_exist(self):
         """Task returns zero counts when the file at the configured path is absent."""
-        from icv_waf.tasks import parse_access_log
+        from django_waf.tasks import parse_access_log
 
         result = parse_access_log(log_path="/non/existent/access.log")
 
@@ -148,8 +148,8 @@ class TestParseAccessLog:
             fh.write(log_content)
             log_path = fh.name
 
-        from icv_waf.models import RequestLog
-        from icv_waf.tasks import parse_access_log
+        from django_waf.models import RequestLog
+        from django_waf.tasks import parse_access_log
 
         before = RequestLog.objects.count()
         result = parse_access_log(log_path=log_path)
@@ -174,8 +174,8 @@ class TestParseAccessLog:
             fh.write(log_content)
             log_path = fh.name
 
-        from icv_waf.models import RequestLog
-        from icv_waf.tasks import parse_access_log
+        from django_waf.models import RequestLog
+        from django_waf.tasks import parse_access_log
 
         result = parse_access_log(log_path=log_path)
 
@@ -193,7 +193,7 @@ class TestParseAccessLog:
             fh.write(log_content)
             log_path = fh.name
 
-        from icv_waf.tasks import parse_access_log
+        from django_waf.tasks import parse_access_log
 
         result = parse_access_log(log_path=log_path)
 
@@ -212,11 +212,11 @@ class TestParseAccessLog:
             fh.write(log_content)
             log_path = fh.name
 
-        from icv_waf.tasks import parse_access_log
+        from django_waf.tasks import parse_access_log
 
         parse_access_log(log_path=log_path)
 
-        offset_key = f"icv_waf:access_log_offset:{log_path}"
+        offset_key = f"django_waf:access_log_offset:{log_path}"
         stored = cache.get(offset_key)
         assert stored is not None
         assert stored > 0
@@ -235,11 +235,11 @@ class TestParseAccessLog:
             log_path = fh.name
 
         # Simulate previous parse having consumed the first line
-        offset_key = f"icv_waf:access_log_offset:{log_path}"
+        offset_key = f"django_waf:access_log_offset:{log_path}"
         cache.set(offset_key, len(line.encode()))
 
-        from icv_waf.models import RequestLog
-        from icv_waf.tasks import parse_access_log
+        from django_waf.models import RequestLog
+        from django_waf.tasks import parse_access_log
 
         result = parse_access_log(log_path=log_path)
 
@@ -254,7 +254,7 @@ class TestParseAccessLog:
             patch("os.path.isfile", return_value=True),
             patch("builtins.open", side_effect=OSError("permission denied")),
         ):
-            from icv_waf.tasks import parse_access_log
+            from django_waf.tasks import parse_access_log
 
             result = parse_access_log(log_path="/fake/access.log")
 
@@ -274,12 +274,12 @@ class TestPruneRequestLogs:
         old_log = RequestLogFactory(timestamp=cutoff - timedelta(hours=1))
         recent_log = RequestLogFactory(timestamp=timezone.now())
 
-        from icv_waf.tasks import prune_request_logs
+        from django_waf.tasks import prune_request_logs
 
         result = prune_request_logs(days=30)
 
         assert result["deleted_count"] >= 1
-        from icv_waf.models import RequestLog
+        from django_waf.models import RequestLog
 
         assert not RequestLog.objects.filter(pk=old_log.pk).exists()
         assert RequestLog.objects.filter(pk=recent_log.pk).exists()
@@ -289,7 +289,7 @@ class TestPruneRequestLogs:
         """Returns zero deleted_count when all records are within the retention window."""
         RequestLogFactory(timestamp=timezone.now())
 
-        from icv_waf.tasks import prune_request_logs
+        from django_waf.tasks import prune_request_logs
 
         result = prune_request_logs(days=30)
 
@@ -297,12 +297,12 @@ class TestPruneRequestLogs:
 
     @pytest.mark.django_db
     def test_uses_default_retention_days_from_conf(self):
-        """Task uses ICV_WAF_LOG_RETENTION_DAYS when days argument is omitted."""
+        """Task uses DJANGO_WAF_LOG_RETENTION_DAYS when days argument is omitted."""
         old_timestamp = timezone.now() - timedelta(days=35)
         RequestLogFactory(timestamp=old_timestamp)
 
-        # ICV_WAF_LOG_RETENTION_DAYS defaults to 30 in tests
-        from icv_waf.tasks import prune_request_logs
+        # DJANGO_WAF_LOG_RETENTION_DAYS defaults to 30 in tests
+        from django_waf.tasks import prune_request_logs
 
         result = prune_request_logs()
 
@@ -314,13 +314,13 @@ class TestPruneRequestLogs:
         five_days_ago = timezone.now() - timedelta(days=5)
         log = RequestLogFactory(timestamp=five_days_ago)
 
-        from icv_waf.tasks import prune_request_logs
+        from django_waf.tasks import prune_request_logs
 
         # Prune anything older than 3 days — should catch the 5-day-old record
         result = prune_request_logs(days=3)
 
         assert result["deleted_count"] >= 1
-        from icv_waf.models import RequestLog
+        from django_waf.models import RequestLog
 
         assert not RequestLog.objects.filter(pk=log.pk).exists()
 
@@ -343,8 +343,8 @@ class TestExpireRules:
             expires_at=timezone.now() + timedelta(hours=24),
         )
 
-        with patch("icv_waf.tasks._invalidate_rule_cache_redis"):
-            from icv_waf.tasks import expire_rules
+        with patch("django_waf.tasks._invalidate_rule_cache_redis"):
+            from django_waf.tasks import expire_rules
 
             result = expire_rules()
 
@@ -360,8 +360,8 @@ class TestExpireRules:
         """Returns expired_count=0 when no rules have passed their expiry."""
         BlockRuleFactory(is_active=True, expires_at=timezone.now() + timedelta(days=1))
 
-        with patch("icv_waf.tasks._invalidate_rule_cache_redis"):
-            from icv_waf.tasks import expire_rules
+        with patch("django_waf.tasks._invalidate_rule_cache_redis"):
+            from django_waf.tasks import expire_rules
 
             result = expire_rules()
 
@@ -375,8 +375,8 @@ class TestExpireRules:
             expires_at=timezone.now() - timedelta(minutes=1),
         )
 
-        with patch("icv_waf.tasks._invalidate_rule_cache_redis") as mock_inval:
-            from icv_waf.tasks import expire_rules
+        with patch("django_waf.tasks._invalidate_rule_cache_redis") as mock_inval:
+            from django_waf.tasks import expire_rules
 
             expire_rules()
 
@@ -387,8 +387,8 @@ class TestExpireRules:
         """Cache invalidation is not triggered when no rules are expired."""
         BlockRuleFactory(is_active=True, expires_at=None)
 
-        with patch("icv_waf.tasks._invalidate_rule_cache_redis") as mock_inval:
-            from icv_waf.tasks import expire_rules
+        with patch("django_waf.tasks._invalidate_rule_cache_redis") as mock_inval:
+            from django_waf.tasks import expire_rules
 
             expire_rules()
 
@@ -402,8 +402,8 @@ class TestExpireRules:
             expires_at=timezone.now() - timedelta(minutes=5),
         )
 
-        with patch("icv_waf.tasks._invalidate_rule_cache_redis", side_effect=RuntimeError("redis down")):
-            from icv_waf.tasks import expire_rules
+        with patch("django_waf.tasks._invalidate_rule_cache_redis", side_effect=RuntimeError("redis down")):
+            from django_waf.tasks import expire_rules
 
             result = expire_rules()
 
@@ -414,8 +414,8 @@ class TestExpireRules:
         """Rules with expires_at=None are never expired."""
         permanent_rule = BlockRuleFactory(is_active=True, expires_at=None)
 
-        with patch("icv_waf.tasks._invalidate_rule_cache_redis"):
-            from icv_waf.tasks import expire_rules
+        with patch("django_waf.tasks._invalidate_rule_cache_redis"):
+            from django_waf.tasks import expire_rules
 
             result = expire_rules()
 
@@ -439,8 +439,8 @@ class TestUpdateIpReputation:
             verdict=Verdict.ALLOWED,
         )
 
-        from icv_waf.models import IPReputation
-        from icv_waf.tasks import update_ip_reputation
+        from django_waf.models import IPReputation
+        from django_waf.tasks import update_ip_reputation
 
         result = update_ip_reputation()
 
@@ -454,8 +454,8 @@ class TestUpdateIpReputation:
         IPReputationFactory(ip_address=ip, total_requests=5)
         RequestLogFactory(ip_address=ip, timestamp=timezone.now(), verdict=Verdict.ALLOWED)
 
-        from icv_waf.models import IPReputation
-        from icv_waf.tasks import update_ip_reputation
+        from django_waf.models import IPReputation
+        from django_waf.tasks import update_ip_reputation
 
         result = update_ip_reputation()
 
@@ -472,8 +472,8 @@ class TestUpdateIpReputation:
             verdict=Verdict.ALLOWED,
         )
 
-        from icv_waf.models import IPReputation
-        from icv_waf.tasks import update_ip_reputation
+        from django_waf.models import IPReputation
+        from django_waf.tasks import update_ip_reputation
 
         update_ip_reputation()
 
@@ -487,8 +487,8 @@ class TestUpdateIpReputation:
         for _ in range(10):
             RequestLogFactory(ip_address=ip, timestamp=timezone.now(), verdict=Verdict.BLOCKED)
 
-        from icv_waf.models import IPReputation
-        from icv_waf.tasks import update_ip_reputation
+        from django_waf.models import IPReputation
+        from django_waf.tasks import update_ip_reputation
 
         update_ip_reputation()
 
@@ -498,7 +498,7 @@ class TestUpdateIpReputation:
     @pytest.mark.django_db
     def test_returns_zero_counts_when_no_recent_logs(self):
         """Task returns zero counts when there are no logs within the 24-hour window."""
-        from icv_waf.tasks import update_ip_reputation
+        from django_waf.tasks import update_ip_reputation
 
         result = update_ip_reputation()
 
@@ -507,10 +507,10 @@ class TestUpdateIpReputation:
     @pytest.mark.django_db
     def test_counts_challenge_tokens_for_pass_fail(self):
         """challenge_passes/failures are counted from ChallengeToken records."""
-        from icv_waf.enums import ChallengeStatus
-        from icv_waf.models import IPReputation
-        from icv_waf.tasks import update_ip_reputation
-        from icv_waf.testing.factories import ChallengeTokenFactory
+        from django_waf.enums import ChallengeStatus
+        from django_waf.models import IPReputation
+        from django_waf.tasks import update_ip_reputation
+        from django_waf.testing.factories import ChallengeTokenFactory
 
         ip = "203.0.113.77"
         RequestLogFactory(ip_address=ip, timestamp=timezone.now(), verdict=Verdict.CHALLENGED)
@@ -534,10 +534,10 @@ class TestUpdateIpReputation:
 
 class TestSyncThreatFeed:
     def test_skips_when_feed_disabled(self):
-        """Task returns early with skipped=True when ICV_WAF_FEED_ENABLED=False."""
-        # settings.py already sets ICV_WAF_FEED_ENABLED=False
-        with patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", False):
-            from icv_waf.tasks import sync_threat_feed
+        """Task returns early with skipped=True when DJANGO_WAF_FEED_ENABLED=False."""
+        # settings.py already sets DJANGO_WAF_FEED_ENABLED=False
+        with patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", False):
+            from django_waf.tasks import sync_threat_feed
 
             result = sync_threat_feed()
 
@@ -548,10 +548,10 @@ class TestSyncThreatFeed:
         expected = {"created": 5, "updated": 2, "expired": 0, "skipped": 0}
 
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", True),
-            patch("icv_waf.services.threat_feed.sync_feed", return_value=expected) as mock_sync,
+            patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", True),
+            patch("django_waf.services.threat_feed.sync_feed", return_value=expected) as mock_sync,
         ):
-            from icv_waf.tasks import sync_threat_feed
+            from django_waf.tasks import sync_threat_feed
 
             result = sync_threat_feed()
 
@@ -561,10 +561,10 @@ class TestSyncThreatFeed:
     def test_does_not_call_sync_feed_when_disabled(self):
         """sync_feed() is never imported or called when the feed is disabled."""
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", False),
-            patch("icv_waf.services.threat_feed.sync_feed") as mock_sync,
+            patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", False),
+            patch("django_waf.services.threat_feed.sync_feed") as mock_sync,
         ):
-            from icv_waf.tasks import sync_threat_feed
+            from django_waf.tasks import sync_threat_feed
 
             sync_threat_feed()
 
@@ -573,10 +573,10 @@ class TestSyncThreatFeed:
     def test_propagates_sync_feed_exception(self):
         """Exceptions from sync_feed() are not swallowed by the task."""
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", True),
-            patch("icv_waf.services.threat_feed.sync_feed", side_effect=RuntimeError("network error")),
+            patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", True),
+            patch("django_waf.services.threat_feed.sync_feed", side_effect=RuntimeError("network error")),
         ):
-            from icv_waf.tasks import sync_threat_feed
+            from django_waf.tasks import sync_threat_feed
 
             with pytest.raises(RuntimeError, match="network error"):
                 sync_threat_feed()
@@ -589,10 +589,10 @@ class TestSyncThreatFeed:
 
 class TestReportThreatTelemetry:
     def test_skips_when_reporting_disabled(self):
-        """Task returns early with skipped=True when ICV_WAF_FEED_REPORT=False."""
-        # settings.py already sets ICV_WAF_FEED_REPORT=False
-        with patch("icv_waf.conf.ICV_WAF_FEED_REPORT", False):
-            from icv_waf.tasks import report_threat_telemetry
+        """Task returns early with skipped=True when DJANGO_WAF_FEED_REPORT=False."""
+        # settings.py already sets DJANGO_WAF_FEED_REPORT=False
+        with patch("django_waf.conf.DJANGO_WAF_FEED_REPORT", False):
+            from django_waf.tasks import report_threat_telemetry
 
             result = report_threat_telemetry()
 
@@ -602,17 +602,17 @@ class TestReportThreatTelemetry:
         """Task calls build_telemetry_payload() then submit_telemetry() when reporting is on."""
         payload = {"ua_hashes": ["abc", "def"], "subnets": ["10.0.0.0/8"]}
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_REPORT", True),
+            patch("django_waf.conf.DJANGO_WAF_FEED_REPORT", True),
             patch(
-                "icv_waf.services.threat_feed.build_telemetry_payload",
+                "django_waf.services.threat_feed.build_telemetry_payload",
                 return_value=payload,
             ) as mock_build,
             patch(
-                "icv_waf.services.threat_feed.submit_telemetry",
+                "django_waf.services.threat_feed.submit_telemetry",
                 return_value=True,
             ) as mock_submit,
         ):
-            from icv_waf.tasks import report_threat_telemetry
+            from django_waf.tasks import report_threat_telemetry
 
             result = report_threat_telemetry()
 
@@ -627,11 +627,11 @@ class TestReportThreatTelemetry:
             "subnets": ["192.168.0.0/16", "10.0.0.0/8"],
         }
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_REPORT", True),
-            patch("icv_waf.services.threat_feed.build_telemetry_payload", return_value=payload),
-            patch("icv_waf.services.threat_feed.submit_telemetry", return_value=True),
+            patch("django_waf.conf.DJANGO_WAF_FEED_REPORT", True),
+            patch("django_waf.services.threat_feed.build_telemetry_payload", return_value=payload),
+            patch("django_waf.services.threat_feed.submit_telemetry", return_value=True),
         ):
-            from icv_waf.tasks import report_threat_telemetry
+            from django_waf.tasks import report_threat_telemetry
 
             result = report_threat_telemetry()
 
@@ -642,11 +642,11 @@ class TestReportThreatTelemetry:
         """Task handles an empty payload without error, reporting zero counts."""
         payload: dict = {}
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_REPORT", True),
-            patch("icv_waf.services.threat_feed.build_telemetry_payload", return_value=payload),
-            patch("icv_waf.services.threat_feed.submit_telemetry", return_value=False),
+            patch("django_waf.conf.DJANGO_WAF_FEED_REPORT", True),
+            patch("django_waf.services.threat_feed.build_telemetry_payload", return_value=payload),
+            patch("django_waf.services.threat_feed.submit_telemetry", return_value=False),
         ):
-            from icv_waf.tasks import report_threat_telemetry
+            from django_waf.tasks import report_threat_telemetry
 
             result = report_threat_telemetry()
 
@@ -655,11 +655,11 @@ class TestReportThreatTelemetry:
     def test_does_not_call_services_when_disabled(self):
         """Neither build nor submit are called when reporting is disabled."""
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_REPORT", False),
-            patch("icv_waf.services.threat_feed.build_telemetry_payload") as mock_build,
-            patch("icv_waf.services.threat_feed.submit_telemetry") as mock_submit,
+            patch("django_waf.conf.DJANGO_WAF_FEED_REPORT", False),
+            patch("django_waf.services.threat_feed.build_telemetry_payload") as mock_build,
+            patch("django_waf.services.threat_feed.submit_telemetry") as mock_submit,
         ):
-            from icv_waf.tasks import report_threat_telemetry
+            from django_waf.tasks import report_threat_telemetry
 
             report_threat_telemetry()
 
@@ -670,14 +670,14 @@ class TestReportThreatTelemetry:
         """Exceptions from submit_telemetry() are not swallowed by the task."""
         payload = {"ua_hashes": [], "subnets": []}
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_REPORT", True),
-            patch("icv_waf.services.threat_feed.build_telemetry_payload", return_value=payload),
+            patch("django_waf.conf.DJANGO_WAF_FEED_REPORT", True),
+            patch("django_waf.services.threat_feed.build_telemetry_payload", return_value=payload),
             patch(
-                "icv_waf.services.threat_feed.submit_telemetry",
+                "django_waf.services.threat_feed.submit_telemetry",
                 side_effect=ConnectionError("timeout"),
             ),
         ):
-            from icv_waf.tasks import report_threat_telemetry
+            from django_waf.tasks import report_threat_telemetry
 
             with pytest.raises(ConnectionError, match="timeout"):
                 report_threat_telemetry()
@@ -694,17 +694,17 @@ class TestUpdateGeoipDatabase:
     def test_delegates_to_service_with_6_day_freshness(self):
         """The task calls install_geoip_database(if_older_than_days=6)."""
         service_result = {
-            "path": "/var/lib/icv-waf/GeoLite2-Country.mmdb",
+            "path": "/var/lib/django-waf/GeoLite2-Country.mmdb",
             "size_bytes": 6_291_456,
             "skipped": False,
             "edition": "GeoLite2-Country",
             "build_epoch": 1_700_000_000,
         }
         with patch(
-            "icv_waf.services.geoip.install_geoip_database",
+            "django_waf.services.geoip.install_geoip_database",
             return_value=service_result,
         ) as mock_install:
-            from icv_waf.tasks import update_geoip_database
+            from django_waf.tasks import update_geoip_database
 
             result = update_geoip_database()
 
@@ -713,13 +713,13 @@ class TestUpdateGeoipDatabase:
 
     def test_swallows_geoip_error_and_reports_skipped(self):
         """A GeoIPError is caught and converted into a skipped dict so cron never fails loudly."""
-        from icv_waf.services.geoip import GeoIPLicenseMissingError
+        from django_waf.services.geoip import GeoIPLicenseMissingError
 
         with patch(
-            "icv_waf.services.geoip.install_geoip_database",
+            "django_waf.services.geoip.install_geoip_database",
             side_effect=GeoIPLicenseMissingError("No MaxMind licence key configured."),
         ):
-            from icv_waf.tasks import update_geoip_database
+            from django_waf.tasks import update_geoip_database
 
             result = update_geoip_database()
 
@@ -728,13 +728,13 @@ class TestUpdateGeoipDatabase:
 
     def test_swallows_download_error(self):
         """A transient GeoIPDownloadError is caught and logged as skipped."""
-        from icv_waf.services.geoip import GeoIPDownloadError
+        from django_waf.services.geoip import GeoIPDownloadError
 
         with patch(
-            "icv_waf.services.geoip.install_geoip_database",
+            "django_waf.services.geoip.install_geoip_database",
             side_effect=GeoIPDownloadError("MaxMind download failed: timeout"),
         ):
-            from icv_waf.tasks import update_geoip_database
+            from django_waf.tasks import update_geoip_database
 
             result = update_geoip_database()
 
@@ -744,17 +744,17 @@ class TestUpdateGeoipDatabase:
     def test_passes_through_skipped_result_from_service(self):
         """If the service itself returns skipped=True (fresh file), the task returns it verbatim."""
         service_result = {
-            "path": "/var/lib/icv-waf/GeoLite2-Country.mmdb",
+            "path": "/var/lib/django-waf/GeoLite2-Country.mmdb",
             "size_bytes": 6_291_456,
             "skipped": True,
             "edition": "GeoLite2-Country",
             "build_epoch": None,
         }
         with patch(
-            "icv_waf.services.geoip.install_geoip_database",
+            "django_waf.services.geoip.install_geoip_database",
             return_value=service_result,
         ):
-            from icv_waf.tasks import update_geoip_database
+            from django_waf.tasks import update_geoip_database
 
             result = update_geoip_database()
 

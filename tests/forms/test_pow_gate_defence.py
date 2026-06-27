@@ -7,13 +7,13 @@ from unittest.mock import MagicMock
 
 
 def _ctx_render(form_id="contact", config=None):
-    from icv_waf.forms.defences.base import RenderContext
+    from django_waf.forms.defences.base import RenderContext
 
     return RenderContext(form_id=form_id, request=MagicMock(), config=config or {})
 
 
 def _ctx_eval(submitted_data, *, payload_nonce=None, config=None):
-    from icv_waf.forms.defences.base import EvaluateContext
+    from django_waf.forms.defences.base import EvaluateContext
 
     payload = None
     if payload_nonce is not None:
@@ -35,7 +35,7 @@ def _solve(token_nonce: str, difficulty: int) -> str:
     Used in tests to construct valid submissions. Matches the
     defence's hash construction exactly.
     """
-    from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+    from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
     for n in range(1_000_000):
         msg = f"{token_nonce}:{n}".encode()
@@ -51,7 +51,7 @@ def _solve(token_nonce: str, difficulty: int) -> str:
 
 class TestRenderFields:
     def test_renders_nonce_field_and_script(self):
-        from icv_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
+        from django_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
 
         defence = PowGateDefence()
         html = defence.render_fields(_ctx_render())[NONCE_FIELD]
@@ -63,7 +63,7 @@ class TestRenderFields:
     def test_solver_script_includes_difficulty(self):
         """The JS solver uses the difficulty value — pin so a future
         bug doesn't silently set it to a different constant."""
-        from icv_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
+        from django_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
 
         defence = PowGateDefence()
         html = defence.render_fields(_ctx_render(config={"difficulty": 8}))[NONCE_FIELD]
@@ -71,7 +71,7 @@ class TestRenderFields:
         assert "difficulty=8" in html
 
     def test_per_form_difficulty_override(self):
-        from icv_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
+        from django_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
 
         defence = PowGateDefence()
         html = defence.render_fields(_ctx_render(config={"difficulty": 4}))[NONCE_FIELD]
@@ -88,7 +88,7 @@ class TestRenderFields:
 
 class TestEvaluate:
     def test_missing_nonce_blocks(self):
-        from icv_waf.forms.defences.pow_gate import PowGateDefence
+        from django_waf.forms.defences.pow_gate import PowGateDefence
 
         defence = PowGateDefence()
         outcome = defence.evaluate(_ctx_eval({}))
@@ -98,7 +98,7 @@ class TestEvaluate:
         assert outcome.score == 5.0
 
     def test_invalid_nonce_blocks(self):
-        from icv_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
+        from django_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
 
         defence = PowGateDefence()
         outcome = defence.evaluate(
@@ -113,7 +113,7 @@ class TestEvaluate:
 
     def test_valid_nonce_passes(self):
         """Solve a low-difficulty PoW in test, submit it, defence passes."""
-        from icv_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
+        from django_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
 
         token_nonce = "test_token_nonce"
         # Use difficulty 8 — solves in ~256 attempts, instant.
@@ -133,7 +133,7 @@ class TestEvaluate:
         """When the orchestrator has populated token_payload, prefer
         its nonce over the bind field — the verified token is the
         source of truth."""
-        from icv_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
+        from django_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
 
         token_nonce = "verified_nonce"
         candidate = _solve(token_nonce, 8)
@@ -152,7 +152,7 @@ class TestEvaluate:
     def test_tampered_bind_field_fails_when_no_payload(self):
         """If a bot bumps the bind field, the PoW won't verify against
         the original token_nonce → block."""
-        from icv_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
+        from django_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
 
         original_nonce = "original"
         candidate = _solve(original_nonce, 8)
@@ -172,8 +172,8 @@ class TestEvaluate:
         """The form-level PoW uses the same _digest_has_leading_zero_bits
         helper as the page challenge — pin so a future refactor doesn't
         introduce a parallel implementation that could drift."""
-        from icv_waf.forms.defences.pow_gate import _verify_nonce
-        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+        from django_waf.forms.defences.pow_gate import _verify_nonce
+        from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
         # _verify_nonce constructs a digest and calls the shared helper.
         # Compute both ways and check the parity.

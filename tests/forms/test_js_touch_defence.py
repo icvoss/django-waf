@@ -6,14 +6,14 @@ from unittest.mock import MagicMock, patch
 
 
 def _ctx_render(form_id="c", config=None):
-    from icv_waf.forms.defences.base import RenderContext
+    from django_waf.forms.defences.base import RenderContext
 
     return RenderContext(form_id=form_id, request=MagicMock(), config=config or {})
 
 
 def _ctx_eval(submitted_data, *, payload_nonce=None, config=None):
     """Build EvaluateContext. payload_nonce sets ctx.token_payload.nonce."""
-    from icv_waf.forms.defences.base import EvaluateContext
+    from django_waf.forms.defences.base import EvaluateContext
 
     payload = None
     if payload_nonce is not None:
@@ -31,10 +31,10 @@ def _ctx_eval(submitted_data, *, payload_nonce=None, config=None):
 
 class TestRenderFields:
     def test_renders_hidden_field_with_sentinel(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = JsTouchDefence()
             html = defence.render_fields(_ctx_render())[FIELD_NAME]
 
@@ -44,10 +44,10 @@ class TestRenderFields:
         assert "tabindex=" in html
 
     def test_includes_inline_script_that_clears_sentinel(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = JsTouchDefence()
             html = defence.render_fields(_ctx_render())[FIELD_NAME]
 
@@ -58,10 +58,10 @@ class TestRenderFields:
 
     def test_uses_offscreen_positioning_not_display_none(self, settings):
         """Same accessibility-friendly hiding pattern as honeypot."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = JsTouchDefence()
             html = defence.render_fields(_ctx_render())[FIELD_NAME]
 
@@ -72,10 +72,10 @@ class TestRenderFields:
 class TestEvaluate:
     def test_sentinel_unchanged_flags(self, settings):
         """JS didn't run → field is still 'unset' → flag."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = JsTouchDefence()
             outcome = defence.evaluate(_ctx_eval({FIELD_NAME: "unset"}, payload_nonce="n"))
 
@@ -85,10 +85,10 @@ class TestEvaluate:
 
     def test_correct_value_passes(self, settings):
         """Browser executed the script → field contains the expected MAC → pass."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence, _expected_value
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence, _expected_value
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = JsTouchDefence()
             expected = _expected_value("nonce-xyz")
             outcome = defence.evaluate(_ctx_eval({FIELD_NAME: expected}, payload_nonce="nonce-xyz"))
@@ -97,10 +97,10 @@ class TestEvaluate:
 
     def test_missing_field_flags(self, settings):
         """Field entirely absent → suspicious (hand-crafted POST)."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.js_touch import JsTouchDefence
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.js_touch import JsTouchDefence
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = JsTouchDefence()
             outcome = defence.evaluate(_ctx_eval({}, payload_nonce="n"))
 
@@ -109,10 +109,10 @@ class TestEvaluate:
 
     def test_arbitrary_value_flags(self, settings):
         """A non-empty value that isn't the correct MAC → bot wrote junk."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.js_touch import FIELD_NAME, JsTouchDefence
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = JsTouchDefence()
             outcome = defence.evaluate(_ctx_eval({FIELD_NAME: "definitely-not-the-right-value"}, payload_nonce="n"))
 
@@ -124,12 +124,12 @@ class TestEvaluate:
 
         Otherwise a bot could compute the expected value once and reuse.
         """
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.js_touch import _expected_value
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.js_touch import _expected_value
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "key-a"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "key-a"):
             value_a = _expected_value("same-nonce")
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "key-b"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "key-b"):
             value_b = _expected_value("same-nonce")
 
         assert value_a != value_b

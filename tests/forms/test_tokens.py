@@ -19,15 +19,15 @@ import pytest
 
 
 class TestGetSigningKey:
-    def test_uses_icv_waf_signing_key_when_set(self):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import get_signing_key
+    def test_uses_django_waf_signing_key_when_set(self):
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import get_signing_key
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "explicit-key-value"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "explicit-key-value"):
             assert get_signing_key() == b"explicit-key-value"
 
     def test_falls_back_to_secret_key_derivative_when_unset(self, settings):
-        """An empty ICV_WAF_SIGNING_KEY derives from Django's SECRET_KEY.
+        """An empty DJANGO_WAF_SIGNING_KEY derives from Django's SECRET_KEY.
 
         Critical: the derived key must NOT equal SECRET_KEY directly —
         if a future bug exposed it, leaking it would not also leak the
@@ -36,16 +36,16 @@ class TestGetSigningKey:
         """
         import hashlib
 
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import get_signing_key
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import get_signing_key
 
         fake_secret = "django-secret-do-not-leak"
         settings.SECRET_KEY = fake_secret
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", ""):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", ""):
             derived = get_signing_key()
 
         assert derived != fake_secret.encode()
-        expected = hashlib.sha256(b"icv-waf:signing:v1|" + fake_secret.encode()).digest()
+        expected = hashlib.sha256(b"django-waf:signing:v1|" + fake_secret.encode()).digest()
         assert derived == expected
 
     def test_derived_key_is_stable_across_calls(self, settings):
@@ -54,11 +54,11 @@ class TestGetSigningKey:
         Otherwise tokens issued under one process couldn't be verified
         by another, breaking horizontally-scaled deployments.
         """
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import get_signing_key
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import get_signing_key
 
         settings.SECRET_KEY = "stable-secret"
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", ""):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", ""):
             assert get_signing_key() == get_signing_key()
 
 
@@ -69,11 +69,11 @@ class TestGetSigningKey:
 
 class TestTokenRoundTrip:
     def test_issue_then_verify_returns_same_payload(self):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token, verify_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token, verify_token
 
         render_time = datetime(2026, 5, 27, 10, 0, 0, tzinfo=UTC)
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "test-key"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "test-key"):
             token, original = issue_token(
                 form_id="contact",
                 ip="1.2.3.4",
@@ -99,10 +99,10 @@ class TestTokenRoundTrip:
         silently introduce `+` or `/` characters that would break
         attribute serialisation.
         """
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="c", ip="1.1.1.1")
 
         # Only base64url alphabet plus optional `=` padding (we strip it,
@@ -110,10 +110,10 @@ class TestTokenRoundTrip:
         assert all(c.isalnum() or c in "-_=" for c in token)
 
     def test_anonymous_user_round_trips_as_empty_string(self):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token, verify_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token, verify_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="c", ip="1.1.1.1")
             payload = verify_token(token)
 
@@ -121,10 +121,10 @@ class TestTokenRoundTrip:
 
     def test_nonce_is_random_when_not_supplied(self):
         """Two tokens issued in quick succession must have distinct nonces."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             _, p1 = issue_token(form_id="c", ip="1.1.1.1")
             _, p2 = issue_token(form_id="c", ip="1.1.1.1")
 
@@ -140,7 +140,7 @@ class TestTokenRoundTrip:
 
 class TestVerifyTokenFailures:
     def _issue(self, **kwargs):
-        from icv_waf.forms.services.tokens import issue_token
+        from django_waf.forms.services.tokens import issue_token
 
         defaults = {"form_id": "c", "ip": "1.1.1.1"}
         defaults.update(kwargs)
@@ -150,10 +150,10 @@ class TestVerifyTokenFailures:
         """Flipping a single byte of the payload must invalidate the token."""
         import base64
 
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import verify_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import verify_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = self._issue(form_id="contact")
             # Decode, mutate the payload (the IP field), re-encode.
             padding = "=" * (-len(token) % 4)
@@ -166,20 +166,20 @@ class TestVerifyTokenFailures:
 
     def test_wrong_signing_key_fails_signature_check(self):
         """Token issued under key A must not verify under key B."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token, verify_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token, verify_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "key-a"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "key-a"):
             token, _ = issue_token(form_id="c", ip="1.1.1.1")
 
         with (
-            patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "key-b"),
+            patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "key-b"),
             pytest.raises(ValueError, match="signature mismatch"),
         ):
             verify_token(token)
 
     def test_malformed_base64_raises_value_error(self):
-        from icv_waf.forms.services.tokens import verify_token
+        from django_waf.forms.services.tokens import verify_token
 
         with pytest.raises(ValueError):
             verify_token("not!!base64!!at!!all")
@@ -188,7 +188,7 @@ class TestVerifyTokenFailures:
         """A base64-clean string with no '|' inside is invalid."""
         import base64
 
-        from icv_waf.forms.services.tokens import verify_token
+        from django_waf.forms.services.tokens import verify_token
 
         bad = base64.urlsafe_b64encode(b"no-pipes-here").decode("ascii").rstrip("=")
         with pytest.raises(ValueError, match="no signature delimiter"):
@@ -205,10 +205,10 @@ class TestVerifyTokenFailures:
         import hashlib
         import hmac
 
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import verify_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import verify_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             payload_str = "only|three|fields"  # 3 fields, not the required 6
             sig = hmac.new(b"k", payload_str.encode(), hashlib.sha256).hexdigest()
             raw = payload_str + "|" + sig
@@ -225,18 +225,18 @@ class TestVerifyTokenFailures:
 
 class TestHashUserAgent:
     def test_same_ua_hashes_to_same_value(self):
-        from icv_waf.forms.services.tokens import hash_user_agent
+        from django_waf.forms.services.tokens import hash_user_agent
 
         assert hash_user_agent("Mozilla/5.0") == hash_user_agent("Mozilla/5.0")
 
     def test_different_ua_hashes_to_different_value(self):
-        from icv_waf.forms.services.tokens import hash_user_agent
+        from django_waf.forms.services.tokens import hash_user_agent
 
         assert hash_user_agent("Mozilla/5.0") != hash_user_agent("curl/7.0")
 
     def test_empty_ua_hashes_to_stable_value(self):
         """Anonymous-UA submissions are common; the hash must be stable."""
-        from icv_waf.forms.services.tokens import hash_user_agent
+        from django_waf.forms.services.tokens import hash_user_agent
 
         assert hash_user_agent("") == hash_user_agent("")
         # Sanity: SHA-256 hex length.

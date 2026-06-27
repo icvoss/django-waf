@@ -56,9 +56,9 @@ ruff format src/ tests/
 ## Architecture Conventions
 
 - **Services are functions, not classes** — business logic lives in
-  `src/icv_waf/services/` as module-level functions
-- **Settings are namespaced** — all settings use the `ICV_WAF_*` prefix and
-  are defined in `src/icv_waf/conf.py` with sensible defaults
+  `src/django_waf/services/` as module-level functions
+- **Settings are namespaced** — all settings use the `DJANGO_WAF_*` prefix and
+  are defined in `src/django_waf/conf.py` with sensible defaults
 - **Fail-open design** — if Redis is unavailable or an error occurs during
   evaluation, the request passes through. Never block legitimate traffic
   due to infrastructure failure
@@ -92,8 +92,8 @@ type: description
 
 ## Adding a New Setting
 
-1. Add the setting with a default in `src/icv_waf/conf.py`
-2. Use it via `from icv_waf import conf; conf.ICV_WAF_YOUR_SETTING`
+1. Add the setting with a default in `src/django_waf/conf.py`
+2. Use it via `from django_waf import conf; conf.DJANGO_WAF_YOUR_SETTING`
 3. Add it to the settings table in `README.md`
 4. Add a test that exercises the setting
 
@@ -108,23 +108,23 @@ python make_migrations.py            # write/update migrations
 python make_migrations.py --check    # CI-style: fail if migrations are missing
 ```
 
-Commit the generated file under `src/icv_waf/migrations/` alongside the model
+Commit the generated file under `src/django_waf/migrations/` alongside the model
 change.
 
 ## Adding a New Anomaly Detector
 
-1. Add the detector function in `src/icv_waf/services/anomaly_detector.py`
+1. Add the detector function in `src/django_waf/services/anomaly_detector.py`
 2. Use `_get_or_create_auto_rule()` for rule creation (prevents duplicates)
 3. Use `_emit_anomaly_signal()` for observability
 4. Wire it into `run_all_detectors()` and add the key to the return dict
-5. Add an `AnomalyType` enum value in `src/icv_waf/enums.py`
+5. Add an `AnomalyType` enum value in `src/django_waf/enums.py`
 6. Add tests covering: detection, skip-when-already-exists, edge cases
 
 ## Reporting Issues
 
 Open an issue at https://github.com/nigelcopley/django-waf/issues with:
 
-- django-waf version (`python -c "import icv_waf; print(icv_waf.__version__)"`)
+- django-waf version (`python -c "import django_waf; print(django_waf.__version__)"`)
 - Django version
 - Python version
 - Steps to reproduce

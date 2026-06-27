@@ -1,4 +1,4 @@
-"""Tests for icv-waf models."""
+"""Tests for django-waf models."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 from django.utils import timezone
 
-from icv_waf.enums import (
+from django_waf.enums import (
     ChallengeStatus,
     MatchType,
     RuleAction,
@@ -16,14 +16,14 @@ from icv_waf.enums import (
     RuleType,
     Verdict,
 )
-from icv_waf.models import (
+from django_waf.models import (
     AllowRule,
     BlockRule,
     ChallengeToken,
     IPReputation,
     RequestLog,
 )
-from icv_waf.testing.factories import (
+from django_waf.testing.factories import (
     AllowRuleFactory,
     BlockRuleFactory,
     ChallengeTokenFactory,

@@ -23,7 +23,7 @@ def _request():
 
 
 def _result(verdict, outcomes=None, total_score=0.0):
-    from icv_waf.forms.protection import FormEvaluationResult, FormVerdict
+    from django_waf.forms.protection import FormEvaluationResult, FormVerdict
 
     return FormEvaluationResult(
         verdict=FormVerdict(verdict),
@@ -42,11 +42,11 @@ class TestLogging:
     def test_blocked_emits_warning_with_payload(self, settings, caplog):
         import logging as stdlib_logging
 
-        from icv_waf.forms.defences.base import Outcome
-        from icv_waf.forms.logging import log_form_submission
+        from django_waf.forms.defences.base import Outcome
+        from django_waf.forms.logging import log_form_submission
 
         outcomes = [Outcome(verdict="block", score=5.0, reason="honeypot:url")]
-        with caplog.at_level(stdlib_logging.WARNING, logger="icv_waf.forms"):
+        with caplog.at_level(stdlib_logging.WARNING, logger="django_waf.forms"):
             log_form_submission(form_id="c", request=_request(), result=_result("blocked", outcomes, 5.0))
 
         # One record, level WARNING, structured payload attached.
@@ -62,29 +62,29 @@ class TestLogging:
     def test_flagged_emits_info(self, settings, caplog):
         import logging as stdlib_logging
 
-        from icv_waf.forms.defences.base import Outcome
-        from icv_waf.forms.logging import log_form_submission
+        from django_waf.forms.defences.base import Outcome
+        from django_waf.forms.logging import log_form_submission
 
         outcomes = [Outcome(verdict="flag", score=2.0, reason="time_trap:fast")]
-        with caplog.at_level(stdlib_logging.INFO, logger="icv_waf.forms"):
+        with caplog.at_level(stdlib_logging.INFO, logger="django_waf.forms"):
             log_form_submission(form_id="c", request=_request(), result=_result("flagged", outcomes, 2.0))
 
         records = [r for r in caplog.records if r.message == "waf.form_submission"]
         assert any(r.levelno == stdlib_logging.INFO for r in records)
 
     def test_passed_sampled_by_log_sample_rate(self, settings, caplog):
-        """ICV_WAF_LOG_SAMPLE_RATE controls how often PASSED logs.
+        """DJANGO_WAF_LOG_SAMPLE_RATE controls how often PASSED logs.
 
         With rate=0.0, no PASSED log entries are emitted.
         """
         import logging as stdlib_logging
 
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.logging import log_form_submission
+        import django_waf.conf as conf_mod
+        from django_waf.forms.logging import log_form_submission
 
         with (
-            patch.object(conf_mod, "ICV_WAF_LOG_SAMPLE_RATE", 0.0),
-            caplog.at_level(stdlib_logging.INFO, logger="icv_waf.forms"),
+            patch.object(conf_mod, "DJANGO_WAF_LOG_SAMPLE_RATE", 0.0),
+            caplog.at_level(stdlib_logging.INFO, logger="django_waf.forms"),
         ):
             for _ in range(10):
                 log_form_submission(form_id="c", request=_request(), result=_result("passed"))
@@ -101,9 +101,9 @@ class TestLogging:
 
 class TestSignals:
     def test_blocked_signal_fires_with_reason(self):
-        from icv_waf.forms.defences.base import Outcome
-        from icv_waf.forms.logging import log_form_submission
-        from icv_waf.forms.signals import form_submission_blocked
+        from django_waf.forms.defences.base import Outcome
+        from django_waf.forms.logging import log_form_submission
+        from django_waf.forms.signals import form_submission_blocked
 
         received = []
 
@@ -122,9 +122,9 @@ class TestSignals:
         assert received[0]["reason"] == "honeypot:url"
 
     def test_flagged_signal_fires(self):
-        from icv_waf.forms.defences.base import Outcome
-        from icv_waf.forms.logging import log_form_submission
-        from icv_waf.forms.signals import form_submission_flagged
+        from django_waf.forms.defences.base import Outcome
+        from django_waf.forms.logging import log_form_submission
+        from django_waf.forms.signals import form_submission_flagged
 
         received = []
 
@@ -142,10 +142,10 @@ class TestSignals:
         assert received[0]["total_score"] == 2.0
 
     def test_passed_signal_off_by_default(self, settings):
-        """ICV_WAF_FORM_EMIT_PASSED_SIGNAL=False → no signal for PASSED."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.logging import log_form_submission
-        from icv_waf.forms.signals import form_submission_passed
+        """DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL=False → no signal for PASSED."""
+        import django_waf.conf as conf_mod
+        from django_waf.forms.logging import log_form_submission
+        from django_waf.forms.signals import form_submission_passed
 
         received = []
 
@@ -155,8 +155,8 @@ class TestSignals:
         form_submission_passed.connect(handler, dispatch_uid="test_passed_off")
         try:
             with (
-                patch.object(conf_mod, "ICV_WAF_FORM_EMIT_PASSED_SIGNAL", False),
-                patch.object(conf_mod, "ICV_WAF_LOG_SAMPLE_RATE", 1.0),
+                patch.object(conf_mod, "DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL", False),
+                patch.object(conf_mod, "DJANGO_WAF_LOG_SAMPLE_RATE", 1.0),
             ):
                 log_form_submission(form_id="c", request=_request(), result=_result("passed"))
         finally:
@@ -165,10 +165,10 @@ class TestSignals:
         assert received == []
 
     def test_passed_signal_opt_in(self, settings):
-        """ICV_WAF_FORM_EMIT_PASSED_SIGNAL=True → signal fires."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.logging import log_form_submission
-        from icv_waf.forms.signals import form_submission_passed
+        """DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL=True → signal fires."""
+        import django_waf.conf as conf_mod
+        from django_waf.forms.logging import log_form_submission
+        from django_waf.forms.signals import form_submission_passed
 
         received = []
 
@@ -178,8 +178,8 @@ class TestSignals:
         form_submission_passed.connect(handler, dispatch_uid="test_passed_on")
         try:
             with (
-                patch.object(conf_mod, "ICV_WAF_FORM_EMIT_PASSED_SIGNAL", True),
-                patch.object(conf_mod, "ICV_WAF_LOG_SAMPLE_RATE", 1.0),
+                patch.object(conf_mod, "DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL", True),
+                patch.object(conf_mod, "DJANGO_WAF_LOG_SAMPLE_RATE", 1.0),
             ):
                 log_form_submission(form_id="c", request=_request(), result=_result("passed"))
         finally:
@@ -189,9 +189,9 @@ class TestSignals:
 
     def test_signal_receiver_exception_does_not_propagate(self):
         """A misbehaving receiver must NOT break the request lifecycle."""
-        from icv_waf.forms.defences.base import Outcome
-        from icv_waf.forms.logging import log_form_submission
-        from icv_waf.forms.signals import form_submission_blocked
+        from django_waf.forms.defences.base import Outcome
+        from django_waf.forms.logging import log_form_submission
+        from django_waf.forms.signals import form_submission_blocked
 
         def broken_handler(sender, **kwargs):
             raise RuntimeError("receiver bug")

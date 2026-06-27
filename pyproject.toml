@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-waf"
-version = "0.12.0"
+version = "1.0.0"
 description = "Self-hosted request filtering, bot management, and WAF middleware for Django — rate limiting, UA anomaly scoring, JS challenges, nginx blocklist generation, and collective threat feed."
 readme = "README.md"
 license = "MIT"
@@ -59,7 +59,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-icv_waf = ["templates/**/*.html"]
+django_waf = ["templates/**/*.html"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
@@ -78,7 +78,7 @@ ignore = ["S101", "S104", "S105", "S106", "S107", "S110", "S112", "S311", "S603"
 # Django autogenerates migrations; verbose_name / help_text strings
 # frequently exceed the 120-char line limit. Migrations are not
 # hand-edited, so lint rules for them are relaxed.
-"src/icv_waf/migrations/*.py" = ["E501"]
+"src/django_waf/migrations/*.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.11"

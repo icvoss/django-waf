@@ -5,6 +5,61 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-06-27
+
+### Changed (BREAKING) — package renamed `icv_waf` → `django_waf`
+
+The package is now consistently named `django_waf` throughout, matching the
+`django-waf` distribution name. Every public surface that carried the old
+`icv_waf` / `ICV_WAF_` name moved:
+
+- **Import package:** `import icv_waf` → `import django_waf`
+  (e.g. `from django_waf.forms import ProtectedForm`).
+- **Installed app:** put `"django_waf"` in `INSTALLED_APPS` (was `"icv_waf"`).
+- **App label & database tables:** the app label is now `django_waf` and tables
+  are `django_waf_*` (were `icv_waf_*`). Migration history was squashed to a
+  fresh `0001_initial` under the new label.
+- **Settings prefix:** `ICV_WAF_*` → `DJANGO_WAF_*`
+  (e.g. `ICV_WAF_ENABLED` → `DJANGO_WAF_ENABLED`). No alias is kept.
+- **Management commands:** `icv_waf_*` → `django_waf_*`
+  (e.g. `manage.py django_waf_block`).
+- **Templates:** the template namespace is now `django_waf/` (was `icv_waf/`).
+
+A deprecation shim keeps `import icv_waf` (and `from icv_waf.<sub> import ...`)
+working with a `DeprecationWarning` — Python imports only. It does **not** make
+`"icv_waf"` usable in `INSTALLED_APPS`, and does **not** alias the settings
+prefix or management commands. The shim will be removed in a future major release.
+
+The threat-feed service domain (`threats.icv.dev`) is unchanged — it is the
+operated endpoint, not a naming artifact, and remains overridable via
+`DJANGO_WAF_FEED_URL` / `DJANGO_WAF_FEED_REPORT_URL`.
+
+#### Upgrade guide
+
+1. Rename the app in `INSTALLED_APPS`: `"icv_waf"` → `"django_waf"`.
+2. Rename every `ICV_WAF_*` setting in your `settings.py` to `DJANGO_WAF_*`.
+3. Update imports: `icv_waf` → `django_waf` (the shim warns until you do).
+4. Update any management-command invocations / cron / Celery beat entries:
+   `icv_waf_*` → `django_waf_*`.
+5. **Database:** existing tables are named `icv_waf_*`. Because the migration
+   history was squashed under the new label, the recommended path for an
+   existing install is to rename the tables in a one-off operation and fake the
+   new initial migration:
+
+   ```sql
+   ALTER TABLE icv_waf_allow_rule        RENAME TO django_waf_allow_rule;
+   ALTER TABLE icv_waf_block_rule        RENAME TO django_waf_block_rule;
+   ALTER TABLE icv_waf_challenge_token   RENAME TO django_waf_challenge_token;
+   ALTER TABLE icv_waf_ip_reputation     RENAME TO django_waf_ip_reputation;
+   ALTER TABLE icv_waf_request_log       RENAME TO django_waf_request_log;
+   ```
+
+   Then mark the new migration applied without re-running it:
+   `python manage.py migrate django_waf 0001 --fake`. (Indexes are recreated by
+   name under the new prefix; adjust index names too if your tooling is strict.)
+   A fresh install needs none of this — `migrate` creates the new tables
+   directly.
+
 ## [0.12.0] - 2026-05-28
 
 ### Added

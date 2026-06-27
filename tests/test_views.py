@@ -1,11 +1,11 @@
-"""Tests for icv-waf views.
+"""Tests for django-waf views.
 
 Tests use Django's test Client and RequestFactory. All Redis calls and
 challenge service functions are mocked — no real Redis is available.
 
-URL namespace: "icv_waf" as declared in icv_waf.urls (app_name = "icv_waf").
+URL namespace: "django_waf" as declared in django_waf.urls (app_name = "django_waf").
 Because the monorepo root settings use sandbox.urls (which does not include
-icv_waf URLs), every test class overrides ROOT_URLCONF to "icv_waf.urls" so
+django_waf URLs), every test class overrides ROOT_URLCONF to "django_waf.urls" so
 that /challenge/, /verify/, /dashboard/, etc. resolve correctly.
 
 Note on form POSTs: Django's test client only populates request.POST for
@@ -37,8 +37,8 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture(autouse=True)
 def waf_urls(settings):
-    """Override ROOT_URLCONF to the test URL conf that includes icv_waf under /waf/
-    with the 'icv_waf' namespace, enabling reverse('icv_waf:...') to resolve."""
+    """Override ROOT_URLCONF to the test URL conf that includes django_waf under /waf/
+    with the 'django_waf' namespace, enabling reverse('django_waf:...') to resolve."""
     settings.ROOT_URLCONF = "tests.urls"
 
 
@@ -84,13 +84,13 @@ class TestChallengeView:
     """GET /challenge/ presents the proof-of-work challenge page."""
 
     def test_returns_200(self, settings):
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.issue_challenge") as mock_issue,
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_issue.return_value = _mock_challenge_token("testtoken123")
@@ -100,13 +100,13 @@ class TestChallengeView:
         assert response.status_code == 200
 
     def test_renders_challenge_template(self, settings):
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.issue_challenge") as mock_issue,
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_issue.return_value = _mock_challenge_token("tok")
@@ -114,16 +114,16 @@ class TestChallengeView:
             response = client.get("/waf/challenge/")
 
         assert response.status_code == 200
-        assert "icv_waf/challenge.html" in [t.name for t in response.templates]
+        assert "django_waf/challenge.html" in [t.name for t in response.templates]
 
     def test_token_in_context(self, settings):
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.issue_challenge") as mock_issue,
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_issue.return_value = _mock_challenge_token("mytesttoken")
@@ -133,13 +133,13 @@ class TestChallengeView:
         assert response.context["token"] == "mytesttoken"
 
     def test_next_url_in_context(self, settings):
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.issue_challenge") as mock_issue,
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_issue.return_value = _mock_challenge_token("tok")
@@ -150,13 +150,13 @@ class TestChallengeView:
 
     def test_unsafe_next_url_is_sanitised_to_root(self, settings):
         """An absolute URL in ?next= is rejected in favour of '/'."""
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.issue_challenge") as mock_issue,
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_issue.return_value = _mock_challenge_token("tok")
@@ -166,24 +166,24 @@ class TestChallengeView:
         assert response.context["next_url"] == "/"
 
     def test_post_url_honours_verify_url_override(self, settings):
-        """Challenge page's post_url must respect ICV_WAF_VERIFY_URL.
+        """Challenge page's post_url must respect DJANGO_WAF_VERIFY_URL.
 
         Regression: pre-v0.10.6 the challenge view hardcoded
-        ``reverse("icv_waf:verify")`` while the middleware (post-v0.10.5)
+        ``reverse("django_waf:verify")`` while the middleware (post-v0.10.5)
         honoured the override. Under django-hosts the page would render
         but the solver POSTed to the wrong urlconf; the token stayed
         PENDING forever because VerifyView never ran.
         """
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch.object(conf_mod, "ICV_WAF_VERIFY_URL", "/custom/verify/"),
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.issue_challenge") as mock_issue,
+            patch.object(conf_mod, "DJANGO_WAF_VERIFY_URL", "/custom/verify/"),
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_issue.return_value = _mock_challenge_token("tok")
@@ -195,13 +195,13 @@ class TestChallengeView:
 
     def test_response_has_no_cache_control(self, settings):
         """Challenge page must not be cached (contains a one-time token)."""
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.issue_challenge") as mock_issue,
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_issue.return_value = _mock_challenge_token("tok")
@@ -224,14 +224,14 @@ class TestVerifyView:
     """
 
     def test_valid_solution_redirects_with_waf_pass_cookie(self, settings):
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
-            patch("icv_waf.services.challenge_service.issue_pass_cookie") as mock_cookie,
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
+            patch("django_waf.services.challenge_service.issue_pass_cookie") as mock_cookie,
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_verify.return_value = True
@@ -249,14 +249,14 @@ class TestVerifyView:
         assert "waf_pass" in response.cookies
 
     def test_valid_solution_redirects_to_next_url(self, settings):
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
-            patch("icv_waf.services.challenge_service.issue_pass_cookie"),
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
+            patch("django_waf.services.challenge_service.issue_pass_cookie"),
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_verify.return_value = True
@@ -272,7 +272,7 @@ class TestVerifyView:
     def test_missing_token_returns_400(self):
         client = Client()
 
-        with patch("icv_waf.views._get_redis_client") as mock_redis_fn:
+        with patch("django_waf.views._get_redis_client") as mock_redis_fn:
             mock_redis_fn.return_value = _mock_redis()
 
             response = client.post("/waf/verify/", data={"nonce": "12345"})
@@ -282,7 +282,7 @@ class TestVerifyView:
     def test_missing_nonce_returns_400(self):
         client = Client()
 
-        with patch("icv_waf.views._get_redis_client") as mock_redis_fn:
+        with patch("django_waf.views._get_redis_client") as mock_redis_fn:
             mock_redis_fn.return_value = _mock_redis()
 
             response = client.post("/waf/verify/", data={"token": "sometok"})
@@ -291,16 +291,16 @@ class TestVerifyView:
 
     def test_invalid_solution_returns_400_with_new_token(self, settings):
         """A wrong nonce response includes a new_token field for retry."""
-        from icv_waf.services.challenge_service import ChallengeInvalidError
+        from django_waf.services.challenge_service import ChallengeInvalidError
 
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
-            patch("icv_waf.services.challenge_service.issue_challenge") as mock_issue,
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_verify.side_effect = ChallengeInvalidError("bad nonce")
@@ -317,16 +317,16 @@ class TestVerifyView:
         assert data.get("new_token") == "newtoken456"
 
     def test_expired_token_returns_400(self, settings):
-        from icv_waf.services.challenge_service import ChallengeExpiredError
+        from django_waf.services.challenge_service import ChallengeExpiredError
 
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
-            patch("icv_waf.services.challenge_service.issue_challenge") as mock_issue,
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_verify.side_effect = ChallengeExpiredError("expired")
@@ -341,14 +341,14 @@ class TestVerifyView:
 
     def test_accepts_json_body(self, settings):
         """VerifyView parses application/json bodies as well as form data."""
-        settings.ICV_WAF_ENABLED = True
+        settings.DJANGO_WAF_ENABLED = True
 
         client = Client()
 
         with (
-            patch("icv_waf.views._get_redis_client") as mock_redis_fn,
-            patch("icv_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
-            patch("icv_waf.services.challenge_service.issue_pass_cookie"),
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
+            patch("django_waf.services.challenge_service.issue_pass_cookie"),
         ):
             mock_redis_fn.return_value = _mock_redis()
             mock_verify.return_value = True
@@ -364,7 +364,7 @@ class TestVerifyView:
     def test_malformed_json_body_returns_400(self):
         client = Client()
 
-        with patch("icv_waf.views._get_redis_client") as mock_redis_fn:
+        with patch("django_waf.views._get_redis_client") as mock_redis_fn:
             mock_redis_fn.return_value = _mock_redis()
 
             response = client.post(
@@ -426,7 +426,7 @@ class TestDashboardView:
 
         response = client.get("/waf/dashboard/")
 
-        assert "icv_waf/dashboard.html" in [t.name for t in response.templates]
+        assert "django_waf/dashboard.html" in [t.name for t in response.templates]
 
     def test_dashboard_context_has_panel_urls(self):
         client = Client()
@@ -460,7 +460,7 @@ class TestDashboardStatsPanelView:
         user = _make_staff_user(username="staffstats", email="staffstats@example.com")
         client.force_login(user)
 
-        with patch("icv_waf.views._get_redis_client") as mock_redis_fn:
+        with patch("django_waf.views._get_redis_client") as mock_redis_fn:
             mock_redis = MagicMock()
             mock_redis.hgetall.return_value = {b"total": b"10", b"blocked": b"2"}
             mock_redis_fn.return_value = mock_redis
@@ -468,7 +468,7 @@ class TestDashboardStatsPanelView:
             response = client.get("/waf/dashboard/stats/")
 
         assert response.status_code == 200
-        assert "icv_waf/partials/stats_panel.html" in [t.name for t in response.templates]
+        assert "django_waf/partials/stats_panel.html" in [t.name for t in response.templates]
 
 
 class TestDashboardTopBlockedPanelView:
@@ -489,10 +489,10 @@ class TestDashboardTopBlockedPanelView:
         response = client.get("/waf/dashboard/top-blocked/")
 
         assert response.status_code == 200
-        assert "icv_waf/partials/top_blocked_panel.html" in [t.name for t in response.templates]
+        assert "django_waf/partials/top_blocked_panel.html" in [t.name for t in response.templates]
 
     def test_ips_in_context_ordered_by_blocked_requests(self):
-        from icv_waf.testing.factories import IPReputationFactory
+        from django_waf.testing.factories import IPReputationFactory
 
         IPReputationFactory(ip_address="1.1.1.1", blocked_requests=50)
         IPReputationFactory(ip_address="2.2.2.2", blocked_requests=10)
@@ -528,11 +528,11 @@ class TestDashboardAnomalyPanelView:
         response = client.get("/waf/dashboard/anomalies/")
 
         assert response.status_code == 200
-        assert "icv_waf/partials/anomalies_panel.html" in [t.name for t in response.templates]
+        assert "django_waf/partials/anomalies_panel.html" in [t.name for t in response.templates]
 
     def test_rules_in_context_are_auto_sourced(self):
-        from icv_waf.enums import RuleSource
-        from icv_waf.testing.factories import BlockRuleFactory
+        from django_waf.enums import RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
 
         # Auto-generated rule within 48 h
         auto_rule = BlockRuleFactory(source=RuleSource.AUTO)
@@ -565,8 +565,8 @@ class TestAnomalyConfirmView:
         SuperuserRequiredMixin calls handle_no_permission() on an authenticated
         non-superuser, which raises PermissionDenied rather than redirecting.
         """
-        from icv_waf.enums import RuleSource
-        from icv_waf.testing.factories import BlockRuleFactory
+        from django_waf.enums import RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
 
         rule = BlockRuleFactory(source=RuleSource.AUTO)
         client = Client()
@@ -584,8 +584,8 @@ class TestAnomalyConfirmView:
         assert response.status_code == 403
 
     def test_superuser_can_confirm_rule(self):
-        from icv_waf.enums import RuleSource
-        from icv_waf.testing.factories import BlockRuleFactory
+        from django_waf.enums import RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
 
         rule = BlockRuleFactory(source=RuleSource.AUTO)
         client = Client()
@@ -610,8 +610,8 @@ class TestAnomalyRejectView:
     """POST /dashboard/anomalies/<id>/reject/ deactivates a rule."""
 
     def test_superuser_can_reject_rule(self):
-        from icv_waf.enums import RuleSource
-        from icv_waf.testing.factories import BlockRuleFactory
+        from django_waf.enums import RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
 
         rule = BlockRuleFactory(source=RuleSource.AUTO, is_active=True)
         client = Client()
@@ -632,8 +632,8 @@ class TestAnomalyRejectView:
 
     def test_reject_returns_empty_response_for_htmx_delete(self):
         """VerifyView returns empty body so HTMX hx-swap='delete' removes the row."""
-        from icv_waf.enums import RuleSource
-        from icv_waf.testing.factories import BlockRuleFactory
+        from django_waf.enums import RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
 
         rule = BlockRuleFactory(source=RuleSource.AUTO)
         client = Client()

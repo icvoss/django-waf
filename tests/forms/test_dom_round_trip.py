@@ -85,10 +85,10 @@ class TestRenderTokenDomRoundTrip:
     def test_render_then_parse_finds_waf_token_input(self, settings):
         """The rendered HTML contains exactly one waf_token hidden input
         carrying a non-empty value."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             protection = FormProtection(
                 form_id="contact",
                 defences=("render_token",),
@@ -111,10 +111,10 @@ class TestRenderTokenDomRoundTrip:
         """
         import re
 
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             protection = FormProtection(
                 form_id="contact",
                 defences=("render_token",),
@@ -147,13 +147,13 @@ class TestRenderTokenDomRoundTrip:
         """
         import hashlib
 
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection, FormVerdict
-        from icv_waf.services.challenge_service import (
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection, FormVerdict
+        from django_waf.services.challenge_service import (
             _digest_has_leading_zero_bits,
         )
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             # Drop js_touch from the chain — the simulated 'browser'
             # below can't actually execute the inline <script>, so we
             # focus this end-to-end test on the defences that have a
@@ -173,10 +173,10 @@ class TestRenderTokenDomRoundTrip:
             # The browser-equivalent runs the PoW solver. Compute a
             # valid nonce server-side at test time so the simulated
             # POST is what a real browser would have produced.
-            from icv_waf.forms.defences.pow_gate import NONCE_FIELD
+            from django_waf.forms.defences.pow_gate import NONCE_FIELD
 
             token_nonce = submitted["waf_pow_token"]
-            difficulty = conf_mod.ICV_WAF_FORM_POW_DIFFICULTY
+            difficulty = conf_mod.DJANGO_WAF_FORM_POW_DIFFICULTY
             for n in range(1_000_000):
                 msg = f"{token_nonce}:{n}".encode()
                 if _digest_has_leading_zero_bits(hashlib.sha256(msg).digest(), difficulty):

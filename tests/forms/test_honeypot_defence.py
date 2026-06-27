@@ -12,13 +12,13 @@ from unittest.mock import MagicMock
 
 
 def _ctx_render(form_id="contact", config=None):
-    from icv_waf.forms.defences.base import RenderContext
+    from django_waf.forms.defences.base import RenderContext
 
     return RenderContext(form_id=form_id, request=MagicMock(), config=config or {})
 
 
 def _ctx_eval(submitted_data, form_id="contact", config=None):
-    from icv_waf.forms.defences.base import EvaluateContext
+    from django_waf.forms.defences.base import EvaluateContext
 
     return EvaluateContext(
         form_id=form_id,
@@ -36,7 +36,7 @@ def _ctx_eval(submitted_data, form_id="contact", config=None):
 class TestFieldNameRotation:
     def test_same_form_id_picks_same_names(self):
         """Idempotent — must be stable across renders so caches don't break."""
-        from icv_waf.forms.defences.honeypot import _pick_field_names
+        from django_waf.forms.defences.honeypot import _pick_field_names
 
         pool = ["url", "website", "homepage", "email_confirm"]
         a = _pick_field_names("contact", pool, 2)
@@ -50,7 +50,7 @@ class TestFieldNameRotation:
         differs' because a 4-element pool with 2-name picks has a
         non-trivial collision rate by design.
         """
-        from icv_waf.forms.defences.honeypot import _pick_field_names
+        from django_waf.forms.defences.honeypot import _pick_field_names
 
         pool = ["url", "website", "homepage", "email_confirm"]
         picks = {fid: _pick_field_names(fid, pool, 2) for fid in ("a", "b", "c", "d", "e", "f")}
@@ -58,13 +58,13 @@ class TestFieldNameRotation:
 
     def test_empty_pool_returns_no_fields(self):
         """An operator who configures an empty pool gets no honeypot."""
-        from icv_waf.forms.defences.honeypot import _pick_field_names
+        from django_waf.forms.defences.honeypot import _pick_field_names
 
         assert _pick_field_names("contact", [], 2) == []
 
     def test_count_larger_than_pool_caps_at_pool_size(self):
         """No duplicate names if the operator asks for more than the pool has."""
-        from icv_waf.forms.defences.honeypot import _pick_field_names
+        from django_waf.forms.defences.honeypot import _pick_field_names
 
         pool = ["a", "b"]
         names = _pick_field_names("contact", pool, 10)
@@ -79,7 +79,7 @@ class TestFieldNameRotation:
 
 class TestRenderFields:
     def test_returns_hidden_inputs(self):
-        from icv_waf.forms.defences.honeypot import HoneypotDefence
+        from django_waf.forms.defences.honeypot import HoneypotDefence
 
         defence = HoneypotDefence()
         fields = defence.render_fields(_ctx_render())
@@ -95,7 +95,7 @@ class TestRenderFields:
         attributes are what make honeypots safe for screen reader
         users.
         """
-        from icv_waf.forms.defences.honeypot import HoneypotDefence
+        from django_waf.forms.defences.honeypot import HoneypotDefence
 
         defence = HoneypotDefence()
         html = defence.render_fields(_ctx_render())["_waf_honeypot"]
@@ -106,7 +106,7 @@ class TestRenderFields:
 
     def test_uses_offscreen_positioning_not_display_none(self):
         """`display:none` is what bots check for — must use off-screen instead."""
-        from icv_waf.forms.defences.honeypot import HoneypotDefence
+        from django_waf.forms.defences.honeypot import HoneypotDefence
 
         defence = HoneypotDefence()
         html = defence.render_fields(_ctx_render())["_waf_honeypot"]
@@ -123,7 +123,7 @@ class TestRenderFields:
         stripping are harmless — they'd just produce a weirdly-named
         input field.
         """
-        from icv_waf.forms.defences.honeypot import HoneypotDefence
+        from django_waf.forms.defences.honeypot import HoneypotDefence
 
         defence = HoneypotDefence()
         html = defence.render_fields(_ctx_render(config={"field_names": ['"><script>alert(1)</script>']}))[
@@ -136,7 +136,7 @@ class TestRenderFields:
             assert char not in _name_attribute_value(html), f"unsafe char {char!r} survived into name attribute"
 
     def test_empty_pool_renders_no_fields(self):
-        from icv_waf.forms.defences.honeypot import HoneypotDefence
+        from django_waf.forms.defences.honeypot import HoneypotDefence
 
         defence = HoneypotDefence()
         fields = defence.render_fields(_ctx_render(config={"field_names": []}))
@@ -160,7 +160,7 @@ def _name_attribute_value(html: str) -> str:
 class TestEvaluate:
     def test_empty_honeypot_fields_pass(self):
         """Default case — humans don't fill hidden fields."""
-        from icv_waf.forms.defences.honeypot import HoneypotDefence
+        from django_waf.forms.defences.honeypot import HoneypotDefence
 
         defence = HoneypotDefence()
         outcome = defence.evaluate(_ctx_eval({}))
@@ -169,10 +169,10 @@ class TestEvaluate:
 
     def test_any_filled_honeypot_field_blocks(self):
         """Bot fills every input → the honeypot fields are non-empty → block."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.honeypot import HoneypotDefence, _pick_field_names
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.honeypot import HoneypotDefence, _pick_field_names
 
-        pool = conf_mod.ICV_WAF_FORM_HONEYPOT_FIELD_NAMES
+        pool = conf_mod.DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES
         names = _pick_field_names("contact", pool, 2)
         defence = HoneypotDefence()
         # Simulate a bot filling the first honeypot.
@@ -185,10 +185,10 @@ class TestEvaluate:
     def test_reason_carries_specific_field_name(self):
         """Operators tune the pool when one name keeps tripping —
         the reason needs the specific field name."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.honeypot import HoneypotDefence, _pick_field_names
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.honeypot import HoneypotDefence, _pick_field_names
 
-        pool = conf_mod.ICV_WAF_FORM_HONEYPOT_FIELD_NAMES
+        pool = conf_mod.DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES
         names = _pick_field_names("contact", pool, 2)
         defence = HoneypotDefence()
 
@@ -203,10 +203,10 @@ class TestEvaluate:
         Some browsers / autofill tools insert a single space. Don't
         block on that; the real signal is meaningful content.
         """
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.honeypot import HoneypotDefence, _pick_field_names
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.honeypot import HoneypotDefence, _pick_field_names
 
-        pool = conf_mod.ICV_WAF_FORM_HONEYPOT_FIELD_NAMES
+        pool = conf_mod.DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES
         names = _pick_field_names("contact", pool, 2)
         defence = HoneypotDefence()
         outcome = defence.evaluate(_ctx_eval({names[0]: ""}))
@@ -219,7 +219,7 @@ class TestEvaluate:
         otherwise always be blocked, which is the desired behaviour for
         the configured names, but unrelated form fields with the same
         name shouldn't accidentally trip the defence."""
-        from icv_waf.forms.defences.honeypot import HoneypotDefence
+        from django_waf.forms.defences.honeypot import HoneypotDefence
 
         defence = HoneypotDefence()
         # Custom pool of one unused name — the defence picks 'unused' as

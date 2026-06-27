@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 class TestSensitiveFieldDetection:
     def test_password_fields_are_sensitive(self):
-        from icv_waf.forms.services.replay import is_sensitive_field
+        from django_waf.forms.services.replay import is_sensitive_field
 
         assert is_sensitive_field("password")
         assert is_sensitive_field("user_password")
@@ -23,14 +23,14 @@ class TestSensitiveFieldDetection:
         assert is_sensitive_field("Password")  # case-insensitive
 
     def test_secret_token_csrf_are_sensitive(self):
-        from icv_waf.forms.services.replay import is_sensitive_field
+        from django_waf.forms.services.replay import is_sensitive_field
 
         assert is_sensitive_field("secret_key")
         assert is_sensitive_field("api_key")
         assert is_sensitive_field("csrfmiddlewaretoken")
 
     def test_normal_fields_pass(self):
-        from icv_waf.forms.services.replay import is_sensitive_field
+        from django_waf.forms.services.replay import is_sensitive_field
 
         for name in ("email", "name", "message", "subject", "title", "body"):
             assert not is_sensitive_field(name), name
@@ -38,7 +38,7 @@ class TestSensitiveFieldDetection:
 
 class TestFilterSensitiveFields:
     def test_strips_passwords_keeps_others(self):
-        from icv_waf.forms.services.replay import filter_sensitive_fields
+        from django_waf.forms.services.replay import filter_sensitive_fields
 
         data = {"username": "alice", "password": "hunter2", "subject": "hi"}
         filtered = filter_sensitive_fields(data)
@@ -55,13 +55,13 @@ class TestFilterSensitiveFields:
 
 class TestReplayToken:
     def test_round_trip(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.replay import (
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.replay import (
             issue_replay_token,
             verify_replay_token,
         )
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token = issue_replay_token(form_id="contact", ip="1.2.3.4", session_key="abc")
             payload = verify_replay_token(token, current_ip="1.2.3.4")
 
@@ -70,20 +70,20 @@ class TestReplayToken:
         assert payload["session_key"] == "abc"
 
     def test_ip_mismatch_fails(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.replay import issue_replay_token, verify_replay_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.replay import issue_replay_token, verify_replay_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token = issue_replay_token(form_id="c", ip="1.2.3.4", session_key="abc")
             payload = verify_replay_token(token, current_ip="9.9.9.9")
 
         assert payload is None
 
     def test_tampered_token_fails(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.replay import issue_replay_token, verify_replay_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.replay import issue_replay_token, verify_replay_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token = issue_replay_token(form_id="c", ip="1.2.3.4", session_key="abc")
             # Flip a character mid-token.
             tampered = token[:-3] + ("A" if token[-3] != "A" else "B") + token[-2:]
@@ -93,31 +93,31 @@ class TestReplayToken:
 
     def test_wrong_key_fails(self, settings):
         """Token issued under key A doesn't verify under key B."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.replay import issue_replay_token, verify_replay_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.replay import issue_replay_token, verify_replay_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "key-a"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "key-a"):
             token = issue_replay_token(form_id="c", ip="1.2.3.4", session_key="abc")
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "key-b"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "key-b"):
             payload = verify_replay_token(token, current_ip="1.2.3.4")
 
         assert payload is None
 
     def test_expired_token_fails(self, settings):
         """Tokens past their 60s TTL must not verify."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.replay import issue_replay_token, verify_replay_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.replay import issue_replay_token, verify_replay_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token = issue_replay_token(form_id="c", ip="1.2.3.4", session_key="abc")
             # Patch time.time so the verifier sees the token as expired.
-            with patch("icv_waf.forms.services.replay.time.time", return_value=time.time() + 120):
+            with patch("django_waf.forms.services.replay.time.time", return_value=time.time() + 120):
                 payload = verify_replay_token(token, current_ip="1.2.3.4")
 
         assert payload is None
 
     def test_empty_or_garbage_returns_none(self):
-        from icv_waf.forms.services.replay import verify_replay_token
+        from django_waf.forms.services.replay import verify_replay_token
 
         assert verify_replay_token("", current_ip="1.2.3.4") is None
         assert verify_replay_token("not!!base64!!", current_ip="1.2.3.4") is None
@@ -141,7 +141,7 @@ class TestSessionStorage:
         return req
 
     def test_store_and_fetch_round_trip(self):
-        from icv_waf.forms.services.replay import fetch_from_session, store_in_session
+        from django_waf.forms.services.replay import fetch_from_session, store_in_session
 
         req = self._request_with_session()
         key = store_in_session(
@@ -156,7 +156,7 @@ class TestSessionStorage:
         assert record["data"]["name"] == "alice"
 
     def test_passwords_stripped_before_storage(self):
-        from icv_waf.forms.services.replay import fetch_from_session, store_in_session
+        from django_waf.forms.services.replay import fetch_from_session, store_in_session
 
         req = self._request_with_session()
         key = store_in_session(
@@ -171,13 +171,13 @@ class TestSessionStorage:
         assert record["data"]["username"] == "alice"
 
     def test_session_missing_returns_none(self):
-        from icv_waf.forms.services.replay import store_in_session
+        from django_waf.forms.services.replay import store_in_session
 
         req = MagicMock(spec=[])  # no .session attr
         assert store_in_session(req, form_id="c", post_url="/c/", data={}) is None
 
     def test_discard_removes_record(self):
-        from icv_waf.forms.services.replay import (
+        from django_waf.forms.services.replay import (
             discard_from_session,
             fetch_from_session,
             store_in_session,
@@ -192,7 +192,7 @@ class TestSessionStorage:
     def test_cap_keeps_at_most_five_records(self):
         """Session bloat protection — don't let stale flagged forms
         accumulate indefinitely under one session."""
-        from icv_waf.forms.services.replay import store_in_session
+        from django_waf.forms.services.replay import store_in_session
 
         req = self._request_with_session()
         keys = []

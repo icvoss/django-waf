@@ -15,7 +15,7 @@ def _redis():
 
 
 def _ctx(*, ip="1.2.3.4", config=None):
-    from icv_waf.forms.defences.base import EvaluateContext
+    from django_waf.forms.defences.base import EvaluateContext
 
     request = MagicMock()
     request.META = {"REMOTE_ADDR": ip}
@@ -29,21 +29,21 @@ def _ctx(*, ip="1.2.3.4", config=None):
 
 class TestSignupCounter:
     def test_record_signup_returns_new_count(self):
-        from icv_waf.forms.services.counters import record_signup
+        from django_waf.forms.services.counters import record_signup
 
         redis = _redis()
         redis.pipeline.return_value.execute.return_value = [4, True]
         assert record_signup(redis, ip="1.2.3.4", window_seconds=86400) == 4
 
     def test_record_signup_redis_failure_returns_zero(self):
-        from icv_waf.forms.services.counters import record_signup
+        from django_waf.forms.services.counters import record_signup
 
         redis = _redis()
         redis.pipeline.return_value.execute.side_effect = RuntimeError("redis down")
         assert record_signup(redis, ip="1.2.3.4", window_seconds=86400) == 0
 
     def test_signup_count_reads_without_incrementing(self):
-        from icv_waf.forms.services.counters import signup_count
+        from django_waf.forms.services.counters import signup_count
 
         redis = _redis()
         redis.get.return_value = b"7"
@@ -52,7 +52,7 @@ class TestSignupCounter:
         redis.pipeline.assert_not_called()
 
     def test_empty_ip_returns_zero(self):
-        from icv_waf.forms.services.counters import record_signup, signup_count
+        from django_waf.forms.services.counters import record_signup, signup_count
 
         redis = _redis()
         assert record_signup(redis, ip="", window_seconds=86400) == 0
@@ -61,7 +61,7 @@ class TestSignupCounter:
 
 class TestSignupVelocityDefence:
     def test_passes_when_below_threshold(self):
-        from icv_waf.forms.defences.signup_velocity import SignupVelocityDefence
+        from django_waf.forms.defences.signup_velocity import SignupVelocityDefence
 
         redis = _redis()
         redis.get.return_value = b"3"
@@ -70,7 +70,7 @@ class TestSignupVelocityDefence:
         assert defence.evaluate(_ctx()).verdict == "pass"
 
     def test_flags_when_threshold_crossed(self):
-        from icv_waf.forms.defences.signup_velocity import SignupVelocityDefence
+        from django_waf.forms.defences.signup_velocity import SignupVelocityDefence
 
         redis = _redis()
         redis.get.return_value = b"10"  # well over default limit of 5
@@ -82,7 +82,7 @@ class TestSignupVelocityDefence:
         assert outcome.score == 5.0
 
     def test_per_form_limit_override(self):
-        from icv_waf.forms.defences.signup_velocity import SignupVelocityDefence
+        from django_waf.forms.defences.signup_velocity import SignupVelocityDefence
 
         redis = _redis()
         redis.get.return_value = b"5"
@@ -93,7 +93,7 @@ class TestSignupVelocityDefence:
         assert defence.evaluate(_ctx(config={"limit": 10})).verdict == "pass"
 
     def test_redis_failure_passes(self):
-        from icv_waf.forms.defences.signup_velocity import SignupVelocityDefence
+        from django_waf.forms.defences.signup_velocity import SignupVelocityDefence
 
         redis = _redis()
         redis.get.side_effect = RuntimeError("redis down")
@@ -102,7 +102,7 @@ class TestSignupVelocityDefence:
         assert defence.evaluate(_ctx()).verdict == "pass"
 
     def test_missing_ip_passes(self):
-        from icv_waf.forms.defences.signup_velocity import SignupVelocityDefence
+        from django_waf.forms.defences.signup_velocity import SignupVelocityDefence
 
         redis = _redis()
         defence = SignupVelocityDefence(redis_client_factory=lambda: redis)

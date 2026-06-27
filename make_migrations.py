@@ -1,8 +1,8 @@
     #!/usr/bin/env python
-"""Generate migrations for the reusable icv_waf app.
+"""Generate migrations for the reusable django_waf app.
 
 This package ships no manage.py. ``tests/settings.py`` deliberately disables
-migrations (``MIGRATION_MODULES = {"icv_waf": None, ...}``) so the test
+migrations (``MIGRATION_MODULES = {"django_waf": None, ...}``) so the test
 database is built straight from the models for speed. That same setting
 prevents ``makemigrations`` from writing files, so this script reuses the test
 settings but re-enables real migration modules before invoking the command.
@@ -32,7 +32,7 @@ def main(argv: list[str]) -> None:
 
     from django.core.management import call_command
 
-    call_command("makemigrations", "icv_waf", *argv)
+    call_command("makemigrations", "django_waf", *argv)
 
 
 if __name__ == "__main__":

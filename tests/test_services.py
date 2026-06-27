@@ -1,4 +1,4 @@
-"""Tests for icv-waf service functions.
+"""Tests for django-waf service functions.
 
 Redis is not available in the test environment; all Redis calls are mocked
 using unittest.mock.
@@ -14,14 +14,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.utils import timezone
 
-from icv_waf.enums import (
+from django_waf.enums import (
     ChallengeStatus,
     RuleAction,
     RuleSource,
     RuleType,
     Verdict,
 )
-from icv_waf.services.challenge_service import (
+from django_waf.services.challenge_service import (
     ChallengeExpiredError,
     ChallengeInvalidError,
     ChallengeMismatchError,
@@ -30,21 +30,21 @@ from icv_waf.services.challenge_service import (
     validate_pass_cookie,
     verify_challenge_solution,
 )
-from icv_waf.services.fingerprint import (
+from django_waf.services.fingerprint import (
     classify_fingerprint,
     compute_fingerprint,
     is_known_fingerprint,
     register_known_fingerprint,
     score_fingerprint_mismatch,
 )
-from icv_waf.services.rate_limiter import check_rate_limit
-from icv_waf.services.rule_engine import (
+from django_waf.services.rate_limiter import check_rate_limit
+from django_waf.services.rule_engine import (
     RuleCache,
     evaluate_request,
     load_rule_cache,
 )
-from icv_waf.services.ua_analyser import classify_ua, score_user_agent
-from icv_waf.testing.factories import (
+from django_waf.services.ua_analyser import classify_ua, score_user_agent
+from django_waf.testing.factories import (
     AllowRuleFactory,
     BlockRuleFactory,
     ChallengeTokenFactory,
@@ -220,9 +220,9 @@ class TestClassifyUa:
 class TestCheckRateLimit:
     """Tests for check_rate_limit.
 
-    icv_waf.conf caches settings values at import time, so the pytest
+    django_waf.conf caches settings values at import time, so the pytest
     ``settings`` fixture alone will not affect thresholds read from
-    ``conf.ICV_WAF_RATE_LIMIT_*``.  We patch conf module attributes directly.
+    ``conf.DJANGO_WAF_RATE_LIMIT_*``.  We patch conf module attributes directly.
     """
 
     def _pipeline_returning(self, zcard_value: int) -> MagicMock:
@@ -232,15 +232,15 @@ class TestCheckRateLimit:
 
     def test_within_limits_returns_not_exceeded(self):
         """When all windows are within limits, exceeded is False."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         redis = _make_redis()
         redis.pipeline.return_value = self._pipeline_returning(1)  # 1 request in every window
 
         with (
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_BURST", 10),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_MINUTE", 120),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_5MIN", 600),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 10),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 120),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 600),
         ):
             result = check_rate_limit("1.2.3.4", redis)
 
@@ -250,16 +250,16 @@ class TestCheckRateLimit:
 
     def test_burst_exceeded(self):
         """When the 1s burst window is exceeded, result reflects that."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         redis = _make_redis()
         # First pipeline call (1s window) returns count > burst limit
         redis.pipeline.return_value = self._pipeline_returning(6)
 
         with (
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_BURST", 5),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_MINUTE", 120),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_5MIN", 600),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 5),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 120),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 600),
         ):
             result = check_rate_limit("1.2.3.4", redis)
 
@@ -270,7 +270,7 @@ class TestCheckRateLimit:
 
     def test_per_minute_exceeded(self):
         """When only the 1m window is exceeded, result names that window."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         redis = _make_redis()
 
@@ -287,9 +287,9 @@ class TestCheckRateLimit:
         redis.pipeline.side_effect = pipeline_side_effect
 
         with (
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_BURST", 10),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_MINUTE", 100),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_5MIN", 600),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 10),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 100),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 600),
         ):
             result = check_rate_limit("1.2.3.4", redis)
 
@@ -298,15 +298,15 @@ class TestCheckRateLimit:
 
     def test_pipeline_called_once_per_window_at_most(self):
         """Pipeline is called for each window until one is exceeded."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         redis = _make_redis()
         redis.pipeline.return_value = self._pipeline_returning(6)  # exceeds burst immediately
 
         with (
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_BURST", 5),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_MINUTE", 120),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_5MIN", 600),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 5),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 120),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 600),
         ):
             check_rate_limit("1.2.3.4", redis)
 
@@ -315,7 +315,7 @@ class TestCheckRateLimit:
 
     def test_uses_correct_redis_key_per_window(self):
         """Rate limit keys follow the 'waf:rate:{ip}:{window}' format."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         redis = _make_redis()
         pipeline = MagicMock()
@@ -324,9 +324,9 @@ class TestCheckRateLimit:
 
         ip = "5.5.5.5"
         with (
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_BURST", 10),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_MINUTE", 120),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_5MIN", 600),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 10),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 120),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 600),
         ):
             check_rate_limit(ip, redis)
 
@@ -674,7 +674,7 @@ class TestEvaluateRequest:
 
     def test_rate_limit_exceeded_returns_throttled(self, db):
         """When rate limit is exceeded, result is THROTTLED."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         redis = _make_redis()
         redis.get.return_value = None
@@ -682,9 +682,9 @@ class TestEvaluateRequest:
         redis.pipeline.return_value = _make_pipeline_mock(zcard_return=2)
 
         with (
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_BURST", 1),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_MINUTE", 120),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_5MIN", 600),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 1),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 120),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 600),
         ):
             result = evaluate_request(
                 ip_address="6.6.6.6",
@@ -699,7 +699,7 @@ class TestEvaluateRequest:
 
     def test_ua_anomaly_score_triggers_challenge(self, db):
         """High-anomaly UA with >10 recent requests triggers CHALLENGED verdict."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         redis = _make_redis()
         redis.get.return_value = None
@@ -711,9 +711,9 @@ class TestEvaluateRequest:
         # 'urllib' scores 5.0 (scraper 2.5 + no version token 1.5 + short 1.0)
         # which maps to CHALLENGED per _score_to_verdict.
         with (
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_BURST", 120),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_MINUTE", 1200),
-            patch.object(conf_mod, "ICV_WAF_RATE_LIMIT_PER_5MIN", 6000),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 120),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 1200),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 6000),
         ):
             result = evaluate_request(
                 ip_address="7.7.7.7",
@@ -827,13 +827,13 @@ class TestEvaluateRequest:
 
 class TestPickDifficulty:
     def test_mobile_ua_selects_mobile_difficulty(self):
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.challenge_service import _pick_difficulty
+        import django_waf.conf as conf_mod
+        from django_waf.services.challenge_service import _pick_difficulty
 
         with (
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 20),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 20),
         ):
             iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605"
             android_phone = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Mobile"
@@ -841,13 +841,13 @@ class TestPickDifficulty:
             assert _pick_difficulty(android_phone) == 18
 
     def test_desktop_ua_selects_desktop_difficulty(self):
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.challenge_service import _pick_difficulty
+        import django_waf.conf as conf_mod
+        from django_waf.services.challenge_service import _pick_difficulty
 
         with (
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 20),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 20),
         ):
             mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605 Version/16 Safari"
             windows = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/120.0"
@@ -858,26 +858,26 @@ class TestPickDifficulty:
             assert _pick_difficulty(android_tablet) == 22
 
     def test_empty_ua_falls_back_to_desktop(self):
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.challenge_service import _pick_difficulty
+        import django_waf.conf as conf_mod
+        from django_waf.services.challenge_service import _pick_difficulty
 
         with (
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 20),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 20),
         ):
             assert _pick_difficulty("") == 22
 
     def test_device_key_none_falls_back_to_single_value(self):
         """Setting desktop/mobile to None makes _pick_difficulty fall through
-        to ICV_WAF_CHALLENGE_DIFFICULTY — the legacy single-value path."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.challenge_service import _pick_difficulty
+        to DJANGO_WAF_CHALLENGE_DIFFICULTY — the legacy single-value path."""
+        import django_waf.conf as conf_mod
+        from django_waf.services.challenge_service import _pick_difficulty
 
         with (
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 20),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", None),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", None),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 20),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP", None),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE", None),
         ):
             assert _pick_difficulty("Mozilla/5.0 (iPhone) Mobi") == 20
             assert _pick_difficulty("Mozilla/5.0 (Windows)") == 20
@@ -891,12 +891,12 @@ class TestPickDifficulty:
 class TestDigestHasLeadingZeroBits:
     def test_zero_bits_always_true(self):
         """Difficulty 0 means no work — every digest passes."""
-        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+        from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
         assert _digest_has_leading_zero_bits(b"\xff\xff", 0) is True
 
     def test_one_bit_checks_msb_of_first_byte(self):
-        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+        from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
         # 0x7F = 0111_1111 — MSB is zero, passes 1-bit.
         assert _digest_has_leading_zero_bits(b"\x7f", 1) is True
@@ -904,13 +904,13 @@ class TestDigestHasLeadingZeroBits:
         assert _digest_has_leading_zero_bits(b"\x80", 1) is False
 
     def test_eight_bits_requires_full_zero_byte(self):
-        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+        from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
         assert _digest_has_leading_zero_bits(b"\x00\xff", 8) is True
         assert _digest_has_leading_zero_bits(b"\x01\xff", 8) is False
 
     def test_partial_byte_boundary(self):
-        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+        from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
         # 12 bits = one zero byte + top 4 bits of next byte zero.
         # 0x00 0x0F = 0000_0000 0000_1111 — top 4 bits of second byte zero, passes.
@@ -919,7 +919,7 @@ class TestDigestHasLeadingZeroBits:
         assert _digest_has_leading_zero_bits(b"\x00\x10", 12) is False
 
     def test_short_digest_returns_false(self):
-        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+        from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
         # Need at least one byte to check 1 bit.
         assert _digest_has_leading_zero_bits(b"", 1) is False
@@ -933,16 +933,16 @@ class TestDigestHasLeadingZeroBits:
 class TestIssueChallenge:
     def test_creates_challenge_token_in_db(self, db):
         """issue_challenge creates and persists a ChallengeToken record."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.models import ChallengeToken
+        import django_waf.conf as conf_mod
+        from django_waf.models import ChallengeToken
 
         redis = _make_redis()
 
         with (
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 4),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 4),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 4),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 3600),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 4),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 4),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE", 4),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 3600),
         ):
             token_obj = issue_challenge("10.0.0.1", redis)
 
@@ -954,15 +954,15 @@ class TestIssueChallenge:
 
     def test_token_stored_in_redis(self, db):
         """issue_challenge stores the challenge payload in Redis."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         redis = _make_redis()
 
         with (
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 4),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 4),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 4),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 3600),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 4),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 4),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE", 4),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 3600),
         ):
             issue_challenge("10.0.0.2", redis)
 
@@ -978,31 +978,31 @@ class TestIssueChallenge:
         assert payload["difficulty"] == 4
 
     def test_token_uses_configured_difficulty(self, db):
-        """Difficulty on created token reflects ICV_WAF_CHALLENGE_DIFFICULTY setting."""
-        import icv_waf.conf as conf_mod
+        """Difficulty on created token reflects DJANGO_WAF_CHALLENGE_DIFFICULTY setting."""
+        import django_waf.conf as conf_mod
 
         redis = _make_redis()
 
         with (
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 6),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 6),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE", 6),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 3600),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 6),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 6),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE", 6),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 3600),
         ):
             token_obj = issue_challenge("10.0.0.3", redis)
 
         assert token_obj.difficulty == 6
 
     def test_expiry_is_set_based_on_cookie_ttl(self, db):
-        """expires_at is approximately now + ICV_WAF_CHALLENGE_COOKIE_TTL seconds."""
-        import icv_waf.conf as conf_mod
+        """expires_at is approximately now + DJANGO_WAF_CHALLENGE_COOKIE_TTL seconds."""
+        import django_waf.conf as conf_mod
 
         redis = _make_redis()
         before = timezone.now()
 
         with (
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 4),
-            patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 7200),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 4),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 7200),
         ):  # 2 hours
             token_obj = issue_challenge("10.0.0.4", redis)
 
@@ -1015,8 +1015,8 @@ class TestIssueChallenge:
 
     def test_emits_challenge_issued_signal(self, db):
         """issue_challenge emits the challenge_issued signal."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.signals import challenge_issued
+        import django_waf.conf as conf_mod
+        from django_waf.signals import challenge_issued
 
         received = []
 
@@ -1027,8 +1027,8 @@ class TestIssueChallenge:
         try:
             redis = _make_redis()
             with (
-                patch.object(conf_mod, "ICV_WAF_CHALLENGE_DIFFICULTY", 4),
-                patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 3600),
+                patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 4),
+                patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 3600),
             ):
                 issue_challenge("10.0.0.5", redis)
         finally:
@@ -1050,7 +1050,7 @@ class TestVerifyChallengeService:
 
         Counts leading zero **bits** to match the production verifier.
         """
-        from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+        from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
         for n in range(1_000_000):
             nonce = str(n)
@@ -1229,7 +1229,7 @@ class TestVerifyChallengeService:
 class TestPassCookie:
     def test_round_trip_valid(self):
         """A cookie issued by issue_pass_cookie passes validate_pass_cookie."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         ip = "10.0.0.1"
         token = "abc123def456abc123def456abc123"
@@ -1242,7 +1242,7 @@ class TestPassCookie:
 
         response.set_cookie.side_effect = capture_cookie
 
-        with patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 3600):
+        with patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 3600):
             issue_pass_cookie(response, token, ip, secure=False)
 
         assert cookie_value_captured["value"] is not None
@@ -1250,7 +1250,7 @@ class TestPassCookie:
 
     def test_wrong_ip_returns_false(self):
         """Cookie issued for one IP does not validate for a different IP."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         ip = "10.0.0.1"
         other_ip = "10.0.0.2"
@@ -1264,7 +1264,7 @@ class TestPassCookie:
 
         response.set_cookie.side_effect = capture_cookie
 
-        with patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 3600):
+        with patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 3600):
             issue_pass_cookie(response, token, ip, secure=False)
 
         assert validate_pass_cookie(cookie_value_captured["value"], other_ip) is False
@@ -1279,7 +1279,7 @@ class TestPassCookie:
 
     def test_expired_cookie_returns_false(self):
         """A cookie with a past expiry timestamp is rejected."""
-        from icv_waf.services.challenge_service import _hmac_sign
+        from django_waf.services.challenge_service import _hmac_sign
 
         ip = "10.0.0.1"
         token = "some-token"
@@ -1299,11 +1299,11 @@ class TestPassCookie:
 
     def test_issue_pass_cookie_sets_cookie_on_response(self):
         """issue_pass_cookie calls response.set_cookie with correct parameters."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
         response = MagicMock()
 
-        with patch.object(conf_mod, "ICV_WAF_CHALLENGE_COOKIE_TTL", 86400):
+        with patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 86400):
             issue_pass_cookie(response, "my-token", "10.0.0.1", secure=True)
 
         response.set_cookie.assert_called_once()
@@ -1322,9 +1322,9 @@ class TestPassCookie:
 class TestDetectUaRotation:
     def test_creates_block_rule_for_rotating_ip(self, db):
         """detect_ua_rotation creates a CHALLENGE block rule for offending IPs."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.models import BlockRule
-        from icv_waf.services.anomaly_detector import detect_ua_rotation
+        import django_waf.conf as conf_mod
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import detect_ua_rotation
 
         ip = "11.11.11.11"
         now = timezone.now()
@@ -1332,7 +1332,7 @@ class TestDetectUaRotation:
         for i in range(25):
             RequestLogFactory(ip_address=ip, user_agent=f"Agent-{i}/1.0", timestamp=now)
 
-        with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+        with patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
             created = detect_ua_rotation(window_minutes=10, threshold=20)
 
         assert len(created) == 1
@@ -1345,7 +1345,7 @@ class TestDetectUaRotation:
 
     def test_returns_empty_when_no_offenders(self, db):
         """detect_ua_rotation returns empty list when no IP exceeds the threshold."""
-        from icv_waf.services.anomaly_detector import detect_ua_rotation
+        from django_waf.services.anomaly_detector import detect_ua_rotation
 
         result = detect_ua_rotation(window_minutes=5, threshold=20)
 
@@ -1353,8 +1353,8 @@ class TestDetectUaRotation:
 
     def test_does_not_duplicate_existing_auto_rule(self, db):
         """update_or_create refreshes an existing auto rule instead of creating a duplicate."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.anomaly_detector import detect_ua_rotation
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_ua_rotation
 
         ip = "12.12.12.12"
         now = timezone.now()
@@ -1371,13 +1371,13 @@ class TestDetectUaRotation:
             source=RuleSource.AUTO,
         )
 
-        with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+        with patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
             created = detect_ua_rotation(window_minutes=10, threshold=20)
 
         # update_or_create found the existing rule — no new creation
         assert created == []
         # Still only one rule for this IP
-        from icv_waf.models import BlockRule
+        from django_waf.models import BlockRule
 
         assert BlockRule.objects.filter(pattern=ip, source=RuleSource.AUTO).count() == 1
 
@@ -1390,8 +1390,8 @@ class TestDetectUaRotation:
 class TestDetectSubnetBurst:
     def test_creates_cidr_rule_for_bursting_subnet(self, db):
         """detect_subnet_burst creates a CIDR block rule for a bursting /24 subnet."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.anomaly_detector import detect_subnet_burst
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_subnet_burst
 
         now = timezone.now()
         # 100 requests from a single /24 subnet, 1 each from 9 other subnets.
@@ -1402,7 +1402,7 @@ class TestDetectSubnetBurst:
         for j in range(9):
             RequestLogFactory(ip_address=f"30.30.{j}.1", timestamp=now)
 
-        with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+        with patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
             created = detect_subnet_burst(window_minutes=60)
 
         # The 20.20.20.0/24 subnet should be flagged
@@ -1412,7 +1412,7 @@ class TestDetectSubnetBurst:
 
     def test_returns_empty_when_no_burst(self, db):
         """detect_subnet_burst returns empty list when no subnet exceeds 3× mean."""
-        from icv_waf.services.anomaly_detector import detect_subnet_burst
+        from django_waf.services.anomaly_detector import detect_subnet_burst
 
         result = detect_subnet_burst(window_minutes=15)
 
@@ -1427,9 +1427,9 @@ class TestDetectSubnetBurst:
 class TestDetectChallengeFarms:
     def test_creates_block_rule_for_farm_ip(self, db):
         """detect_challenge_farms creates a BLOCK rule for IPs with high failure rates."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.models import BlockRule
-        from icv_waf.services.anomaly_detector import detect_challenge_farms
+        import django_waf.conf as conf_mod
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import detect_challenge_farms
 
         IPReputationFactory(
             ip_address="99.99.99.99",
@@ -1438,7 +1438,7 @@ class TestDetectChallengeFarms:
             last_seen_at=timezone.now(),
         )
 
-        with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+        with patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
             created = detect_challenge_farms(window_hours=24)
 
         assert len(created) == 1
@@ -1450,7 +1450,7 @@ class TestDetectChallengeFarms:
 
     def test_returns_empty_when_no_suspects(self, db):
         """detect_challenge_farms returns empty list when no IPs meet the criteria."""
-        from icv_waf.services.anomaly_detector import detect_challenge_farms
+        from django_waf.services.anomaly_detector import detect_challenge_farms
 
         # IP with low failure count — should not be flagged
         IPReputationFactory(
@@ -1465,8 +1465,8 @@ class TestDetectChallengeFarms:
 
     def test_does_not_duplicate_existing_auto_block_rule(self, db):
         """update_or_create refreshes an existing auto rule instead of duplicating."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.anomaly_detector import detect_challenge_farms
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_challenge_farms
 
         ip = "88.88.88.88"
         IPReputationFactory(
@@ -1484,11 +1484,11 @@ class TestDetectChallengeFarms:
             source=RuleSource.AUTO,
         )
 
-        with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+        with patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
             created = detect_challenge_farms(window_hours=24)
 
         assert created == []
-        from icv_waf.models import BlockRule
+        from django_waf.models import BlockRule
 
         assert BlockRule.objects.filter(pattern=ip, source=RuleSource.AUTO).count() == 1
 
@@ -1501,7 +1501,7 @@ class TestDetectChallengeFarms:
 class TestRunAllDetectors:
     def test_returns_summary_dict_with_correct_keys(self, db):
         """run_all_detectors returns a dict with the expected summary keys."""
-        from icv_waf.services.anomaly_detector import run_all_detectors
+        from django_waf.services.anomaly_detector import run_all_detectors
 
         result = run_all_detectors()
 
@@ -1516,7 +1516,7 @@ class TestRunAllDetectors:
 
     def test_returns_zero_counts_when_no_anomalies(self, db):
         """When no anomalies exist, all counts are zero."""
-        from icv_waf.services.anomaly_detector import run_all_detectors
+        from django_waf.services.anomaly_detector import run_all_detectors
 
         result = run_all_detectors()
 
@@ -1527,8 +1527,8 @@ class TestRunAllDetectors:
 
     def test_total_rules_created_sums_all_detectors(self, db):
         """total_rules_created is the sum across all three detectors."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.anomaly_detector import run_all_detectors
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import run_all_detectors
 
         now = timezone.now()
         # Trigger UA rotation detector: one IP with many distinct UAs
@@ -1536,8 +1536,8 @@ class TestRunAllDetectors:
             RequestLogFactory(ip_address="55.55.55.55", user_agent=f"UA-{i}/1.0", timestamp=now)
 
         with (
-            patch.object(conf_mod, "ICV_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS", 20),
-            patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24),
+            patch.object(conf_mod, "DJANGO_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS", 20),
+            patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24),
         ):
             result = run_all_detectors()
 
@@ -1554,12 +1554,12 @@ class TestRunAllDetectors:
 class TestEmitAnomalySignalExceptionPath:
     def test_exception_during_signal_send_is_swallowed(self, db):
         """_emit_anomaly_signal swallows exceptions raised inside the signal send."""
-        from icv_waf.enums import AnomalyType
-        from icv_waf.services.anomaly_detector import _emit_anomaly_signal
+        from django_waf.enums import AnomalyType
+        from django_waf.services.anomaly_detector import _emit_anomaly_signal
 
         rule = BlockRuleFactory(is_active=True, rule_type=RuleType.IP)
 
-        with patch("icv_waf.signals.anomaly_detected.send", side_effect=Exception("signal error")):
+        with patch("django_waf.signals.anomaly_detected.send", side_effect=Exception("signal error")):
             # Should not raise — exceptions from signal send are caught
             _emit_anomaly_signal(
                 rule=rule,
@@ -1584,9 +1584,9 @@ class TestGetOrCreateAutoRuleDedup:
     @pytest.mark.django_db
     def test_deduplicates_and_retries_on_multiple_objects_returned(self):
         """Pre-existing duplicates are cleaned up, then the rule is created normally."""
-        from icv_waf.enums import RuleAction, RuleSource, RuleType
-        from icv_waf.models import BlockRule
-        from icv_waf.services.anomaly_detector import _get_or_create_auto_rule
+        from django_waf.enums import RuleAction, RuleSource, RuleType
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import _get_or_create_auto_rule
 
         # Create two duplicate rows manually
         for _ in range(2):
@@ -1620,8 +1620,8 @@ class TestGetOrCreateAutoRuleDedup:
     @pytest.mark.django_db
     def test_no_duplicates_uses_normal_update_or_create(self):
         """Without duplicates, _get_or_create_auto_rule works normally."""
-        from icv_waf.enums import RuleAction, RuleType
-        from icv_waf.services.anomaly_detector import _get_or_create_auto_rule
+        from django_waf.enums import RuleAction, RuleType
+        from django_waf.services.anomaly_detector import _get_or_create_auto_rule
 
         rule, created = _get_or_create_auto_rule(
             name="Auto: test",
@@ -1655,29 +1655,29 @@ class TestGetOrCreateAutoRuleDedup:
 class TestDetectSubnetBurstBranches:
     def test_subnet_below_burst_threshold_not_flagged(self, db):
         """Subnets at or below 3× mean are not flagged."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.anomaly_detector import detect_subnet_burst
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_subnet_burst
 
         now = timezone.now()
         # Uniform distribution: 10 requests per /24 subnet — no burst
         for j in range(10):
             RequestLogFactory(ip_address=f"40.40.{j}.1", timestamp=now)
 
-        with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+        with patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
             created = detect_subnet_burst(window_minutes=60)
 
         assert created == []
 
     def test_invalid_ip_in_logs_is_skipped(self, db):
         """RequestLog entries with invalid IP addresses are silently skipped."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.anomaly_detector import detect_subnet_burst
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_subnet_burst
 
         now = timezone.now()
         # Create a log entry with a value that cannot be parsed as an IP
         RequestLogFactory(ip_address="999.999.999.999", timestamp=now)
 
-        with patch.object(conf_mod, "ICV_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+        with patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
             # Should not raise
             result = detect_subnet_burst(window_minutes=60)
 
@@ -1692,8 +1692,8 @@ class TestDetectSubnetBurstBranches:
 class TestSyncFeed:
     def test_creates_new_rules_from_feed(self, db):
         """sync_feed creates BlockRule records for new feed entries."""
-        from icv_waf.models import BlockRule
-        from icv_waf.services.threat_feed import sync_feed
+        from django_waf.models import BlockRule
+        from django_waf.services.threat_feed import sync_feed
 
         feed_payload = [
             {
@@ -1721,8 +1721,8 @@ class TestSyncFeed:
 
     def test_updates_existing_feed_rule(self, db):
         """sync_feed updates an existing feed rule matched on (source, rule_type, pattern)."""
-        from icv_waf.enums import RuleSource
-        from icv_waf.services.threat_feed import sync_feed
+        from django_waf.enums import RuleSource
+        from django_waf.services.threat_feed import sync_feed
 
         BlockRuleFactory(
             source=RuleSource.FEED,
@@ -1758,7 +1758,7 @@ class TestSyncFeed:
 
     def test_skips_entries_below_confidence_threshold(self, db):
         """Entries with confidence below the threshold are counted as skipped."""
-        from icv_waf.services.threat_feed import sync_feed
+        from django_waf.services.threat_feed import sync_feed
 
         feed_payload = [
             {
@@ -1783,7 +1783,7 @@ class TestSyncFeed:
 
     def test_skips_entries_missing_rule_type_or_pattern(self, db):
         """Entries without rule_type or pattern are counted as skipped."""
-        from icv_waf.services.threat_feed import sync_feed
+        from django_waf.services.threat_feed import sync_feed
 
         feed_payload = [
             {"confidence": 0.9, "action": "block"},  # missing rule_type and pattern
@@ -1801,8 +1801,8 @@ class TestSyncFeed:
 
     def test_deactivates_feed_rules_absent_from_feed(self, db):
         """Feed rules no longer in the feed response are deactivated (BR-FEED-005)."""
-        from icv_waf.enums import RuleSource
-        from icv_waf.services.threat_feed import sync_feed
+        from django_waf.enums import RuleSource
+        from django_waf.services.threat_feed import sync_feed
 
         stale_rule = BlockRuleFactory(
             source=RuleSource.FEED,
@@ -1828,7 +1828,7 @@ class TestSyncFeed:
 
     def test_network_error_returns_error_dict(self, db):
         """When the HTTP request fails, sync_feed returns an error dict without raising."""
-        from icv_waf.services.threat_feed import sync_feed
+        from django_waf.services.threat_feed import sync_feed
 
         with patch("httpx.get", side_effect=Exception("connection refused")):
             result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
@@ -1838,7 +1838,7 @@ class TestSyncFeed:
 
     def test_accepts_wrapped_rules_dict(self, db):
         """sync_feed handles a feed payload wrapped in {'rules': [...]} format."""
-        from icv_waf.services.threat_feed import sync_feed
+        from django_waf.services.threat_feed import sync_feed
 
         feed_payload = {
             "rules": [
@@ -1864,8 +1864,8 @@ class TestSyncFeed:
 
     def test_entry_with_expires_field_uses_parsed_datetime(self, db):
         """A feed entry with an 'expires' field sets expires_at from that value."""
-        from icv_waf.models import BlockRule
-        from icv_waf.services.threat_feed import sync_feed
+        from django_waf.models import BlockRule
+        from django_waf.services.threat_feed import sync_feed
 
         future_ts = "2099-12-31T00:00:00+00:00"
         feed_payload = [
@@ -1892,8 +1892,8 @@ class TestSyncFeed:
 
     def test_emits_feed_synced_signal(self, db):
         """sync_feed emits the feed_synced signal on completion."""
-        from icv_waf.services.threat_feed import sync_feed
-        from icv_waf.signals import feed_synced
+        from django_waf.services.threat_feed import sync_feed
+        from django_waf.signals import feed_synced
 
         received = []
 
@@ -1924,31 +1924,31 @@ class TestSyncFeed:
 class TestBuildTelemetryPayload:
     def test_returns_payload_with_expected_keys(self, db):
         """build_telemetry_payload returns a dict with all required top-level keys."""
-        from icv_waf.services.threat_feed import build_telemetry_payload
+        from django_waf.services.threat_feed import build_telemetry_payload
 
         period_start = timezone.now() - timezone.timedelta(hours=1)
         period_end = timezone.now()
 
-        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="test-install-id"):
+        with patch("django_waf.services.threat_feed.get_or_create_install_id", return_value="test-install-id"):
             payload = build_telemetry_payload(period_start, period_end)
 
         assert set(payload.keys()) == {"install_id", "period", "ua_hashes", "subnets", "anomalies", "summary"}
 
     def test_install_id_in_payload(self, db):
         """The install_id from get_or_create_install_id is included in the payload."""
-        from icv_waf.services.threat_feed import build_telemetry_payload
+        from django_waf.services.threat_feed import build_telemetry_payload
 
         period_start = timezone.now() - timezone.timedelta(hours=1)
         period_end = timezone.now()
 
-        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="my-stable-id"):
+        with patch("django_waf.services.threat_feed.get_or_create_install_id", return_value="my-stable-id"):
             payload = build_telemetry_payload(period_start, period_end)
 
         assert payload["install_id"] == "my-stable-id"
 
     def test_summary_counts_requests_in_period(self, db):
         """summary.total_requests reflects the count of RequestLog entries in the period."""
-        from icv_waf.services.threat_feed import build_telemetry_payload
+        from django_waf.services.threat_feed import build_telemetry_payload
 
         now = timezone.now()
         period_start = now - timezone.timedelta(hours=1)
@@ -1956,7 +1956,7 @@ class TestBuildTelemetryPayload:
 
         RequestLogFactory.create_batch(3, timestamp=now - timezone.timedelta(minutes=30))
 
-        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
+        with patch("django_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
             payload = build_telemetry_payload(period_start, period_end)
 
         assert payload["summary"]["total_requests"] == 3
@@ -1965,8 +1965,8 @@ class TestBuildTelemetryPayload:
         """UA block rules are hashed with SHA-256 — raw patterns are not included."""
         import hashlib
 
-        from icv_waf.enums import RuleSource
-        from icv_waf.services.threat_feed import build_telemetry_payload
+        from django_waf.enums import RuleSource
+        from django_waf.services.threat_feed import build_telemetry_payload
 
         raw_pattern = "EvilBot/1.0"
         BlockRuleFactory(
@@ -1980,7 +1980,7 @@ class TestBuildTelemetryPayload:
         period_start = timezone.now() - timezone.timedelta(hours=1)
         period_end = timezone.now()
 
-        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
+        with patch("django_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
             payload = build_telemetry_payload(period_start, period_end)
 
         ua_hashes = payload["ua_hashes"]
@@ -1992,7 +1992,7 @@ class TestBuildTelemetryPayload:
 
     def test_subnets_are_truncated_to_slash24(self, db):
         """IP addresses in logs are truncated to /24 subnets in the payload."""
-        from icv_waf.services.threat_feed import build_telemetry_payload
+        from django_waf.services.threat_feed import build_telemetry_payload
 
         now = timezone.now()
         period_start = now - timezone.timedelta(hours=1)
@@ -2000,7 +2000,7 @@ class TestBuildTelemetryPayload:
 
         RequestLogFactory(ip_address="192.0.2.100", timestamp=now - timezone.timedelta(minutes=5))
 
-        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
+        with patch("django_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
             payload = build_telemetry_payload(period_start, period_end)
 
         subnet_cidrs = [s["cidr"] for s in payload["subnets"]]
@@ -2008,7 +2008,7 @@ class TestBuildTelemetryPayload:
 
     def test_invalid_ip_in_logs_is_skipped(self, db):
         """RequestLog entries with invalid IPs are skipped during subnet aggregation."""
-        from icv_waf.services.threat_feed import build_telemetry_payload
+        from django_waf.services.threat_feed import build_telemetry_payload
 
         now = timezone.now()
         period_start = now - timezone.timedelta(hours=1)
@@ -2016,7 +2016,7 @@ class TestBuildTelemetryPayload:
 
         RequestLogFactory(ip_address="999.999.999.999", timestamp=now - timezone.timedelta(minutes=5))
 
-        with patch("icv_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
+        with patch("django_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
             # Should not raise
             payload = build_telemetry_payload(period_start, period_end)
 
@@ -2031,7 +2031,7 @@ class TestBuildTelemetryPayload:
 class TestSubmitTelemetry:
     def test_returns_true_on_successful_post(self):
         """submit_telemetry returns True when the server responds with 2xx."""
-        from icv_waf.services.threat_feed import submit_telemetry
+        from django_waf.services.threat_feed import submit_telemetry
 
         with patch("httpx.post") as mock_post:
             mock_resp = MagicMock()
@@ -2044,7 +2044,7 @@ class TestSubmitTelemetry:
 
     def test_returns_false_on_non_2xx_response(self):
         """submit_telemetry returns False when the server responds with a non-2xx status."""
-        from icv_waf.services.threat_feed import submit_telemetry
+        from django_waf.services.threat_feed import submit_telemetry
 
         with patch("httpx.post") as mock_post:
             mock_resp = MagicMock()
@@ -2058,7 +2058,7 @@ class TestSubmitTelemetry:
 
     def test_returns_false_on_network_error(self):
         """submit_telemetry returns False when a network error occurs (BR-TEL-004)."""
-        from icv_waf.services.threat_feed import submit_telemetry
+        from django_waf.services.threat_feed import submit_telemetry
 
         with patch("httpx.post", side_effect=Exception("timeout")):
             result = submit_telemetry({"install_id": "x"}, report_url="https://report.example.com")
@@ -2067,11 +2067,11 @@ class TestSubmitTelemetry:
 
     def test_includes_bearer_token_when_api_key_set(self):
         """An API key from conf is sent as a Bearer token in the Authorization header."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.threat_feed import submit_telemetry
+        import django_waf.conf as conf_mod
+        from django_waf.services.threat_feed import submit_telemetry
 
         with (
-            patch.object(conf_mod, "ICV_WAF_FEED_API_KEY", "secret-key-123"),
+            patch.object(conf_mod, "DJANGO_WAF_FEED_API_KEY", "secret-key-123"),
             patch("httpx.post") as mock_post,
         ):
             mock_resp = MagicMock()
@@ -2085,12 +2085,12 @@ class TestSubmitTelemetry:
         assert headers.get("Authorization") == "Bearer secret-key-123"
 
     def test_omits_auth_header_when_no_api_key(self):
-        """When ICV_WAF_FEED_API_KEY is empty, no Authorization header is sent."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.services.threat_feed import submit_telemetry
+        """When DJANGO_WAF_FEED_API_KEY is empty, no Authorization header is sent."""
+        import django_waf.conf as conf_mod
+        from django_waf.services.threat_feed import submit_telemetry
 
         with (
-            patch.object(conf_mod, "ICV_WAF_FEED_API_KEY", ""),
+            patch.object(conf_mod, "DJANGO_WAF_FEED_API_KEY", ""),
             patch("httpx.post") as mock_post,
         ):
             mock_resp = MagicMock()
@@ -2112,7 +2112,7 @@ class TestSubmitTelemetry:
 class TestGetOrCreateInstallId:
     def test_returns_cached_value_without_file_io(self):
         """Returns the install_id from Django cache without touching the filesystem."""
-        from icv_waf.services.threat_feed import get_or_create_install_id
+        from django_waf.services.threat_feed import get_or_create_install_id
 
         with patch("django.core.cache.cache") as mock_cache:
             mock_cache.get.return_value = "cached-install-id"
@@ -2125,7 +2125,7 @@ class TestGetOrCreateInstallId:
         """When the cache is empty, reads install_id from the filesystem file."""
         from unittest.mock import mock_open
 
-        from icv_waf.services.threat_feed import get_or_create_install_id
+        from django_waf.services.threat_feed import get_or_create_install_id
 
         with (
             patch("django.core.cache.cache") as mock_cache,
@@ -2142,7 +2142,7 @@ class TestGetOrCreateInstallId:
         """When the cache is empty and no file exists, generates and persists a new UUID."""
         import uuid as uuid_mod
 
-        from icv_waf.services.threat_feed import get_or_create_install_id
+        from django_waf.services.threat_feed import get_or_create_install_id
 
         with (
             patch("django.core.cache.cache") as mock_cache,
@@ -2159,7 +2159,7 @@ class TestGetOrCreateInstallId:
 
     def test_persists_new_id_to_cache(self, tmp_path):
         """A freshly generated install_id is stored in the Django cache."""
-        from icv_waf.services.threat_feed import get_or_create_install_id
+        from django_waf.services.threat_feed import get_or_create_install_id
 
         with (
             patch("django.core.cache.cache") as mock_cache,
@@ -2181,7 +2181,7 @@ class TestGetOrCreateInstallId:
 class TestGenerateNginxBlocklist:
     def test_writes_file_with_ip_and_ua_rules(self, db, tmp_path):
         """generate_nginx_blocklist writes both IP/CIDR and UA rules to the output file."""
-        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+        from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
         output_file = str(tmp_path / "blocklist.conf")
 
@@ -2212,7 +2212,7 @@ class TestGenerateNginxBlocklist:
 
     def test_returns_count_of_rules_written(self, db, tmp_path):
         """generate_nginx_blocklist returns the number of rules written."""
-        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+        from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
         BlockRuleFactory.create_batch(3, is_active=True, rule_type="ip", match_type="exact", action="block")
         output_file = str(tmp_path / "blocklist.conf")
@@ -2225,7 +2225,7 @@ class TestGenerateNginxBlocklist:
         """The output file is written via temp file + rename (BR-BL-002)."""
         import os
 
-        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+        from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
         output_file = str(tmp_path / "blocklist.conf")
 
@@ -2236,7 +2236,7 @@ class TestGenerateNginxBlocklist:
             rename_calls.append((src, dst))
             real_rename(src, dst)
 
-        with patch("icv_waf.services.blocklist_generator.os.rename", side_effect=tracking_rename):
+        with patch("django_waf.services.blocklist_generator.os.rename", side_effect=tracking_rename):
             generate_nginx_blocklist(output_path=output_file)
 
         assert len(rename_calls) == 1
@@ -2245,7 +2245,7 @@ class TestGenerateNginxBlocklist:
 
     def test_ua_contains_pattern_escaped_as_regex(self, db, tmp_path):
         """UA rules with match_type='contains' are written as case-insensitive nginx regexes."""
-        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+        from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
         BlockRuleFactory(
             is_active=True,
@@ -2264,7 +2264,7 @@ class TestGenerateNginxBlocklist:
 
     def test_ua_regex_pattern_written_with_prefix(self, db, tmp_path):
         """UA rules with match_type='regex' are written with ~* nginx prefix."""
-        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+        from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
         BlockRuleFactory(
             is_active=True,
@@ -2282,7 +2282,7 @@ class TestGenerateNginxBlocklist:
 
     def test_empty_ua_pattern_is_omitted(self, db, tmp_path):
         """UA rules with an empty pattern are not written to the output file."""
-        from icv_waf.services.blocklist_generator import generate_nginx_blocklist
+        from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
         BlockRuleFactory(
             is_active=True,
@@ -2312,9 +2312,9 @@ class TestGenerateNginxBlocklist:
 class TestReloadNginx:
     def test_returns_true_on_successful_reload(self):
         """reload_nginx returns True when nginx exits with code 0."""
-        from icv_waf.services.blocklist_generator import reload_nginx
+        from django_waf.services.blocklist_generator import reload_nginx
 
-        with patch("icv_waf.services.blocklist_generator.subprocess.run") as mock_run:
+        with patch("django_waf.services.blocklist_generator.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stderr="")
 
             result = reload_nginx()
@@ -2323,9 +2323,9 @@ class TestReloadNginx:
 
     def test_returns_false_on_nonzero_exit_code(self):
         """reload_nginx returns False when nginx exits with a non-zero code."""
-        from icv_waf.services.blocklist_generator import reload_nginx
+        from django_waf.services.blocklist_generator import reload_nginx
 
-        with patch("icv_waf.services.blocklist_generator.subprocess.run") as mock_run:
+        with patch("django_waf.services.blocklist_generator.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stderr="configuration file error")
 
             result = reload_nginx()
@@ -2334,10 +2334,10 @@ class TestReloadNginx:
 
     def test_returns_false_when_nginx_not_found(self):
         """reload_nginx returns False when nginx is not on the PATH."""
-        from icv_waf.services.blocklist_generator import reload_nginx
+        from django_waf.services.blocklist_generator import reload_nginx
 
         with patch(
-            "icv_waf.services.blocklist_generator.subprocess.run",
+            "django_waf.services.blocklist_generator.subprocess.run",
             side_effect=FileNotFoundError,
         ):
             result = reload_nginx()
@@ -2348,10 +2348,10 @@ class TestReloadNginx:
         """reload_nginx returns False when the subprocess times out."""
         import subprocess
 
-        from icv_waf.services.blocklist_generator import reload_nginx
+        from django_waf.services.blocklist_generator import reload_nginx
 
         with patch(
-            "icv_waf.services.blocklist_generator.subprocess.run",
+            "django_waf.services.blocklist_generator.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="nginx", timeout=10),
         ):
             result = reload_nginx()
@@ -2360,10 +2360,10 @@ class TestReloadNginx:
 
     def test_returns_false_on_os_error(self):
         """reload_nginx returns False on a generic OSError."""
-        from icv_waf.services.blocklist_generator import reload_nginx
+        from django_waf.services.blocklist_generator import reload_nginx
 
         with patch(
-            "icv_waf.services.blocklist_generator.subprocess.run",
+            "django_waf.services.blocklist_generator.subprocess.run",
             side_effect=OSError("permission denied"),
         ):
             result = reload_nginx()
@@ -2379,24 +2379,27 @@ class TestReloadNginx:
 class TestVerifyRdns:
     def test_returns_true_when_hostname_matches_pattern(self):
         """_verify_rdns returns True when the resolved hostname matches the pattern."""
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
         redis.get.return_value = None  # No cached value
 
-        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr", return_value=("crawl.googlebot.com", [], [])):
+        with patch(
+            "django_waf.services.rule_engine.socket.gethostbyaddr",
+            return_value=("crawl.googlebot.com", [], []),
+        ):
             result = _verify_rdns("66.249.66.1", r"\.googlebot\.com$", redis)
 
         assert result is True
 
     def test_returns_false_when_hostname_does_not_match(self):
         """_verify_rdns returns False when the hostname does not match the pattern."""
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
         redis.get.return_value = None
 
-        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr", return_value=("evil.example.com", [], [])):
+        with patch("django_waf.services.rule_engine.socket.gethostbyaddr", return_value=("evil.example.com", [], [])):
             result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
 
         assert result is False
@@ -2405,24 +2408,24 @@ class TestVerifyRdns:
         """_verify_rdns returns False when DNS lookup fails."""
         import socket
 
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
         redis.get.return_value = None
 
-        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr", side_effect=socket.herror):
+        with patch("django_waf.services.rule_engine.socket.gethostbyaddr", side_effect=socket.herror):
             result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
 
         assert result is False
 
     def test_uses_cached_hostname_from_redis(self):
         """_verify_rdns uses the cached hostname from Redis without a DNS lookup."""
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
         redis.get.return_value = b"crawl.googlebot.com"
 
-        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr") as mock_dns:
+        with patch("django_waf.services.rule_engine.socket.gethostbyaddr") as mock_dns:
             result = _verify_rdns("66.249.66.1", r"\.googlebot\.com$", redis)
 
         mock_dns.assert_not_called()
@@ -2430,12 +2433,12 @@ class TestVerifyRdns:
 
     def test_stores_resolved_hostname_in_redis(self):
         """_verify_rdns caches the resolved hostname in Redis with a 24-hour TTL."""
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
         redis.get.return_value = None
 
-        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr", return_value=("host.example.com", [], [])):
+        with patch("django_waf.services.rule_engine.socket.gethostbyaddr", return_value=("host.example.com", [], [])):
             _verify_rdns("1.2.3.4", r"example\.com$", redis)
 
         assert redis.setex.called
@@ -2445,7 +2448,7 @@ class TestVerifyRdns:
 
     def test_returns_false_for_empty_cached_hostname(self):
         """_verify_rdns returns False when the cached hostname is an empty string."""
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
         redis.get.return_value = b""  # Cached empty hostname (prior DNS failure)
@@ -2456,7 +2459,7 @@ class TestVerifyRdns:
 
     def test_returns_false_for_invalid_rdns_regex(self):
         """_verify_rdns returns False gracefully when rdns_pattern is an invalid regex."""
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
         redis.get.return_value = b"host.example.com"
@@ -2474,7 +2477,7 @@ class TestVerifyRdns:
 class TestCheckBlockRulesPaths:
     def test_cidr_rule_matches_ip_in_range(self, db):
         """_check_block_rules matches a CIDR-type rule for an IP within the network."""
-        from icv_waf.services.rule_engine import RuleCache, _check_block_rules
+        from django_waf.services.rule_engine import RuleCache, _check_block_rules
 
         cidr_rule = {
             "id": "00000000-0000-0000-0000-000000000001",
@@ -2494,7 +2497,7 @@ class TestCheckBlockRulesPaths:
 
     def test_cidr_rule_does_not_match_ip_outside_range(self, db):
         """_check_block_rules does not match a CIDR rule for an IP outside the network."""
-        from icv_waf.services.rule_engine import RuleCache, _check_block_rules
+        from django_waf.services.rule_engine import RuleCache, _check_block_rules
 
         cidr_rule = {
             "id": "00000000-0000-0000-0000-000000000002",
@@ -2512,7 +2515,7 @@ class TestCheckBlockRulesPaths:
 
     def test_ua_regex_rule_matches(self, db):
         """_check_block_rules matches a UA rule with regex match_type."""
-        from icv_waf.services.rule_engine import RuleCache, _check_block_rules
+        from django_waf.services.rule_engine import RuleCache, _check_block_rules
 
         ua_rule = {
             "id": "00000000-0000-0000-0000-000000000003",
@@ -2530,7 +2533,7 @@ class TestCheckBlockRulesPaths:
 
     def test_ua_contains_rule_matches(self, db):
         """_check_block_rules matches a UA rule with contains match_type."""
-        from icv_waf.services.rule_engine import RuleCache, _check_block_rules
+        from django_waf.services.rule_engine import RuleCache, _check_block_rules
 
         ua_rule = {
             "id": "00000000-0000-0000-0000-000000000004",
@@ -2548,7 +2551,7 @@ class TestCheckBlockRulesPaths:
 
     def test_unknown_rule_type_returns_none(self, db):
         """_check_block_rules returns None for an unrecognised rule_type."""
-        from icv_waf.services.rule_engine import RuleCache, _check_block_rules
+        from django_waf.services.rule_engine import RuleCache, _check_block_rules
 
         unknown_rule = {
             "id": "00000000-0000-0000-0000-000000000005",
@@ -2573,7 +2576,7 @@ class TestCheckBlockRulesPaths:
 class TestCompileUaPatterns:
     def test_invalid_regex_pattern_is_skipped_with_warning(self):
         """_compile_ua_patterns skips rules with invalid regex patterns."""
-        from icv_waf.services.rule_engine import _compile_ua_patterns
+        from django_waf.services.rule_engine import _compile_ua_patterns
 
         rules = [
             {
@@ -2593,7 +2596,7 @@ class TestCompileUaPatterns:
 
     def test_valid_regex_pattern_is_compiled(self):
         """_compile_ua_patterns compiles a valid regex pattern."""
-        from icv_waf.services.rule_engine import _compile_ua_patterns
+        from django_waf.services.rule_engine import _compile_ua_patterns
 
         rules = [
             {
@@ -2614,7 +2617,7 @@ class TestCompileUaPatterns:
 
     def test_non_ua_rules_are_excluded(self):
         """_compile_ua_patterns only processes ua-type rules."""
-        from icv_waf.services.rule_engine import _compile_ua_patterns
+        from django_waf.services.rule_engine import _compile_ua_patterns
 
         rules = [
             {
@@ -2671,7 +2674,7 @@ class TestLoadRuleCacheDbFallback:
 class TestRecordBlockVerdict:
     def test_sets_blocked_ip_key_in_redis(self):
         """record_block_verdict writes the blocked-IP key to Redis with the given TTL."""
-        from icv_waf.services.rule_engine import record_block_verdict
+        from django_waf.services.rule_engine import record_block_verdict
 
         redis = _make_redis()
         record_block_verdict("1.2.3.4", redis, ttl=300)
@@ -2680,7 +2683,7 @@ class TestRecordBlockVerdict:
 
     def test_increments_daily_stats_counter(self):
         """record_block_verdict increments the daily stats blocked counter."""
-        from icv_waf.services.rule_engine import record_block_verdict
+        from django_waf.services.rule_engine import record_block_verdict
 
         redis = _make_redis()
         record_block_verdict("1.2.3.4", redis, ttl=300)
@@ -2689,7 +2692,7 @@ class TestRecordBlockVerdict:
 
     def test_custom_ttl_is_respected(self):
         """record_block_verdict uses the custom TTL argument."""
-        from icv_waf.services.rule_engine import record_block_verdict
+        from django_waf.services.rule_engine import record_block_verdict
 
         redis = _make_redis()
         record_block_verdict("5.6.7.8", redis, ttl=600)
@@ -2699,7 +2702,7 @@ class TestRecordBlockVerdict:
 
     def test_default_ttl_is_300(self):
         """record_block_verdict defaults to a 300-second TTL."""
-        from icv_waf.services.rule_engine import record_block_verdict
+        from django_waf.services.rule_engine import record_block_verdict
 
         redis = _make_redis()
         record_block_verdict("9.8.7.6", redis)
@@ -2713,7 +2716,7 @@ class TestRecordBlockVerdict:
         This is what gives the fast-path its hit attribution from v0.10.6
         onward — see test_fast_path_attributes_hit_to_rule.
         """
-        from icv_waf.services.rule_engine import record_block_verdict
+        from django_waf.services.rule_engine import record_block_verdict
 
         redis = _make_redis()
         record_block_verdict("9.8.7.5", redis, ttl=300, rule_id="abc-123")
@@ -2722,7 +2725,7 @@ class TestRecordBlockVerdict:
 
     def test_stores_sentinel_when_rule_id_missing(self):
         """When rule_id is None or empty, falls back to the legacy "1" sentinel."""
-        from icv_waf.services.rule_engine import record_block_verdict
+        from django_waf.services.rule_engine import record_block_verdict
 
         redis = _make_redis()
         record_block_verdict("9.8.7.4", redis, ttl=300, rule_id=None)
@@ -2741,8 +2744,8 @@ class TestDetectUnsolvedChallenges:
     @pytest.mark.django_db
     def test_blocks_ip_with_challenges_no_solves_empty_referer(self):
         """IP with 3+ challenged verdicts, 0 solves, and empty referers is blocked."""
-        from icv_waf.models import BlockRule
-        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
 
         ip = "101.47.1.1"
         now = timezone.now()
@@ -2767,7 +2770,7 @@ class TestDetectUnsolvedChallenges:
     @pytest.mark.django_db
     def test_skips_ip_with_solved_challenge(self):
         """IP that has solved at least one challenge is not flagged."""
-        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
 
         ip = "10.0.0.5"
         now = timezone.now()
@@ -2788,7 +2791,7 @@ class TestDetectUnsolvedChallenges:
     @pytest.mark.django_db
     def test_skips_ip_below_min_challenged_threshold(self):
         """IP with fewer than min_challenged verdicts is not flagged."""
-        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
 
         ip = "10.0.0.6"
         now = timezone.now()
@@ -2807,7 +2810,7 @@ class TestDetectUnsolvedChallenges:
     @pytest.mark.django_db
     def test_skips_ip_with_referer_present(self):
         """IP whose requests have referer headers is not flagged."""
-        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
 
         ip = "10.0.0.7"
         now = timezone.now()
@@ -2827,7 +2830,7 @@ class TestDetectUnsolvedChallenges:
     @pytest.mark.django_db
     def test_skips_ip_with_only_root_path_requests(self):
         """IP with all requests to '/' is skipped (no non-root requests to evaluate)."""
-        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
 
         ip = "10.0.0.8"
         now = timezone.now()
@@ -2847,7 +2850,7 @@ class TestDetectUnsolvedChallenges:
     @pytest.mark.django_db
     def test_does_not_duplicate_existing_auto_rule(self):
         """update_or_create refreshes an existing auto rule instead of duplicating."""
-        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
 
         ip = "10.0.0.9"
         now = timezone.now()
@@ -2870,14 +2873,14 @@ class TestDetectUnsolvedChallenges:
         rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
 
         assert len(rules) == 0
-        from icv_waf.models import BlockRule
+        from django_waf.models import BlockRule
 
         assert BlockRule.objects.filter(pattern=ip, source=RuleSource.AUTO).count() == 1
 
     @pytest.mark.django_db
     def test_referer_ratio_threshold(self):
         """IP with some referers below the ratio threshold is not flagged."""
-        from icv_waf.services.anomaly_detector import detect_unsolved_challenges
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
 
         ip = "10.0.0.10"
         now = timezone.now()
@@ -2907,7 +2910,7 @@ class TestDetectUnsolvedChallenges:
     @pytest.mark.django_db
     def test_wired_into_run_all_detectors(self):
         """run_all_detectors includes unsolved_challenge_rules in its output."""
-        from icv_waf.services.anomaly_detector import run_all_detectors
+        from django_waf.services.anomaly_detector import run_all_detectors
 
         result = run_all_detectors()
 
@@ -3157,58 +3160,58 @@ class TestRuleEngineHelpers:
     # ------------------------------------------------------------------ _match_ua
 
     def test_match_ua_exact(self):
-        from icv_waf.services.rule_engine import _match_ua
+        from django_waf.services.rule_engine import _match_ua
 
         assert _match_ua("curl/7.88", "curl/7.88", "exact") is True
         assert _match_ua("curl/7.88", "curl/7.87", "exact") is False
 
     def test_match_ua_contains_is_case_insensitive(self):
-        from icv_waf.services.rule_engine import _match_ua
+        from django_waf.services.rule_engine import _match_ua
 
         assert _match_ua("Mozilla/5.0 Chrome/120", "chrome", "contains") is True
         assert _match_ua("curl/7.88", "chrome", "contains") is False
 
     def test_match_ua_regex(self):
-        from icv_waf.services.rule_engine import _match_ua
+        from django_waf.services.rule_engine import _match_ua
 
         assert _match_ua("python-requests/2.31", r"python-\w+", "regex") is True
         assert _match_ua("curl/7.88", r"python-\w+", "regex") is False
 
     def test_match_ua_invalid_regex_returns_false(self):
         """An invalid regex pattern is swallowed and returns False."""
-        from icv_waf.services.rule_engine import _match_ua
+        from django_waf.services.rule_engine import _match_ua
 
         assert _match_ua("anything", "[unclosed", "regex") is False
 
     def test_match_ua_unknown_match_type_returns_false(self):
-        from icv_waf.services.rule_engine import _match_ua
+        from django_waf.services.rule_engine import _match_ua
 
         assert _match_ua("anything", "anything", "bogus") is False
 
     # ------------------------------------------------------------------ _match_ip
 
     def test_match_ip_exact(self):
-        from icv_waf.services.rule_engine import _match_ip
+        from django_waf.services.rule_engine import _match_ip
 
         assert _match_ip("203.0.113.1", "203.0.113.1", "exact") is True
         assert _match_ip("203.0.113.2", "203.0.113.1", "exact") is False
 
     def test_match_ip_unknown_match_type_returns_false(self):
-        from icv_waf.services.rule_engine import _match_ip
+        from django_waf.services.rule_engine import _match_ip
 
         assert _match_ip("203.0.113.1", "203.0.113.1", "regex") is False
 
     # ------------------------------------------------------------------ _match_cidr
 
     def test_match_cidr_within_range(self):
-        from icv_waf.services.rule_engine import _match_cidr
+        from django_waf.services.rule_engine import _match_cidr
 
         assert _match_cidr("10.0.0.42", "10.0.0.0/24") is True
         assert _match_cidr("10.0.1.42", "10.0.0.0/24") is False
 
     def test_match_cidr_invalid_pattern_returns_false(self):
         """A garbage CIDR string returns False rather than raising."""
-        from icv_waf.services.rule_engine import _match_cidr
+        from django_waf.services.rule_engine import _match_cidr
 
         assert _match_cidr("10.0.0.42", "not-a-cidr") is False
         assert _match_cidr("not-an-ip", "10.0.0.0/24") is False
@@ -3217,7 +3220,7 @@ class TestRuleEngineHelpers:
 
     def test_rule_matches_composite_both_match(self):
         """A composite rule requires both UA and IP/CIDR to match."""
-        from icv_waf.services.rule_engine import _rule_matches
+        from django_waf.services.rule_engine import _rule_matches
 
         rule = {
             "rule_type": "composite",
@@ -3232,14 +3235,14 @@ class TestRuleEngineHelpers:
 
     def test_rule_matches_composite_without_separator_returns_false(self):
         """A composite rule with no `||` separator is a legacy fallback that cannot match."""
-        from icv_waf.services.rule_engine import _rule_matches
+        from django_waf.services.rule_engine import _rule_matches
 
         rule = {"rule_type": "composite", "match_type": "contains", "pattern": "something"}
         assert _rule_matches(rule, "10.0.0.1", "Mozilla") is False
 
     def test_rule_matches_unknown_rule_type_returns_false(self):
         """An unknown rule_type falls through to False (defensive default)."""
-        from icv_waf.services.rule_engine import _rule_matches
+        from django_waf.services.rule_engine import _rule_matches
 
         rule = {"rule_type": "bogus", "match_type": "exact", "pattern": "x"}
         assert _rule_matches(rule, "10.0.0.1", "Mozilla") is False
@@ -3247,7 +3250,7 @@ class TestRuleEngineHelpers:
     # ------------------------------------------------------------------ _record_rule_hit
 
     def test_record_rule_hit_increments_and_expires(self):
-        from icv_waf.services.rule_engine import _record_rule_hit
+        from django_waf.services.rule_engine import _record_rule_hit
 
         redis = MagicMock()
         _record_rule_hit("rule-123", redis)
@@ -3257,7 +3260,7 @@ class TestRuleEngineHelpers:
 
     def test_record_rule_hit_swallows_exception(self):
         """Redis failures during hit recording must not propagate."""
-        from icv_waf.services.rule_engine import _record_rule_hit
+        from django_waf.services.rule_engine import _record_rule_hit
 
         redis = MagicMock()
         redis.incr.side_effect = RuntimeError("redis down")
@@ -3267,13 +3270,13 @@ class TestRuleEngineHelpers:
     # ------------------------------------------------------------------ _verify_rdns
 
     def test_verify_rdns_cache_miss_resolves_and_caches(self):
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = MagicMock()
         redis.get.return_value = None  # cache miss
 
         with patch(
-            "icv_waf.services.rule_engine.socket.gethostbyaddr",
+            "django_waf.services.rule_engine.socket.gethostbyaddr",
             return_value=("crawl-1-2-3-4.googlebot.com", [], []),
         ):
             result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
@@ -3282,7 +3285,7 @@ class TestRuleEngineHelpers:
         redis.setex.assert_called_once()
 
     def test_verify_rdns_cache_hit_uses_cached_hostname(self):
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = MagicMock()
         redis.get.return_value = "bingbot-5-6-7-8.search.msn.com"
@@ -3295,7 +3298,7 @@ class TestRuleEngineHelpers:
 
     def test_verify_rdns_cache_hit_bytes_value(self):
         """A bytes-valued cache entry is decoded before matching."""
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = MagicMock()
         redis.get.return_value = b"crawl-1-2-3-4.googlebot.com"
@@ -3303,17 +3306,17 @@ class TestRuleEngineHelpers:
         assert _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis) is True
 
     def test_verify_rdns_resolution_failure_returns_false(self):
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = MagicMock()
         redis.get.return_value = None
 
-        with patch("icv_waf.services.rule_engine.socket.gethostbyaddr", side_effect=OSError("no ptr")):
+        with patch("django_waf.services.rule_engine.socket.gethostbyaddr", side_effect=OSError("no ptr")):
             assert _verify_rdns("203.0.113.1", r"\.googlebot\.com$", redis) is False
 
     def test_verify_rdns_no_hostname_returns_false(self):
         """Empty hostname (cached) short-circuits to False."""
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = MagicMock()
         redis.get.return_value = ""
@@ -3321,7 +3324,7 @@ class TestRuleEngineHelpers:
 
     def test_verify_rdns_invalid_pattern_returns_false(self):
         """An invalid rDNS regex pattern is swallowed and returns False."""
-        from icv_waf.services.rule_engine import _verify_rdns
+        from django_waf.services.rule_engine import _verify_rdns
 
         redis = MagicMock()
         redis.get.return_value = "something.example.com"
@@ -3330,8 +3333,8 @@ class TestRuleEngineHelpers:
     # ------------------------------------------------------------------ _action_to_verdict
 
     def test_action_to_verdict_mapping(self):
-        from icv_waf.enums import RuleAction, Verdict
-        from icv_waf.services.rule_engine import _action_to_verdict
+        from django_waf.enums import RuleAction, Verdict
+        from django_waf.services.rule_engine import _action_to_verdict
 
         assert _action_to_verdict(RuleAction.BLOCK) == Verdict.BLOCKED
         assert _action_to_verdict(RuleAction.CHALLENGE) == Verdict.CHALLENGED
@@ -3339,16 +3342,16 @@ class TestRuleEngineHelpers:
         assert _action_to_verdict(RuleAction.LOG_ONLY) == Verdict.LOGGED
 
     def test_action_to_verdict_unknown_defaults_to_blocked(self):
-        from icv_waf.enums import Verdict
-        from icv_waf.services.rule_engine import _action_to_verdict
+        from django_waf.enums import Verdict
+        from django_waf.services.rule_engine import _action_to_verdict
 
         assert _action_to_verdict("something-weird") == Verdict.BLOCKED
 
     # ------------------------------------------------------------------ _score_to_verdict
 
     def test_score_to_verdict_thresholds(self):
-        from icv_waf.enums import RuleAction, Verdict
-        from icv_waf.services.rule_engine import _score_to_verdict
+        from django_waf.enums import RuleAction, Verdict
+        from django_waf.services.rule_engine import _score_to_verdict
 
         # Below log threshold → ALLOWED
         verdict, action = _score_to_verdict(0.0)
@@ -3374,14 +3377,14 @@ class TestRuleEngineHelpers:
 
     def test_score_path_matches_suspicious_patterns(self):
         """Paths matching suspicious patterns accumulate score."""
-        from icv_waf.services.rule_engine import _score_path
+        from django_waf.services.rule_engine import _score_path
 
         # A clearly suspicious path hits at least one of the default patterns
         score = _score_path("/wp-admin/")
         assert score > 0
 
     def test_score_path_clean_returns_zero(self):
-        from icv_waf.services.rule_engine import _score_path
+        from django_waf.services.rule_engine import _score_path
 
         assert _score_path("/") == 0.0
         assert _score_path("/about/team/") == 0.0
@@ -3395,7 +3398,7 @@ class TestRuleEngineHelpers:
         predated path scoring entirely. v0.9.0 expanded the defaults to cover
         these probe classes.
         """
-        from icv_waf.services.rule_engine import _score_path
+        from django_waf.services.rule_engine import _score_path
 
         probes = [
             "/.env",
@@ -3431,7 +3434,7 @@ class TestRuleEngineHelpers:
         Guards against over-broad patterns (e.g. we deliberately dropped
         ``.ini`` and ``.conf`` from the defaults because real apps use them).
         """
-        from icv_waf.services.rule_engine import _score_path
+        from django_waf.services.rule_engine import _score_path
 
         legit_paths = [
             "/",
@@ -3452,24 +3455,24 @@ class TestRuleEngineHelpers:
 
     def test_score_path_is_capped_at_10(self):
         """Accumulated score is capped at 10.0 even when many patterns match."""
-        from icv_waf.services.rule_engine import _score_path
+        from django_waf.services.rule_engine import _score_path
 
         with (
             patch(
-                "icv_waf.conf.ICV_WAF_SUSPICIOUS_PATH_PATTERNS",
+                "django_waf.conf.DJANGO_WAF_SUSPICIOUS_PATH_PATTERNS",
                 [r"a", r"b", r"c", r"d", r"e", r"f", r"g", r"h", r"i", r"j", r"k"],
             ),
-            patch("icv_waf.conf.ICV_WAF_SUSPICIOUS_PATH_SCORE", 2.0),
+            patch("django_waf.conf.DJANGO_WAF_SUSPICIOUS_PATH_SCORE", 2.0),
         ):
             assert _score_path("abcdefghijk") == 10.0
 
     def test_score_path_skips_invalid_regex(self):
         """Invalid regex patterns in config are skipped rather than raising."""
-        from icv_waf.services.rule_engine import _score_path
+        from django_waf.services.rule_engine import _score_path
 
         with (
-            patch("icv_waf.conf.ICV_WAF_SUSPICIOUS_PATH_PATTERNS", ["[unclosed", r"wp-admin"]),
-            patch("icv_waf.conf.ICV_WAF_SUSPICIOUS_PATH_SCORE", 2.0),
+            patch("django_waf.conf.DJANGO_WAF_SUSPICIOUS_PATH_PATTERNS", ["[unclosed", r"wp-admin"]),
+            patch("django_waf.conf.DJANGO_WAF_SUSPICIOUS_PATH_SCORE", 2.0),
         ):
             # Invalid pattern is skipped; the valid one still matches
             assert _score_path("/wp-admin/") == 2.0
@@ -3477,14 +3480,14 @@ class TestRuleEngineHelpers:
     # ------------------------------------------------------------------ _get_unsolved_challenge_count
 
     def test_get_unsolved_challenge_count_no_key(self):
-        from icv_waf.services.rule_engine import _get_unsolved_challenge_count
+        from django_waf.services.rule_engine import _get_unsolved_challenge_count
 
         redis = MagicMock()
         redis.get.return_value = None
         assert _get_unsolved_challenge_count("203.0.113.1", redis) == 0
 
     def test_get_unsolved_challenge_count_returns_count(self):
-        from icv_waf.services.rule_engine import _get_unsolved_challenge_count
+        from django_waf.services.rule_engine import _get_unsolved_challenge_count
 
         redis = MagicMock()
         # First .get() returns the challenged counter, second returns the solved flag (None)
@@ -3493,7 +3496,7 @@ class TestRuleEngineHelpers:
 
     def test_get_unsolved_challenge_count_clears_when_solved(self):
         """If the solved flag is set, the counter is cleared and 0 is returned."""
-        from icv_waf.services.rule_engine import _get_unsolved_challenge_count
+        from django_waf.services.rule_engine import _get_unsolved_challenge_count
 
         redis = MagicMock()
         redis.get.side_effect = [b"5", b"1"]  # challenged count, solved flag
@@ -3501,7 +3504,7 @@ class TestRuleEngineHelpers:
         redis.delete.assert_called_once_with("waf:challenged:203.0.113.1")
 
     def test_get_unsolved_challenge_count_swallows_exception(self):
-        from icv_waf.services.rule_engine import _get_unsolved_challenge_count
+        from django_waf.services.rule_engine import _get_unsolved_challenge_count
 
         redis = MagicMock()
         redis.get.side_effect = RuntimeError("redis down")
@@ -3512,9 +3515,9 @@ class TestRuleEngineHelpers:
     @pytest.mark.django_db
     def test_create_escalation_rule_creates_auto_block(self):
         """An escalation rule is created as source=AUTO with a TTL."""
-        from icv_waf.enums import RuleAction, RuleSource, RuleType
-        from icv_waf.models import BlockRule
-        from icv_waf.services.rule_engine import _create_escalation_rule
+        from django_waf.enums import RuleAction, RuleSource, RuleType
+        from django_waf.models import BlockRule
+        from django_waf.services.rule_engine import _create_escalation_rule
 
         _create_escalation_rule("203.0.113.77")
 
@@ -3527,9 +3530,9 @@ class TestRuleEngineHelpers:
     @pytest.mark.django_db
     def test_create_escalation_rule_idempotent(self):
         """Repeated calls update_or_create the same row, not duplicate it."""
-        from icv_waf.enums import RuleSource
-        from icv_waf.models import BlockRule
-        from icv_waf.services.rule_engine import _create_escalation_rule
+        from django_waf.enums import RuleSource
+        from django_waf.models import BlockRule
+        from django_waf.services.rule_engine import _create_escalation_rule
 
         _create_escalation_rule("203.0.113.78")
         _create_escalation_rule("203.0.113.78")
@@ -3540,10 +3543,10 @@ class TestRuleEngineHelpers:
     @pytest.mark.django_db
     def test_create_escalation_rule_swallows_db_exception(self):
         """DB errors during escalation rule creation are logged, not raised."""
-        from icv_waf.services.rule_engine import _create_escalation_rule
+        from django_waf.services.rule_engine import _create_escalation_rule
 
         with patch(
-            "icv_waf.models.BlockRule.objects.update_or_create",
+            "django_waf.models.BlockRule.objects.update_or_create",
             side_effect=RuntimeError("db down"),
         ):
             # Must not raise
@@ -3557,9 +3560,9 @@ class TestRuleEngineHelpers:
         duplicate rows exist for the same (rule_type, pattern, source, action)
         key. The fix catches this, deduplicates, and retries.
         """
-        from icv_waf.enums import RuleAction, RuleSource, RuleType
-        from icv_waf.models import BlockRule
-        from icv_waf.services.rule_engine import _create_escalation_rule
+        from django_waf.enums import RuleAction, RuleSource, RuleType
+        from django_waf.models import BlockRule
+        from django_waf.services.rule_engine import _create_escalation_rule
 
         # Manually create two duplicate rows (simulating a pre-existing race)
         for _ in range(2):
@@ -3584,7 +3587,7 @@ class TestRuleEngineHelpers:
 
     def test_compile_ua_patterns_handles_all_match_types(self):
         """_compile_ua_patterns builds regexes for exact/contains/regex types."""
-        from icv_waf.services.rule_engine import _compile_ua_patterns
+        from django_waf.services.rule_engine import _compile_ua_patterns
 
         rules = [
             {"id": "1", "rule_type": "ua", "match_type": "exact", "pattern": "curl/7.88"},
@@ -3604,7 +3607,7 @@ class TestRuleEngineHelpers:
 
     def test_compile_ua_patterns_skips_invalid_regex(self):
         """An invalid regex is logged and skipped, not propagated."""
-        from icv_waf.services.rule_engine import _compile_ua_patterns
+        from django_waf.services.rule_engine import _compile_ua_patterns
 
         rules = [
             {"id": "bad", "rule_type": "ua", "match_type": "regex", "pattern": "[unclosed"},
@@ -3649,7 +3652,7 @@ class TestGeoIPService:
 
     def test_check_geoip2_available_raises_when_missing(self):
         """If geoip2 is not importable, a GeoIPNotInstalledError is raised with install hint."""
-        from icv_waf.services.geoip import GeoIPNotInstalledError, check_geoip2_available
+        from django_waf.services.geoip import GeoIPNotInstalledError, check_geoip2_available
 
         # Force the import to fail inside the function
         with (
@@ -3660,7 +3663,7 @@ class TestGeoIPService:
 
     def test_check_geoip2_available_passes_when_present(self):
         """If geoip2 is importable, check_geoip2_available is a no-op."""
-        from icv_waf.services.geoip import check_geoip2_available
+        from django_waf.services.geoip import check_geoip2_available
 
         # A fake geoip2.database module is enough to satisfy the import
         fake_module = MagicMock()
@@ -3671,22 +3674,22 @@ class TestGeoIPService:
     # --------------------------------------------------------------- resolve_license_key
 
     def test_resolve_license_key_prefers_explicit_argument(self):
-        from icv_waf.services.geoip import resolve_license_key
+        from django_waf.services.geoip import resolve_license_key
 
-        with patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "from-settings"):
+        with patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "from-settings"):
             assert resolve_license_key("from-cli") == "from-cli"
 
     def test_resolve_license_key_falls_back_to_setting(self):
-        from icv_waf.services.geoip import resolve_license_key
+        from django_waf.services.geoip import resolve_license_key
 
-        with patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "from-settings"):
+        with patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "from-settings"):
             assert resolve_license_key(None) == "from-settings"
 
     def test_resolve_license_key_missing_raises(self):
-        from icv_waf.services.geoip import GeoIPLicenseMissingError, resolve_license_key
+        from django_waf.services.geoip import GeoIPLicenseMissingError, resolve_license_key
 
         with (
-            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", ""),
+            patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", ""),
             pytest.raises(GeoIPLicenseMissingError, match="MaxMind"),
         ):
             resolve_license_key(None)
@@ -3694,41 +3697,41 @@ class TestGeoIPService:
     # --------------------------------------------------------------- resolve_output_path
 
     def test_resolve_output_path_prefers_explicit_argument(self, tmp_path):
-        from icv_waf.services.geoip import resolve_output_path
+        from django_waf.services.geoip import resolve_output_path
 
         result = resolve_output_path(str(tmp_path / "custom.mmdb"))
         assert result == tmp_path / "custom.mmdb"
 
     def test_resolve_output_path_falls_back_to_setting(self, tmp_path):
-        from icv_waf.services.geoip import resolve_output_path
+        from django_waf.services.geoip import resolve_output_path
 
         configured = str(tmp_path / "from-settings.mmdb")
-        with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", configured):
+        with patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", configured):
             assert resolve_output_path(None) == tmp_path / "from-settings.mmdb"
 
     def test_resolve_output_path_falls_back_to_default(self):
-        from icv_waf.services.geoip import DEFAULT_OUTPUT_PATH, resolve_output_path
+        from django_waf.services.geoip import DEFAULT_OUTPUT_PATH, resolve_output_path
 
-        with patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", None):
+        with patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", None):
             assert str(resolve_output_path(None)) == DEFAULT_OUTPUT_PATH
 
     # --------------------------------------------------------------- is_database_fresh
 
     def test_is_database_fresh_zero_max_age(self, tmp_path):
         """max_age_days=0 always returns False (disabled freshness check)."""
-        from icv_waf.services.geoip import is_database_fresh
+        from django_waf.services.geoip import is_database_fresh
 
         path = tmp_path / "db.mmdb"
         path.write_bytes(b"content")
         assert is_database_fresh(path, 0) is False
 
     def test_is_database_fresh_missing_file(self, tmp_path):
-        from icv_waf.services.geoip import is_database_fresh
+        from django_waf.services.geoip import is_database_fresh
 
         assert is_database_fresh(tmp_path / "nope.mmdb", 7) is False
 
     def test_is_database_fresh_recent_file(self, tmp_path):
-        from icv_waf.services.geoip import is_database_fresh
+        from django_waf.services.geoip import is_database_fresh
 
         path = tmp_path / "db.mmdb"
         path.write_bytes(b"content")
@@ -3739,7 +3742,7 @@ class TestGeoIPService:
         import os
         import time
 
-        from icv_waf.services.geoip import is_database_fresh
+        from django_waf.services.geoip import is_database_fresh
 
         path = tmp_path / "db.mmdb"
         path.write_bytes(b"content")
@@ -3754,7 +3757,7 @@ class TestGeoIPService:
 
     def test_install_geoip_database_full_flow(self, tmp_path):
         """Happy path: download, extract, verify, atomic rename — all mocked."""
-        from icv_waf.services.geoip import install_geoip_database
+        from django_waf.services.geoip import install_geoip_database
 
         dest = tmp_path / "GeoLite2-Country.mmdb"
         archive_bytes = self._make_fake_archive(tmp_path)
@@ -3789,8 +3792,8 @@ class TestGeoIPService:
                     "geoip2.errors": fake_errors,
                 },
             ),
-            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
-            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(dest)),
+            patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", str(dest)),
         ):
             result = install_geoip_database()
 
@@ -3803,7 +3806,7 @@ class TestGeoIPService:
 
     def test_install_geoip_database_skips_when_fresh(self, tmp_path):
         """--if-older-than skips the download when the existing file is fresh."""
-        from icv_waf.services.geoip import install_geoip_database
+        from django_waf.services.geoip import install_geoip_database
 
         dest = tmp_path / "GeoLite2-Country.mmdb"
         dest.write_bytes(b"existing-db-bytes")
@@ -3816,8 +3819,8 @@ class TestGeoIPService:
                 "sys.modules",
                 {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
             ),
-            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
-            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(dest)),
+            patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", str(dest)),
             patch("httpx.stream") as mock_stream,
         ):
             result = install_geoip_database(if_older_than_days=7)
@@ -3829,7 +3832,7 @@ class TestGeoIPService:
 
     def test_install_geoip_database_http_401_surfaces_licence_error(self, tmp_path):
         """A 401 from MaxMind is converted into a clear GeoIPDownloadError."""
-        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+        from django_waf.services.geoip import GeoIPDownloadError, install_geoip_database
 
         mock_response = MagicMock()
         mock_response.status_code = 401
@@ -3847,14 +3850,14 @@ class TestGeoIPService:
                 "sys.modules",
                 {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
             ),
-            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "bad-key"),
-            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
+            patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "bad-key"),
+            patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
             pytest.raises(GeoIPDownloadError, match="401"),
         ):
             install_geoip_database()
 
     def test_install_geoip_database_http_5xx_surfaces_download_error(self, tmp_path):
-        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+        from django_waf.services.geoip import GeoIPDownloadError, install_geoip_database
 
         mock_response = MagicMock()
         mock_response.status_code = 503
@@ -3872,15 +3875,15 @@ class TestGeoIPService:
                 "sys.modules",
                 {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
             ),
-            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
-            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
+            patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
             pytest.raises(GeoIPDownloadError, match="503"),
         ):
             install_geoip_database()
 
     def test_install_geoip_database_corrupt_archive_does_not_clobber(self, tmp_path):
         """A corrupt tar.gz raises GeoIPDownloadError and leaves the existing file intact."""
-        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+        from django_waf.services.geoip import GeoIPDownloadError, install_geoip_database
 
         dest = tmp_path / "GeoLite2-Country.mmdb"
         dest.write_bytes(b"original-db-bytes")
@@ -3907,8 +3910,8 @@ class TestGeoIPService:
                 "sys.modules",
                 {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
             ),
-            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
-            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(dest)),
+            patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", str(dest)),
             pytest.raises(GeoIPDownloadError, match="Failed to read"),
         ):
             install_geoip_database()
@@ -3918,7 +3921,7 @@ class TestGeoIPService:
 
     def test_install_geoip_database_verification_failure_raises(self, tmp_path):
         """If geoip2.Reader fails to open the extracted file, raise GeoIPDownloadError."""
-        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+        from django_waf.services.geoip import GeoIPDownloadError, install_geoip_database
 
         archive_bytes = self._make_fake_archive(tmp_path)
 
@@ -3948,8 +3951,8 @@ class TestGeoIPService:
                     "geoip2.errors": fake_errors,
                 },
             ),
-            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
-            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(dest)),
+            patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", str(dest)),
             pytest.raises(GeoIPDownloadError, match="not a valid GeoIP database"),
         ):
             install_geoip_database()
@@ -3961,7 +3964,7 @@ class TestGeoIPService:
         """A transient httpx.HTTPError (timeout, connection reset) becomes GeoIPDownloadError."""
         import httpx
 
-        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+        from django_waf.services.geoip import GeoIPDownloadError, install_geoip_database
 
         fake_geoip2 = MagicMock()
         fake_geoip2.database.Reader = MagicMock()
@@ -3972,8 +3975,8 @@ class TestGeoIPService:
                 "sys.modules",
                 {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
             ),
-            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
-            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
+            patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
             pytest.raises(GeoIPDownloadError, match="connection refused"),
         ):
             install_geoip_database()
@@ -3983,7 +3986,7 @@ class TestGeoIPService:
         import io
         import tarfile as tf
 
-        from icv_waf.services.geoip import GeoIPDownloadError, install_geoip_database
+        from django_waf.services.geoip import GeoIPDownloadError, install_geoip_database
 
         # Build an archive with only a README file (no .mmdb)
         buf = io.BytesIO()
@@ -4011,8 +4014,8 @@ class TestGeoIPService:
                 "sys.modules",
                 {"geoip2": fake_geoip2, "geoip2.database": fake_geoip2.database},
             ),
-            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
-            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
+            patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", str(tmp_path / "out.mmdb")),
             pytest.raises(GeoIPDownloadError, match="does not contain"),
         ):
             install_geoip_database()
@@ -4024,7 +4027,7 @@ class TestGeoIPService:
         don't fail verification on a missed lookup because trimmed test
         databases legitimately don't contain 8.8.8.8.
         """
-        from icv_waf.services.geoip import install_geoip_database
+        from django_waf.services.geoip import install_geoip_database
 
         dest = tmp_path / "GeoLite2-Country.mmdb"
         archive_bytes = self._make_fake_archive(tmp_path)
@@ -4064,8 +4067,8 @@ class TestGeoIPService:
                     "geoip2.errors": fake_errors,
                 },
             ),
-            patch("icv_waf.conf.ICV_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
-            patch("icv_waf.conf.ICV_WAF_GEOIP_PATH", str(dest)),
+            patch("django_waf.conf.DJANGO_WAF_MAXMIND_LICENSE_KEY", "fake-key"),
+            patch("django_waf.conf.DJANGO_WAF_GEOIP_PATH", str(dest)),
         ):
             result = install_geoip_database()
 

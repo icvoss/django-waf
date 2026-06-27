@@ -149,7 +149,7 @@ cover any form, including those bypassing Django's Form layer.
 ### 2.3 Module layout
 
 ```
-src/icv_waf/forms/
+src/django_waf/forms/
     __init__.py              — re-exports ProtectedForm, FormProtection,
                                waf_protect_post
     protection.py            — FormProtection orchestrator class
@@ -216,7 +216,7 @@ class Outcome:
 **Threat:** Spam, scraping
 
 **Mechanism:** Renders one or more hidden inputs with names drawn from
-`ICV_WAF_FORM_HONEYPOT_FIELD_NAMES` (default `["url", "website",
+`DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES` (default `["url", "website",
 "homepage", "email_confirm"]`). The set rotates per-form by hashing
 `form_id` — same form always gets the same honeypot names (so caching
 works) but different forms get different names (so bots can't learn
@@ -236,7 +236,7 @@ one set globally).
 verdict, score `5.0`, reason `"honeypot:<field_name>"`.
 
 **Settings:**
-- `ICV_WAF_FORM_HONEYPOT_FIELD_NAMES` — pool of names to draw from.
+- `DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES` — pool of names to draw from.
 
 **False-positive considerations:** Aggressive password managers
 auto-fill these. The accessibility properties above mitigate; if
@@ -249,8 +249,8 @@ operators see false positives, they can downweight via
 
 **Mechanism:** The render token records `render_time` (server time, not
 client). On submit, defence checks `now - render_time` against
-`ICV_WAF_FORM_TIME_TRAP_MIN_SECONDS` (default `1.5`) and
-`ICV_WAF_FORM_TIME_TRAP_MAX_SECONDS` (default `3600`).
+`DJANGO_WAF_FORM_TIME_TRAP_MIN_SECONDS` (default `1.5`) and
+`DJANGO_WAF_FORM_TIME_TRAP_MAX_SECONDS` (default `3600`).
 
 **Verdict:**
 - `delta < 0.5s` → `block`, score `5.0`, reason `"time_trap:too_fast"`.
@@ -260,8 +260,8 @@ client). On submit, defence checks `now - render_time` against
 - Otherwise → `pass`.
 
 **Settings:**
-- `ICV_WAF_FORM_TIME_TRAP_MIN_SECONDS` (default `1.5`)
-- `ICV_WAF_FORM_TIME_TRAP_MAX_SECONDS` (default `3600`)
+- `DJANGO_WAF_FORM_TIME_TRAP_MIN_SECONDS` (default `1.5`)
+- `DJANGO_WAF_FORM_TIME_TRAP_MAX_SECONDS` (default `3600`)
 
 **False-positive considerations:** Power users on simple forms (1-2
 fields) can submit in under 1.5s. The `0.5s` hard block is for clearly
@@ -271,7 +271,7 @@ band.
 **Per-form override is the recommended pattern** for short forms.
 Newsletter signup (one email field) might set `min_fill_seconds=0.8`;
 a long contact form can leave the default. The setting is exposed
-both globally (`ICV_WAF_FORM_TIME_TRAP_MIN_SECONDS`) and per-form
+both globally (`DJANGO_WAF_FORM_TIME_TRAP_MIN_SECONDS`) and per-form
 (`FormProtection(min_fill_seconds=...)`), with the per-form value
 taking precedence.
 
@@ -286,7 +286,7 @@ isn't penalised. See §4.3.
 **Mechanism:** A signed token in a hidden field carries the form
 identifier, IP, optional user id, render time, and a nonce. A Redis
 marker keyed on the nonce is set at render time with TTL
-`ICV_WAF_FORM_TOKEN_TTL`. On `pass` verdict from the overall chain,
+`DJANGO_WAF_FORM_TOKEN_TTL`. On `pass` verdict from the overall chain,
 the marker is deleted; on any other verdict it persists, so the user
 can resubmit (e.g. after fixing a validation error).
 
@@ -295,10 +295,10 @@ can resubmit (e.g. after fixing a validation error).
 form_id | ip | user_id_or_empty | render_time_iso | nonce_hex
 ```
 
-**Signing key:** Reads `ICV_WAF_SIGNING_KEY` (new in v0.11.0, package-wide;
+**Signing key:** Reads `DJANGO_WAF_SIGNING_KEY` (new in v0.11.0, package-wide;
 see §7.5). This is **separate from Django's `SECRET_KEY`** so that
 rotating one doesn't force rotating the other. If
-`ICV_WAF_SIGNING_KEY` is empty, the package falls back to a
+`DJANGO_WAF_SIGNING_KEY` is empty, the package falls back to a
 `SECRET_KEY`-derived value and a Django system check emits a Warning
 recommending an explicit key. Operators are expected to set a
 dedicated key in production.
@@ -316,8 +316,8 @@ dedicated key in production.
   false positives vs. blocking.)
 
 **Settings:**
-- `ICV_WAF_FORM_TOKEN_TTL` (default `3600`)
-- `ICV_WAF_SIGNING_KEY` (package-wide; see §7.5)
+- `DJANGO_WAF_FORM_TOKEN_TTL` (default `3600`)
+- `DJANGO_WAF_SIGNING_KEY` (package-wide; see §7.5)
 
 **HTMX interaction:** See §4.3 — token persists across re-renders;
 marker only deleted on successful `pass`.
@@ -369,7 +369,7 @@ values; the `1.5` weight ensures this can't single-handedly block.
 - `waf:form:cred_fail:ip:<ip>` — per-IP failure count across all
   accounts.
 
-Both have window TTL `ICV_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW` (default
+Both have window TTL `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW` (default
 `900` seconds, 15 min).
 
 **Hooking into login flow:** This defence runs in `evaluate()` *after*
@@ -379,10 +379,10 @@ The mixin handles this; for the decorator, the consumer calls
 auth fails.
 
 **Verdict on submit:**
-- Per-IP count ≥ `ICV_WAF_FORM_CREDENTIAL_IP_LIMIT` (default `20`)
+- Per-IP count ≥ `DJANGO_WAF_FORM_CREDENTIAL_IP_LIMIT` (default `20`)
   → `flag`, score `5.0`, reason `"credential_throttle:ip"`. Triggers
   challenge redirect.
-- Per-account count ≥ `ICV_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT`
+- Per-account count ≥ `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT`
   (default `5`) → does **not** affect form verdict; emits
   `credential_attack_observed` signal only (see §3.6.1).
 - Otherwise → `pass`.
@@ -419,9 +419,9 @@ notify ops, or both. The signal does not affect the response to the
 attacker.
 
 **Settings:**
-- `ICV_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW` (default `900`)
-- `ICV_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT` (default `5`)
-- `ICV_WAF_FORM_CREDENTIAL_IP_LIMIT` (default `20`)
+- `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW` (default `900`)
+- `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT` (default `5`)
+- `DJANGO_WAF_FORM_CREDENTIAL_IP_LIMIT` (default `20`)
 
 ### 3.7 SignupVelocityDefence
 
@@ -430,10 +430,10 @@ attacker.
 **Mechanism:** Counter `waf:form:signup:<ip>` increments on each
 *successful* form pass (so it counts completed registrations, not
 attempts). Window TTL
-`ICV_WAF_FORM_SIGNUP_VELOCITY_WINDOW` (default `86400`, 24h).
+`DJANGO_WAF_FORM_SIGNUP_VELOCITY_WINDOW` (default `86400`, 24h).
 
 **Verdict:**
-- Count ≥ `ICV_WAF_FORM_SIGNUP_VELOCITY_LIMIT` (default `5`) → `flag`,
+- Count ≥ `DJANGO_WAF_FORM_SIGNUP_VELOCITY_LIMIT` (default `5`) → `flag`,
   score `5.0`, reason `"signup_velocity:ip"`. Challenge required for
   the next submission.
 - Otherwise → `pass`. The increment happens after the form passes, so
@@ -441,8 +441,8 @@ attempts). Window TTL
   *next* signup, not the current one.
 
 **Settings:**
-- `ICV_WAF_FORM_SIGNUP_VELOCITY_WINDOW` (default `86400`)
-- `ICV_WAF_FORM_SIGNUP_VELOCITY_LIMIT` (default `5`)
+- `DJANGO_WAF_FORM_SIGNUP_VELOCITY_WINDOW` (default `86400`)
+- `DJANGO_WAF_FORM_SIGNUP_VELOCITY_LIMIT` (default `5`)
 
 ### 3.8 PowGateDefence
 
@@ -452,17 +452,17 @@ attempts). Window TTL
 duplicating it. Specifically:
 
 - **Server verification** calls
-  `icv_waf.services.challenge_service._digest_has_leading_zero_bits`
+  `django_waf.services.challenge_service._digest_has_leading_zero_bits`
   — the same helper the page-level challenge uses (introduced in
   v0.10.5). One source of bit-counting logic, no risk of drift.
 - **JS solver** is the same `hasLeadingZeroBits` function shipped in
-  `templates/icv_waf/challenge.html`. The form's protected-fields
+  `templates/django_waf/challenge.html`. The form's protected-fields
   partial includes a minimal solver script that imports the same
   function shape; we extract it into a static asset so both the
   page-level challenge template and the form partial reference the
   same code (refactor done as part of this work).
 - **Difficulty source:** form-level PoW is *lighter* than the page
-  challenge by default — `ICV_WAF_FORM_POW_DIFFICULTY` (default
+  challenge by default — `DJANGO_WAF_FORM_POW_DIFFICULTY` (default
   `12` bits, ~4k hashes, ~50ms on desktop, ~200ms on mobile). The
   page-level challenge defaults are 22 (desktop) / 18 (mobile);
   form-level is intentionally lower because it runs on *every*
@@ -485,7 +485,7 @@ the submit button until the solver writes the nonce.
 - Valid → `pass`.
 
 **Settings:**
-- `ICV_WAF_FORM_POW_DIFFICULTY` (default `12` bits)
+- `DJANGO_WAF_FORM_POW_DIFFICULTY` (default `12` bits)
 
 **Why a separate form-level PoW at all (vs. just relying on the page
 challenge)?** The page challenge runs once per session and grants a
@@ -586,7 +586,7 @@ Document this in the operator runbook.
 ## 5. Challenge replay flow
 
 When the orchestrator's verdict is `flag` and
-`ICV_WAF_FORM_CHALLENGE_ON_FLAG=True` (default), the user is
+`DJANGO_WAF_FORM_CHALLENGE_ON_FLAG=True` (default), the user is
 redirected to the existing WAF challenge view, then the form is
 re-POSTed automatically after the challenge passes.
 
@@ -695,9 +695,9 @@ def resolve_verdict(outcomes: list[Outcome]) -> FormVerdict:
 
     total = sum(o.score for o in outcomes if o.verdict == "flag")
 
-    if total >= ICV_WAF_FORM_BLOCK_THRESHOLD:  # default 5.0
+    if total >= DJANGO_WAF_FORM_BLOCK_THRESHOLD:  # default 5.0
         return FormVerdict.BLOCKED
-    if total >= ICV_WAF_FORM_FLAG_THRESHOLD:   # default 2.0
+    if total >= DJANGO_WAF_FORM_FLAG_THRESHOLD:   # default 2.0
         return FormVerdict.FLAGGED
     return FormVerdict.PASSED
 ```
@@ -706,13 +706,13 @@ def resolve_verdict(outcomes: list[Outcome]) -> FormVerdict:
 
 | Verdict | Form behaviour | Logging | Counter | Signal |
 |---|---|---|---|---|
-| `PASSED` | Form validates normally | Sampled (`ICV_WAF_LOG_SAMPLE_RATE`) | — | `form_submission_passed` |
+| `PASSED` | Form validates normally | Sampled (`DJANGO_WAF_LOG_SAMPLE_RATE`) | — | `form_submission_passed` |
 | `FLAGGED` | Challenge redirect (or generic error if challenge disabled) | Always logged | Bump `waf:challenged:<ip>` | `form_submission_flagged` |
 | `BLOCKED` | `forms.ValidationError("submission rejected")` | Always logged | Bump `waf:challenged:<ip>` | `form_submission_blocked` |
 
 The challenge counter bump on FLAGGED is the cross-layer integration:
 form defences and WAF request defences share the same escalation
-threshold (`ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD`), so a bot abusing
+threshold (`DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD`), so a bot abusing
 both layers gets auto-blocked sooner.
 
 ---
@@ -722,12 +722,12 @@ both layers gets auto-blocked sooner.
 ### 7.1 Top-level settings
 
 ```python
-ICV_WAF_FORM_PROTECTION_ENABLED          = True
-ICV_WAF_FORM_FLAG_THRESHOLD              = 2.0
-ICV_WAF_FORM_BLOCK_THRESHOLD             = 5.0
-ICV_WAF_FORM_CHALLENGE_ON_FLAG           = True
-ICV_WAF_FORM_REPLAY_STORE                = "session"  # "session" | "redis"
-ICV_WAF_FORM_EMIT_PASSED_SIGNAL          = False      # opt-in; busy sites
+DJANGO_WAF_FORM_PROTECTION_ENABLED          = True
+DJANGO_WAF_FORM_FLAG_THRESHOLD              = 2.0
+DJANGO_WAF_FORM_BLOCK_THRESHOLD             = 5.0
+DJANGO_WAF_FORM_CHALLENGE_ON_FLAG           = True
+DJANGO_WAF_FORM_REPLAY_STORE                = "session"  # "session" | "redis"
+DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL          = False      # opt-in; busy sites
                                                       # don't want the hot
                                                       # path firing signals
 ```
@@ -735,7 +735,7 @@ ICV_WAF_FORM_EMIT_PASSED_SIGNAL          = False      # opt-in; busy sites
 Plus the **package-wide signing key** (see §7.4):
 
 ```python
-ICV_WAF_SIGNING_KEY                      = ""         # dedicated WAF HMAC
+DJANGO_WAF_SIGNING_KEY                      = ""         # dedicated WAF HMAC
                                                       # secret; falls back to
                                                       # SECRET_KEY-derived
                                                       # value with W003
@@ -745,22 +745,22 @@ ICV_WAF_SIGNING_KEY                      = ""         # dedicated WAF HMAC
 ### 7.2 Per-defence settings
 
 ```python
-ICV_WAF_FORM_HONEYPOT_FIELD_NAMES        = ["url", "website", "homepage", "email_confirm"]
-ICV_WAF_FORM_TIME_TRAP_MIN_SECONDS       = 1.5
-ICV_WAF_FORM_TIME_TRAP_MAX_SECONDS       = 3600
-ICV_WAF_FORM_TOKEN_TTL                   = 3600
-ICV_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW  = 900
-ICV_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT   = 5
-ICV_WAF_FORM_CREDENTIAL_IP_LIMIT         = 20
-ICV_WAF_FORM_SIGNUP_VELOCITY_WINDOW      = 86400
-ICV_WAF_FORM_SIGNUP_VELOCITY_LIMIT       = 5
-ICV_WAF_FORM_POW_DIFFICULTY              = 12
+DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES        = ["url", "website", "homepage", "email_confirm"]
+DJANGO_WAF_FORM_TIME_TRAP_MIN_SECONDS       = 1.5
+DJANGO_WAF_FORM_TIME_TRAP_MAX_SECONDS       = 3600
+DJANGO_WAF_FORM_TOKEN_TTL                   = 3600
+DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW  = 900
+DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT   = 5
+DJANGO_WAF_FORM_CREDENTIAL_IP_LIMIT         = 20
+DJANGO_WAF_FORM_SIGNUP_VELOCITY_WINDOW      = 86400
+DJANGO_WAF_FORM_SIGNUP_VELOCITY_LIMIT       = 5
+DJANGO_WAF_FORM_POW_DIFFICULTY              = 12
 ```
 
 ### 7.3 Global score weights (overridable per-form)
 
 ```python
-ICV_WAF_FORM_DEFENCE_WEIGHTS = {
+DJANGO_WAF_FORM_DEFENCE_WEIGHTS = {
     "honeypot": 5.0,
     "time_trap": 2.0,
     "render_token": 5.0,
@@ -775,7 +775,7 @@ ICV_WAF_FORM_DEFENCE_WEIGHTS = {
 ### 7.4 Package-wide signing key
 
 ```python
-ICV_WAF_SIGNING_KEY = os.environ.get("ICV_WAF_SIGNING_KEY", "")
+DJANGO_WAF_SIGNING_KEY = os.environ.get("DJANGO_WAF_SIGNING_KEY", "")
 ```
 
 **New in v0.11.0.** A dedicated signing secret for any HMAC the WAF
@@ -790,9 +790,9 @@ rotating one forces rotating the other and vice versa. A dedicated
 key lets operators rotate WAF signatures on a security-driven cadence
 without logging users out.
 
-**Defaults and fallback:** if `ICV_WAF_SIGNING_KEY` is empty, the
+**Defaults and fallback:** if `DJANGO_WAF_SIGNING_KEY` is empty, the
 package derives a key from `SECRET_KEY` (so v0.10.x → v0.11.0
-upgrades don't break) and a Django system check (`icv_waf.W003`)
+upgrades don't break) and a Django system check (`django_waf.W003`)
 emits a warning at startup recommending an explicit key. The fallback
 is not silently failing; it's documented and surfaced.
 
@@ -820,7 +820,7 @@ class ContactForm(ProtectedForm, forms.Form):
 
 ```python
 # Emitted on PASSED submissions only when
-# ICV_WAF_FORM_EMIT_PASSED_SIGNAL=True (default False). Busy sites can
+# DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL=True (default False). Busy sites can
 # have 1000× more passed submissions than flagged/blocked; firing a
 # signal on every one is a hidden cost in the hot path. Operators who
 # want pass-event analytics opt in; everyone else pulls from the
@@ -828,7 +828,7 @@ class ContactForm(ProtectedForm, forms.Form):
 form_submission_passed = Signal()
 # kwargs: form_id, ip, user_agent, user_id (or None)
 
-# Emitted when score crosses ICV_WAF_FORM_FLAG_THRESHOLD.
+# Emitted when score crosses DJANGO_WAF_FORM_FLAG_THRESHOLD.
 form_submission_flagged = Signal()
 # kwargs: form_id, ip, user_agent, user_id, total_score, defences (list of Outcome)
 
@@ -873,11 +873,11 @@ logger.info(
 )
 ```
 
-Goes to the existing `icv_waf` logger.
+Goes to the existing `django_waf` logger.
 
 ### 9.1 Sampling
 
-- `passed` submissions: sampled at `ICV_WAF_LOG_SAMPLE_RATE` (same
+- `passed` submissions: sampled at `DJANGO_WAF_LOG_SAMPLE_RATE` (same
   setting that drives request-level log sampling).
 - `flagged` and `blocked`: always logged, never sampled.
 
@@ -931,7 +931,7 @@ without grepping logs.
    TTL).
 3. Check the form fields haven't changed between original POST and
    replay (e.g. dynamic field generation based on user state).
-4. Disable with `ICV_WAF_FORM_CHALLENGE_ON_FLAG=False` as a workaround
+4. Disable with `DJANGO_WAF_FORM_CHALLENGE_ON_FLAG=False` as a workaround
    while investigating; flagged submissions get a generic rejection.
 
 ---
@@ -947,9 +947,9 @@ without grepping logs.
 - **Existing signals unchanged.** New signals are added; existing
   ones (`request_blocked`, `challenge_failed`, etc.) are untouched.
 - **Public API surface added:**
-  - `icv_waf.forms.ProtectedForm`
-  - `icv_waf.forms.FormProtection`
-  - `icv_waf.forms.waf_protect_post` (decorator)
+  - `django_waf.forms.ProtectedForm`
+  - `django_waf.forms.FormProtection`
+  - `django_waf.forms.waf_protect_post` (decorator)
   - `{% load waf_form_tags %}` and `{% waf_protect %}` (template tag)
   - 4 new signals
 
@@ -1040,18 +1040,18 @@ The six questions originally posed during PRD review, with the
 decisions taken. Resolved 2026-05-27.
 
 1. **Challenge replay scope** — **In v0.11.0 behind a setting.**
-   `ICV_WAF_FORM_CHALLENGE_ON_FLAG` defaults to `True`. If it lands
+   `DJANGO_WAF_FORM_CHALLENGE_ON_FLAG` defaults to `True`. If it lands
    buggy in production, operators flip it to `False` and flagged
    submissions get a generic rejection. Implementation lands last in
    the branch so the simpler defences are stable first.
 
 2. **Token signing key** — **Separate, package-wide
-   `ICV_WAF_SIGNING_KEY`.** Coupling WAF signatures to `SECRET_KEY`
+   `DJANGO_WAF_SIGNING_KEY`.** Coupling WAF signatures to `SECRET_KEY`
    means rotating one forces rotating the other (and logs every user
    out). The new setting is package-wide because future signed-token
    uses (challenge tokens, signed verdicts) should share one key, not
    per-feature ones. See §7.4. Falls back to a `SECRET_KEY`-derived
-   value with a Django system check (`icv_waf.W003`) warning if
+   value with a Django system check (`django_waf.W003`) warning if
    unset, so v0.10 → v0.11 upgrades don't break.
 
 3. **Default `time_trap` min** — **1.5s, with per-form override
@@ -1076,11 +1076,11 @@ decisions taken. Resolved 2026-05-27.
    patterns.
 
 6. **`form_submission_passed` default** — **Off by default**
-   (`ICV_WAF_FORM_EMIT_PASSED_SIGNAL = False`). Busy sites have 1000×
+   (`DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL = False`). Busy sites have 1000×
    more passed submissions than flagged/blocked, so firing the signal
    on every one is a hidden cost in the hot path. The structured log
    already records passed submissions (sampled at
-   `ICV_WAF_LOG_SAMPLE_RATE`). Operators who want pass-event analytics
+   `DJANGO_WAF_LOG_SAMPLE_RATE`). Operators who want pass-event analytics
    opt in explicitly. `form_submission_flagged` and `_blocked` always
    fire regardless of this setting.
 
@@ -1124,43 +1124,43 @@ decisions taken. Resolved 2026-05-27.
 
 ```python
 # Package-wide
-ICV_WAF_SIGNING_KEY                      = ""     # dedicated HMAC secret;
+DJANGO_WAF_SIGNING_KEY                      = ""     # dedicated HMAC secret;
                                                   # falls back to
                                                   # SECRET_KEY-derived value
                                                   # with W003 warning if unset
 
 # Top-level
-ICV_WAF_FORM_PROTECTION_ENABLED          = True
-ICV_WAF_FORM_FLAG_THRESHOLD              = 2.0
-ICV_WAF_FORM_BLOCK_THRESHOLD             = 5.0
-ICV_WAF_FORM_CHALLENGE_ON_FLAG           = True
-ICV_WAF_FORM_REPLAY_STORE                = "session"
-ICV_WAF_FORM_EMIT_PASSED_SIGNAL          = False  # opt-in; off by default
+DJANGO_WAF_FORM_PROTECTION_ENABLED          = True
+DJANGO_WAF_FORM_FLAG_THRESHOLD              = 2.0
+DJANGO_WAF_FORM_BLOCK_THRESHOLD             = 5.0
+DJANGO_WAF_FORM_CHALLENGE_ON_FLAG           = True
+DJANGO_WAF_FORM_REPLAY_STORE                = "session"
+DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL          = False  # opt-in; off by default
 
-# Tokens (uses package-wide ICV_WAF_SIGNING_KEY for signature)
-ICV_WAF_FORM_TOKEN_TTL                   = 3600
+# Tokens (uses package-wide DJANGO_WAF_SIGNING_KEY for signature)
+DJANGO_WAF_FORM_TOKEN_TTL                   = 3600
 
 # Honeypot
-ICV_WAF_FORM_HONEYPOT_FIELD_NAMES        = ["url", "website", "homepage", "email_confirm"]
+DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES        = ["url", "website", "homepage", "email_confirm"]
 
 # Time trap
-ICV_WAF_FORM_TIME_TRAP_MIN_SECONDS       = 1.5
-ICV_WAF_FORM_TIME_TRAP_MAX_SECONDS       = 3600
+DJANGO_WAF_FORM_TIME_TRAP_MIN_SECONDS       = 1.5
+DJANGO_WAF_FORM_TIME_TRAP_MAX_SECONDS       = 3600
 
 # Credential throttle
-ICV_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW  = 900
-ICV_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT   = 5
-ICV_WAF_FORM_CREDENTIAL_IP_LIMIT         = 20
+DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW  = 900
+DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT   = 5
+DJANGO_WAF_FORM_CREDENTIAL_IP_LIMIT         = 20
 
 # Signup velocity
-ICV_WAF_FORM_SIGNUP_VELOCITY_WINDOW      = 86400
-ICV_WAF_FORM_SIGNUP_VELOCITY_LIMIT       = 5
+DJANGO_WAF_FORM_SIGNUP_VELOCITY_WINDOW      = 86400
+DJANGO_WAF_FORM_SIGNUP_VELOCITY_LIMIT       = 5
 
 # PoW
-ICV_WAF_FORM_POW_DIFFICULTY              = 12
+DJANGO_WAF_FORM_POW_DIFFICULTY              = 12
 
 # Score weights (overridable per-form via defence_weights kwarg)
-ICV_WAF_FORM_DEFENCE_WEIGHTS = {
+DJANGO_WAF_FORM_DEFENCE_WEIGHTS = {
     "honeypot": 5.0, "time_trap": 2.0, "render_token": 5.0,
     "ua_consistency": 2.0, "js_touch": 1.5,
     "credential_throttle": 5.0, "signup_velocity": 5.0,
