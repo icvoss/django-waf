@@ -66,7 +66,7 @@ def _redis():
 
 def _solve_pow(token_nonce: str, difficulty: int) -> str:
     """Match the JS solver's hash construction; return a valid nonce."""
-    from icv_waf.services.challenge_service import _digest_has_leading_zero_bits
+    from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
     for n in range(1_000_000):
         msg = f"{token_nonce}:{n}".encode()
@@ -83,7 +83,7 @@ def _solve_pow(token_nonce: str, difficulty: int) -> str:
 class TestScalariseSubmittedData:
     def test_querydict_returns_last_value_per_key(self):
         """The bug-fix contract: QueryDict → last-value-per-key strings."""
-        from icv_waf.forms.protection import scalarise_submitted_data
+        from django_waf.forms.protection import scalarise_submitted_data
 
         qd = QueryDict("waf_token=abc&name=jane&color=red&color=blue")
         out = scalarise_submitted_data(qd)
@@ -98,7 +98,7 @@ class TestScalariseSubmittedData:
     def test_plain_dict_passes_through(self):
         """Tests pass plain dicts; the helper must round-trip them
         without imposing QueryDict semantics."""
-        from icv_waf.forms.protection import scalarise_submitted_data
+        from django_waf.forms.protection import scalarise_submitted_data
 
         plain = {"waf_token": "abc", "name": "jane"}
         out = scalarise_submitted_data(plain)
@@ -110,7 +110,7 @@ class TestScalariseSubmittedData:
 
     def test_none_returns_empty(self):
         """Defensive: an unbound form (data=None) returns {}."""
-        from icv_waf.forms.protection import scalarise_submitted_data
+        from django_waf.forms.protection import scalarise_submitted_data
 
         assert scalarise_submitted_data(None) == {}
 
@@ -118,7 +118,7 @@ class TestScalariseSubmittedData:
         """Pin the actual production failure mode: a QueryDict
         containing a base64url waf_token must scalarise to that exact
         string, not [string], so the defence's b64decode succeeds."""
-        from icv_waf.forms.protection import scalarise_submitted_data
+        from django_waf.forms.protection import scalarise_submitted_data
 
         token = "Y29udGFjdHwxLjIuMy40fHwyMDI2LTA1LTI3VDE1OjMyOjA0LjE5ODY0Ny"
         qd = QueryDict(f"waf_token={token}&name=jane")
@@ -136,8 +136,8 @@ class TestScalariseSubmittedData:
 
 def _build_form_class(form_id, defences):
     """Build a ContactForm with the given defence chain."""
-    from icv_waf.forms.mixin import ProtectedForm
-    from icv_waf.forms.protection import FormProtection
+    from django_waf.forms.mixin import ProtectedForm
+    from django_waf.forms.protection import FormProtection
 
     redis = _redis()
 
@@ -169,9 +169,9 @@ class TestMixinWithQueryDict:
         ``TypeError: can only concatenate list (not "str") to list``
         because dict(QueryDict) put the token in a list.
         """
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             ContactForm = _build_form_class("contact-querydict-noraise", ("render_token", "honeypot"))
 
             # Render to get a real token.
@@ -189,10 +189,10 @@ class TestMixinWithQueryDict:
 
     def test_clean_returns_passed_verdict(self, settings):
         """Same as above but assert the verdict explicitly."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             ContactForm = _build_form_class("contact-querydict-passed", ("render_token", "honeypot"))
             req = self._bound_request({})
             inputs = _parse_inputs(ContactForm(request=req).waf_fields)
@@ -209,16 +209,16 @@ class TestMixinWithQueryDict:
 
     def test_clean_with_full_chain_including_pow(self, settings):
         """End-to-end with PoW: render → solve → submit via QueryDict → PASS."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             ContactForm = _build_form_class("contact-qd-full", ("render_token", "honeypot", "pow_gate"))
             req = self._bound_request({})
             inputs = _parse_inputs(ContactForm(request=req).waf_fields)
 
             # Browser-equivalent: solve the PoW.
-            nonce = _solve_pow(inputs["waf_pow_token"], conf_mod.ICV_WAF_FORM_POW_DIFFICULTY)
+            nonce = _solve_pow(inputs["waf_pow_token"], conf_mod.DJANGO_WAF_FORM_POW_DIFFICULTY)
 
             # Build the QueryDict the browser would send.
             request = self._bound_request(
@@ -250,10 +250,10 @@ class TestDecoratorWithQueryDict:
         values that crashed in render_token.evaluate. Post-fix the
         decorator scalarises before passing to the orchestrator.
         """
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import _registry_get, waf_protect_post
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import _registry_get, waf_protect_post
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
 
             @waf_protect_post(
                 form_id="contact-decorator-qd",
@@ -297,10 +297,10 @@ class TestDecoratorWithQueryDict:
         from django.test import override_settings
         from django.urls import path
 
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import _registry_get, waf_protect_post
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import _registry_get, waf_protect_post
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
 
             @waf_protect_post(
                 form_id="contact-djclient",

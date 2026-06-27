@@ -30,19 +30,19 @@ def _redis():
 
 
 def _defence(redis_client):
-    from icv_waf.forms.defences.render_token import RenderTokenDefence
+    from django_waf.forms.defences.render_token import RenderTokenDefence
 
     return RenderTokenDefence(redis_client_factory=lambda: redis_client)
 
 
 def _render_ctx(req, form_id="contact", config=None):
-    from icv_waf.forms.defences.base import RenderContext
+    from django_waf.forms.defences.base import RenderContext
 
     return RenderContext(form_id=form_id, request=req, config=config or {})
 
 
 def _eval_ctx(req, submitted_data, form_id="contact", config=None):
-    from icv_waf.forms.defences.base import EvaluateContext
+    from django_waf.forms.defences.base import EvaluateContext
 
     return EvaluateContext(form_id=form_id, request=req, submitted_data=submitted_data, config=config or {})
 
@@ -64,10 +64,10 @@ class TestRenderFields:
         than 20 chars', which the raw token satisfies. Tightened to
         assert the actual DOM contract.
         """
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.render_token import TOKEN_FIELD_NAME
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.render_token import TOKEN_FIELD_NAME
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = _defence(_redis())
             fields = defence.render_fields(_render_ctx(_fake_request()))
 
@@ -97,9 +97,9 @@ class TestRenderFields:
 
     def test_issues_redis_marker_for_token(self, settings):
         """A fresh render must SETEX the one-shot marker."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             redis = _redis()
             defence = _defence(redis)
             defence.render_fields(_render_ctx(_fake_request()))
@@ -114,16 +114,16 @@ class TestRenderFields:
         Fail-open is the project-wide policy. Worst case: replay
         protection weakens to the token's TTL.
         """
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             redis = _redis()
             redis.setex.side_effect = RuntimeError("redis down")
             defence = _defence(redis)
             fields = defence.render_fields(_render_ctx(_fake_request()))
 
         # Token still rendered.
-        from icv_waf.forms.defences.render_token import TOKEN_FIELD_NAME
+        from django_waf.forms.defences.render_token import TOKEN_FIELD_NAME
 
         assert TOKEN_FIELD_NAME in fields
 
@@ -135,9 +135,9 @@ class TestRenderFields:
 
 class TestEvaluateMissingOrInvalid:
     def test_missing_token_blocks(self, settings):
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = _defence(_redis())
             outcome = defence.evaluate(_eval_ctx(_fake_request(), submitted_data={}))
 
@@ -146,17 +146,17 @@ class TestEvaluateMissingOrInvalid:
 
     def test_empty_string_token_blocks(self, settings):
         """A present-but-empty token is just as bad as missing."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = _defence(_redis())
             outcome = defence.evaluate(_eval_ctx(_fake_request(), submitted_data={"waf_token": ""}))
         assert outcome.reason == "render_token:missing"
 
     def test_malformed_token_blocks(self, settings):
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             defence = _defence(_redis())
             outcome = defence.evaluate(_eval_ctx(_fake_request(), submitted_data={"waf_token": "not-a-valid-token"}))
         assert outcome.verdict == "block"
@@ -164,13 +164,13 @@ class TestEvaluateMissingOrInvalid:
 
     def test_wrong_signature_blocks(self, settings):
         """A token signed under key A doesn't validate when verified under key B."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "key-a"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "key-a"):
             token, _ = issue_token(form_id="contact", ip="1.2.3.4")
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "key-b"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "key-b"):
             defence = _defence(_redis())
             outcome = defence.evaluate(_eval_ctx(_fake_request(), submitted_data={"waf_token": token}))
         assert outcome.reason == "render_token:invalid"
@@ -179,12 +179,12 @@ class TestEvaluateMissingOrInvalid:
 class TestEvaluateExpiry:
     def test_expired_token_blocks(self, settings):
         """render_time + TTL < now → expired."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token
 
         # Token issued an hour ago, with TTL 60s — clearly expired.
         old_time = datetime.now(tz=UTC) - timedelta(hours=1)
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="contact", ip="1.2.3.4", render_time=old_time)
             defence = _defence(_redis())
             outcome = defence.evaluate(
@@ -199,10 +199,10 @@ class TestEvaluateExpiry:
 
     def test_within_ttl_does_not_expire(self, settings):
         """A token render_time + TTL > now → not expired (other checks apply)."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="contact", ip="1.2.3.4")
             defence = _defence(_redis())
             outcome = defence.evaluate(
@@ -220,12 +220,12 @@ class TestEvaluateExpiry:
 class TestEvaluateReplay:
     def test_missing_marker_outside_grace_window_blocks(self, settings):
         """Marker gone + render_time older than 5s → replay."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token
 
         # Render 10 seconds ago (outside the 5s grace window).
         old_time = datetime.now(tz=UTC) - timedelta(seconds=10)
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="c", ip="1.2.3.4", render_time=old_time)
             redis = _redis()
             redis.exists.return_value = 0  # marker consumed
@@ -242,12 +242,12 @@ class TestEvaluateReplay:
 
     def test_missing_marker_inside_grace_window_passes(self, settings):
         """5s grace handles the marker-delete race between near-simultaneous submits."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token
 
         # Render 1 second ago — within the 5s grace.
         recent = datetime.now(tz=UTC) - timedelta(seconds=1)
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="c", ip="1.2.3.4", render_time=recent)
             redis = _redis()
             redis.exists.return_value = 0  # marker absent
@@ -268,10 +268,10 @@ class TestEvaluateReplay:
         Project-wide policy: infrastructure outages must not lock
         legitimate users out.
         """
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="c", ip="1.2.3.4")
             redis = _redis()
             redis.exists.side_effect = RuntimeError("redis down")
@@ -290,10 +290,10 @@ class TestEvaluateReplay:
 class TestEvaluateIpBinding:
     def test_changed_ip_flags(self, settings):
         """Token issued from 1.2.3.4 then submitted from 9.9.9.9 → flag."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="c", ip="1.2.3.4")
             defence = _defence(_redis())
             outcome = defence.evaluate(
@@ -309,10 +309,10 @@ class TestEvaluateIpBinding:
         assert outcome.score > 0  # actual weight pinned in PRD §3.3 — 3.0
 
     def test_same_ip_passes(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.services.tokens import issue_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="c", ip="1.2.3.4")
             defence = _defence(_redis())
             outcome = defence.evaluate(
@@ -333,11 +333,11 @@ class TestEvaluateIpBinding:
 
 class TestParseSubmittedPayload:
     def test_valid_token_returns_payload(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.render_token import parse_submitted_payload
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.render_token import parse_submitted_payload
+        from django_waf.forms.services.tokens import issue_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="contact", ip="1.2.3.4")
             payload = parse_submitted_payload({"waf_token": token})
 
@@ -345,13 +345,13 @@ class TestParseSubmittedPayload:
         assert payload.form_id == "contact"
 
     def test_missing_token_returns_none(self):
-        from icv_waf.forms.defences.render_token import parse_submitted_payload
+        from django_waf.forms.defences.render_token import parse_submitted_payload
 
         assert parse_submitted_payload({}) is None
 
     def test_invalid_token_returns_none(self):
         """parse_submitted_payload swallows ValueError — orchestrator
         treats None as 'no verifiable token; don't compound penalties'."""
-        from icv_waf.forms.defences.render_token import parse_submitted_payload
+        from django_waf.forms.defences.render_token import parse_submitted_payload
 
         assert parse_submitted_payload({"waf_token": "garbage"}) is None

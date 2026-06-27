@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 def _ctx(*, payload_ua_hash, current_ua):
     """Build an EvaluateContext with a payload whose ua_hash is given."""
-    from icv_waf.forms.defences.base import EvaluateContext
+    from django_waf.forms.defences.base import EvaluateContext
 
     payload = MagicMock()
     payload.ua_hash = payload_ua_hash
@@ -26,8 +26,8 @@ def _ctx(*, payload_ua_hash, current_ua):
 class TestRenderFields:
     def test_returns_empty_dict(self):
         """UA hash rides on the render token; no fields of its own."""
-        from icv_waf.forms.defences.base import RenderContext
-        from icv_waf.forms.defences.ua_consistency import UaConsistencyDefence
+        from django_waf.forms.defences.base import RenderContext
+        from django_waf.forms.defences.ua_consistency import UaConsistencyDefence
 
         defence = UaConsistencyDefence()
         fields = defence.render_fields(RenderContext(form_id="c", request=MagicMock()))
@@ -37,8 +37,8 @@ class TestRenderFields:
 
 class TestEvaluate:
     def test_matching_ua_passes(self):
-        from icv_waf.forms.defences.ua_consistency import UaConsistencyDefence
-        from icv_waf.forms.services.tokens import hash_user_agent
+        from django_waf.forms.defences.ua_consistency import UaConsistencyDefence
+        from django_waf.forms.services.tokens import hash_user_agent
 
         ua = "Mozilla/5.0 ..."
         defence = UaConsistencyDefence()
@@ -47,8 +47,8 @@ class TestEvaluate:
         assert outcome.verdict == "pass"
 
     def test_changed_ua_flags(self):
-        from icv_waf.forms.defences.ua_consistency import UaConsistencyDefence
-        from icv_waf.forms.services.tokens import hash_user_agent
+        from django_waf.forms.defences.ua_consistency import UaConsistencyDefence
+        from django_waf.forms.services.tokens import hash_user_agent
 
         defence = UaConsistencyDefence()
         outcome = defence.evaluate(
@@ -64,8 +64,8 @@ class TestEvaluate:
 
     def test_missing_token_payload_passes_silently(self):
         """RenderTokenDefence already blocked → don't compound."""
-        from icv_waf.forms.defences.base import EvaluateContext
-        from icv_waf.forms.defences.ua_consistency import UaConsistencyDefence
+        from django_waf.forms.defences.base import EvaluateContext
+        from django_waf.forms.defences.ua_consistency import UaConsistencyDefence
 
         ctx = EvaluateContext(form_id="c", request=MagicMock(), submitted_data={})
         defence = UaConsistencyDefence()
@@ -80,8 +80,8 @@ class TestEvaluate:
         header). The hash function handles empty input identically at
         render and submit time, so identical-empty UAs pass.
         """
-        from icv_waf.forms.defences.ua_consistency import UaConsistencyDefence
-        from icv_waf.forms.services.tokens import hash_user_agent
+        from django_waf.forms.defences.ua_consistency import UaConsistencyDefence
+        from django_waf.forms.services.tokens import hash_user_agent
 
         defence = UaConsistencyDefence()
         outcome = defence.evaluate(_ctx(payload_ua_hash=hash_user_agent(""), current_ua=""))

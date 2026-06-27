@@ -18,19 +18,19 @@ import pytest
 class TestOutcome:
     def test_outcome_is_frozen(self):
         """Outcomes are frozen so a defence can't mutate after returning."""
-        from icv_waf.forms.defences.base import Outcome
+        from django_waf.forms.defences.base import Outcome
 
         outcome = Outcome(verdict="pass")
         with pytest.raises((AttributeError, TypeError)):
             outcome.verdict = "block"  # type: ignore[misc]
 
     def test_default_score_is_zero(self):
-        from icv_waf.forms.defences.base import Outcome
+        from django_waf.forms.defences.base import Outcome
 
         assert Outcome(verdict="pass").score == 0.0
 
     def test_default_reason_and_message_are_empty(self):
-        from icv_waf.forms.defences.base import Outcome
+        from django_waf.forms.defences.base import Outcome
 
         outcome = Outcome(verdict="flag")
         assert outcome.reason == ""
@@ -39,7 +39,7 @@ class TestOutcome:
 
 class TestOutcomeFactories:
     def test_passed_returns_pass_verdict(self):
-        from icv_waf.forms.defences.base import passed
+        from django_waf.forms.defences.base import passed
 
         outcome = passed()
         assert outcome.verdict == "pass"
@@ -47,7 +47,7 @@ class TestOutcomeFactories:
         assert outcome.reason == ""
 
     def test_flagged_carries_score_and_reason(self):
-        from icv_waf.forms.defences.base import flagged
+        from django_waf.forms.defences.base import flagged
 
         outcome = flagged(2.0, "time_trap:fast")
         assert outcome.verdict == "flag"
@@ -55,14 +55,14 @@ class TestOutcomeFactories:
         assert outcome.reason == "time_trap:fast"
 
     def test_flagged_accepts_public_message(self):
-        from icv_waf.forms.defences.base import flagged
+        from django_waf.forms.defences.base import flagged
 
         outcome = flagged(2.0, "x:y", public_message="please retry")
         assert outcome.public_message == "please retry"
 
     def test_blocked_defaults_score_to_zero(self):
         """Most blocks short-circuit; recording a score is optional."""
-        from icv_waf.forms.defences.base import blocked
+        from django_waf.forms.defences.base import blocked
 
         outcome = blocked("honeypot:url")
         assert outcome.verdict == "block"
@@ -70,7 +70,7 @@ class TestOutcomeFactories:
         assert outcome.reason == "honeypot:url"
 
     def test_blocked_can_record_score(self):
-        from icv_waf.forms.defences.base import blocked
+        from django_waf.forms.defences.base import blocked
 
         outcome = blocked("render_token:invalid", score=5.0)
         assert outcome.score == 5.0
@@ -83,7 +83,7 @@ class TestOutcomeFactories:
 
 class TestRenderContext:
     def test_config_defaults_to_empty_dict(self):
-        from icv_waf.forms.defences.base import RenderContext
+        from django_waf.forms.defences.base import RenderContext
 
         ctx = RenderContext(form_id="contact", request=object())
         assert ctx.config == {}
@@ -95,14 +95,14 @@ class TestRenderContext:
         worst kind of test-flake source. Frozen dataclass + default_factory
         avoids it but worth pinning behaviourally.
         """
-        from icv_waf.forms.defences.base import RenderContext
+        from django_waf.forms.defences.base import RenderContext
 
         a = RenderContext(form_id="a", request=object())
         b = RenderContext(form_id="b", request=object())
         assert a.config is not b.config
 
     def test_context_is_frozen(self):
-        from icv_waf.forms.defences.base import RenderContext
+        from django_waf.forms.defences.base import RenderContext
 
         ctx = RenderContext(form_id="contact", request=object())
         with pytest.raises((AttributeError, TypeError)):
@@ -113,7 +113,7 @@ class TestEvaluateContext:
     def test_token_payload_defaults_to_none(self):
         """Defences that run before render_token verifies must see None
         rather than a stale payload from a previous request."""
-        from icv_waf.forms.defences.base import EvaluateContext
+        from django_waf.forms.defences.base import EvaluateContext
 
         ctx = EvaluateContext(form_id="contact", request=object(), submitted_data={})
         assert ctx.token_payload is None
@@ -122,7 +122,7 @@ class TestEvaluateContext:
         """Submitted data has no default — the orchestrator always
         passes it. Pin so a future refactor doesn't introduce a
         misleading empty default."""
-        from icv_waf.forms.defences.base import EvaluateContext
+        from django_waf.forms.defences.base import EvaluateContext
 
         with pytest.raises(TypeError):
             EvaluateContext(form_id="contact", request=object())  # type: ignore[call-arg]
@@ -145,7 +145,7 @@ class TestDefenceProtocol:
         ``name``, ``render_fields``, ``evaluate`` is what the
         orchestrator will iterate over.
         """
-        from icv_waf.forms.defences.base import EvaluateContext, RenderContext, passed
+        from django_waf.forms.defences.base import EvaluateContext, RenderContext, passed
 
         class Stub:
             name = "stub"

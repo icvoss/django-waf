@@ -1,6 +1,6 @@
 # Collective Threat Intelligence Feed — Design Document
 
-**Package:** django-icv-waf
+**Package:** django-django-waf
 **Service domain:** threats.icv.dev
 **Status:** Design — not yet implemented
 **Date:** April 2026
@@ -10,7 +10,7 @@
 
 ## Overview
 
-django-icv-waf installations already contain client-side code for syncing rules
+django-django-waf installations already contain client-side code for syncing rules
 from a central feed (`sync_feed`) and submitting anonymised telemetry
 (`build_telemetry_payload` / `submit_telemetry`). The central service at
 `threats.icv.dev` does not yet exist. This document specifies everything needed
@@ -109,7 +109,7 @@ service must accept the following schema (extend, never shrink, across versions)
 | `anomalies[].cidr` | string | /24 subnet where the anomaly was detected. |
 | `anomalies[].confidence` | float | Local confidence score from the reporting installation's detector. |
 | `anomalies[].ttl_hours` | integer | Suggested TTL from the local detector. Central service may override. |
-| `country_distribution` | object | ISO 3166-1 alpha-2 country → blocked hit count. Derived from GeoIP if `ICV_WAF_GEOIP_PATH` is configured. Omit key entirely if GeoIP is not available. |
+| `country_distribution` | object | ISO 3166-1 alpha-2 country → blocked hit count. Derived from GeoIP if `DJANGO_WAF_GEOIP_PATH` is configured. Omit key entirely if GeoIP is not available. |
 | `referer_hashes[].sha256` | string | SHA-256 of the referer domain only (not full URL, not path, not query). E.g., `sha256("evil-botnet.ru")`. |
 | `referer_hashes[].hits` | integer | Count of blocked/challenged requests with this referer domain. |
 
@@ -658,7 +658,7 @@ The following are unconditional guarantees, enforceable by inspecting the
 open-source client code:
 
 1. **No full IP addresses leave the installation.** The client truncates to /24
-   before building the payload. Code: `icv_waf/services/threat_feed.py`,
+   before building the payload. Code: `django_waf/services/threat_feed.py`,
    `build_telemetry_payload()`, line using `ipaddress.ip_network(f"{ip}/24",
    strict=False)`.
 
@@ -672,10 +672,10 @@ open-source client code:
 
 4. **The install_id cannot identify the site.** It is a random UUID generated
    at install time with no relation to the domain, SECRET_KEY, or any user. A
-   new UUID can be generated at any time by deleting the `.icv_waf_install_id`
+   new UUID can be generated at any time by deleting the `.django_waf_install_id`
    file.
 
-5. **Reporting is opt-in by default.** `ICV_WAF_FEED_REPORT` defaults to `False`.
+5. **Reporting is opt-in by default.** `DJANGO_WAF_FEED_REPORT` defaults to `False`.
    An operator must explicitly set it to `True` to submit telemetry.
 
 6. **The central service does not store the submitting IP address** beyond the
@@ -701,12 +701,12 @@ the central service should be published at `threats.icv.dev/privacy`.
 
 Every byte that leaves an installation can be inspected:
 
-- The `build_telemetry_payload()` function is in `icv_waf/services/threat_feed.py`
+- The `build_telemetry_payload()` function is in `django_waf/services/threat_feed.py`
   in the open-source package.
 - Operators can call `build_telemetry_payload(period_start, period_end)` directly
   in a Django shell and inspect the exact dict that would be submitted.
 - The `submit_telemetry()` function logs the submission URL and the HTTP status
-  code at INFO level. Operators can set `ICV_WAF_FEED_REPORT = False` at any
+  code at INFO level. Operators can set `DJANGO_WAF_FEED_REPORT = False` at any
   time and submissions stop immediately.
 - A `--dry-run` flag on the management command equivalent should be added (see
   Section 6).
@@ -984,7 +984,7 @@ Register a new installation and obtain an API key. Called once by the client
 ```json
 {
   "api_key": "waf_live_4Xk9mNpQ2rLsT7vYeAzBcDwF",
-  "message": "Store this key securely. It will not be shown again. Set ICV_WAF_FEED_API_KEY in your Django settings."
+  "message": "Store this key securely. It will not be shown again. Set DJANGO_WAF_FEED_API_KEY in your Django settings."
 }
 ```
 
@@ -1016,29 +1016,29 @@ The existing client code is largely correct. The following changes are needed:
 
 ```python
 # How often to submit telemetry (hours between submissions).
-ICV_WAF_FEED_REPORT_INTERVAL_HOURS: int = getattr(
-    settings, "ICV_WAF_FEED_REPORT_INTERVAL_HOURS", 24
+DJANGO_WAF_FEED_REPORT_INTERVAL_HOURS: int = getattr(
+    settings, "DJANGO_WAF_FEED_REPORT_INTERVAL_HOURS", 24
 )
 
 # Maximum retries for telemetry submission before giving up.
-ICV_WAF_FEED_REPORT_MAX_RETRIES: int = getattr(
-    settings, "ICV_WAF_FEED_REPORT_MAX_RETRIES", 3
+DJANGO_WAF_FEED_REPORT_MAX_RETRIES: int = getattr(
+    settings, "DJANGO_WAF_FEED_REPORT_MAX_RETRIES", 3
 )
 
 # Base backoff in seconds for retry logic.
-ICV_WAF_FEED_REPORT_BACKOFF_BASE: int = getattr(
-    settings, "ICV_WAF_FEED_REPORT_BACKOFF_BASE", 60
+DJANGO_WAF_FEED_REPORT_BACKOFF_BASE: int = getattr(
+    settings, "DJANGO_WAF_FEED_REPORT_BACKOFF_BASE", 60
 )
 
 # How often to sync the feed (hours between syncs).
-ICV_WAF_FEED_SYNC_INTERVAL_HOURS: int = getattr(
-    settings, "ICV_WAF_FEED_SYNC_INTERVAL_HOURS", 24
+DJANGO_WAF_FEED_SYNC_INTERVAL_HOURS: int = getattr(
+    settings, "DJANGO_WAF_FEED_SYNC_INTERVAL_HOURS", 24
 )
 
 # Store the cursor from the last successful feed sync for delta updates.
 # Stored in Django cache; this setting controls the cache key prefix.
-ICV_WAF_FEED_CURSOR_CACHE_KEY: str = getattr(
-    settings, "ICV_WAF_FEED_CURSOR_CACHE_KEY", "icv_waf:feed_cursor"
+DJANGO_WAF_FEED_CURSOR_CACHE_KEY: str = getattr(
+    settings, "DJANGO_WAF_FEED_CURSOR_CACHE_KEY", "django_waf:feed_cursor"
 )
 ```
 
@@ -1049,12 +1049,12 @@ def submit_telemetry(payload: dict, report_url: str | None = None) -> bool:
     """POST telemetry with exponential backoff retry."""
     import time
     import httpx
-    from icv_waf import conf
+    from django_waf import conf
 
-    url = report_url or conf.ICV_WAF_FEED_REPORT_URL
-    api_key = conf.ICV_WAF_FEED_API_KEY
-    max_retries = conf.ICV_WAF_FEED_REPORT_MAX_RETRIES
-    backoff_base = conf.ICV_WAF_FEED_REPORT_BACKOFF_BASE
+    url = report_url or conf.DJANGO_WAF_FEED_REPORT_URL
+    api_key = conf.DJANGO_WAF_FEED_API_KEY
+    max_retries = conf.DJANGO_WAF_FEED_REPORT_MAX_RETRIES
+    backoff_base = conf.DJANGO_WAF_FEED_REPORT_BACKOFF_BASE
 
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -1064,28 +1064,28 @@ def submit_telemetry(payload: dict, report_url: str | None = None) -> bool:
         try:
             response = httpx.post(url, json=payload, headers=headers, timeout=30)
             if response.is_success:
-                logger.info("icv-waf: telemetry submitted (attempt %d)", attempt + 1)
+                logger.info("django-waf: telemetry submitted (attempt %d)", attempt + 1)
                 return True
             if response.status_code == 409:
                 # Already accepted for this period — treat as success
-                logger.info("icv-waf: telemetry already accepted for this period")
+                logger.info("django-waf: telemetry already accepted for this period")
                 return True
             if response.status_code == 422:
                 # Validation error — retrying won't help
-                logger.warning("icv-waf: telemetry rejected (422): %s", response.text[:200])
+                logger.warning("django-waf: telemetry rejected (422): %s", response.text[:200])
                 return False
             if response.status_code == 429:
                 retry_after = int(response.headers.get("Retry-After", backoff_base * (2 ** attempt)))
-                logger.warning("icv-waf: rate limited; waiting %ds", retry_after)
+                logger.warning("django-waf: rate limited; waiting %ds", retry_after)
                 time.sleep(retry_after)
                 continue
         except Exception as exc:
             wait = backoff_base * (2 ** attempt)
-            logger.warning("icv-waf: telemetry error (attempt %d): %s; retrying in %ds", attempt + 1, exc, wait)
+            logger.warning("django-waf: telemetry error (attempt %d): %s; retrying in %ds", attempt + 1, exc, wait)
             if attempt < max_retries - 1:
                 time.sleep(wait)
 
-    logger.warning("icv-waf: telemetry submission failed after %d attempts", max_retries)
+    logger.warning("django-waf: telemetry submission failed after %d attempts", max_retries)
     return False
 ```
 
@@ -1097,23 +1097,23 @@ def sync_feed(feed_url=None, min_confidence=None, use_delta=True):
     Fetch the threat feed, using delta updates when a cursor is available.
     """
     from django.core.cache import cache
-    from icv_waf import conf
+    from django_waf import conf
 
-    url = feed_url or conf.ICV_WAF_FEED_URL
-    cursor = cache.get(conf.ICV_WAF_FEED_CURSOR_CACHE_KEY) if use_delta else None
+    url = feed_url or conf.DJANGO_WAF_FEED_URL
+    cursor = cache.get(conf.DJANGO_WAF_FEED_CURSOR_CACHE_KEY) if use_delta else None
 
     if cursor:
         fetch_url = f"{url}?since={cursor}"
-        logger.info("icv-waf: fetching delta feed since %s", cursor)
+        logger.info("django-waf: fetching delta feed since %s", cursor)
     else:
         fetch_url = url
-        logger.info("icv-waf: fetching full feed snapshot")
+        logger.info("django-waf: fetching full feed snapshot")
 
     # ... existing fetch and apply logic ...
 
     # Store the cursor from the response for next delta
     if "cursor" in feed_data:
-        cache.set(conf.ICV_WAF_FEED_CURSOR_CACHE_KEY, feed_data["cursor"], timeout=None)
+        cache.set(conf.DJANGO_WAF_FEED_CURSOR_CACHE_KEY, feed_data["cursor"], timeout=None)
 ```
 
 **`build_telemetry_payload()` — Add `country_distribution` and `referer_hashes`:**
@@ -1160,17 +1160,17 @@ configured interval has not elapsed:
 @shared_task
 def report_threat_telemetry() -> dict:
     from django.core.cache import cache
-    from icv_waf import conf
+    from django_waf import conf
 
-    if not conf.ICV_WAF_FEED_REPORT:
+    if not conf.DJANGO_WAF_FEED_REPORT:
         return {"skipped": True, "reason": "reporting disabled"}
 
     # Idempotency guard: skip if submitted within the reporting interval
-    last_submitted_key = "icv_waf:last_telemetry_submitted"
+    last_submitted_key = "django_waf:last_telemetry_submitted"
     last_submitted = cache.get(last_submitted_key)
     if last_submitted:
         hours_since = (timezone.now() - last_submitted).total_seconds() / 3600
-        if hours_since < conf.ICV_WAF_FEED_REPORT_INTERVAL_HOURS:
+        if hours_since < conf.DJANGO_WAF_FEED_REPORT_INTERVAL_HOURS:
             return {"skipped": True, "reason": f"submitted {hours_since:.1f}h ago"}
 
     # ... existing build + submit logic ...
@@ -1179,13 +1179,13 @@ def report_threat_telemetry() -> dict:
         cache.set(last_submitted_key, timezone.now(), timeout=60 * 60 * 48)
 ```
 
-**Management command — `icv_waf_report_telemetry` (new):**
+**Management command — `django_waf_report_telemetry` (new):**
 
-Add a management command mirroring `icv_waf_sync_feed` for manual telemetry
+Add a management command mirroring `django_waf_sync_feed` for manual telemetry
 submission and audit (includes `--dry-run` to print the payload without submitting):
 
 ```
-python manage.py icv_waf_report_telemetry --dry-run
+python manage.py django_waf_report_telemetry --dry-run
 ```
 
 ### 6.3 Offline Resilience
@@ -1325,7 +1325,7 @@ The absolute minimum to ship a working collective threat feed:
 | `country_distribution` in payload | Yes (requires GeoIP configured) |
 | `referer_hashes` in payload | Yes |
 | Delta sync (`?since=` with cursor) | No — v1.1 |
-| `icv_waf_report_telemetry` management command | Yes |
+| `django_waf_report_telemetry` management command | Yes |
 | Auto-registration (`/v1/install/register`) | No — v1.1; manual key copy is acceptable for MVP |
 
 ### 8.2 Data Model — MVP Tables
@@ -1375,8 +1375,8 @@ Total infrastructure cost: ~$10/month including storage.
 
 ### 8.5 Definition of Done for MVP
 
-- [ ] A real installation can set `ICV_WAF_FEED_REPORT = True` and
-  `ICV_WAF_FEED_API_KEY`, run `report_threat_telemetry`, and see a 201 response
+- [ ] A real installation can set `DJANGO_WAF_FEED_REPORT = True` and
+  `DJANGO_WAF_FEED_API_KEY`, run `report_threat_telemetry`, and see a 201 response
   from `threats.icv.dev/v1/report`
 - [ ] After 5 distinct installations report the same /24 subnet with sufficient
   hits, the aggregation task publishes it to `published_rule` with confidence >= 0.80
@@ -1396,13 +1396,13 @@ Total infrastructure cost: ~$10/month including storage.
 
 | File | Role |
 |---|---|
-| `src/icv_waf/services/threat_feed.py` | `sync_feed()`, `build_telemetry_payload()`, `submit_telemetry()`, `get_or_create_install_id()` |
-| `src/icv_waf/tasks.py` | `sync_threat_feed`, `report_threat_telemetry` Celery tasks |
-| `src/icv_waf/conf.py` | All `ICV_WAF_*` settings with defaults |
-| `src/icv_waf/management/commands/icv_waf_sync_feed.py` | Manual feed sync command |
-| `src/icv_waf/enums.py` | `AnomalyType`, `RuleType`, `RuleAction`, `Verdict` |
-| `src/icv_waf/models.py` | `BlockRule` (`feed_reporters`, `feed_first_seen`, `confidence` fields) |
-| `src/icv_waf/signals.py` | `feed_synced` signal |
+| `src/django_waf/services/threat_feed.py` | `sync_feed()`, `build_telemetry_payload()`, `submit_telemetry()`, `get_or_create_install_id()` |
+| `src/django_waf/tasks.py` | `sync_threat_feed`, `report_threat_telemetry` Celery tasks |
+| `src/django_waf/conf.py` | All `DJANGO_WAF_*` settings with defaults |
+| `src/django_waf/management/commands/django_waf_sync_feed.py` | Manual feed sync command |
+| `src/django_waf/enums.py` | `AnomalyType`, `RuleType`, `RuleAction`, `Verdict` |
+| `src/django_waf/models.py` | `BlockRule` (`feed_reporters`, `feed_first_seen`, `confidence` fields) |
+| `src/django_waf/signals.py` | `feed_synced` signal |
 
 ## Appendix B: Central Service Repository Structure
 

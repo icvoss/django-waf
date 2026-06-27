@@ -40,7 +40,7 @@ def _request():
 class TestSubclassEnforcement:
     def test_missing_waf_attribute_raises(self):
         """A subclass without `waf` must raise at class-definition time."""
-        from icv_waf.forms.mixin import ProtectedForm
+        from django_waf.forms.mixin import ProtectedForm
 
         with pytest.raises(ImproperlyConfigured, match="`waf` attribute"):
 
@@ -56,8 +56,8 @@ class TestSubclassEnforcement:
 class TestConstruction:
     def _build_form_class(self):
         """Build a ContactForm with a real FormProtection wired up."""
-        from icv_waf.forms.mixin import ProtectedForm
-        from icv_waf.forms.protection import FormProtection
+        from django_waf.forms.mixin import ProtectedForm
+        from django_waf.forms.protection import FormProtection
 
         redis = _redis()
 
@@ -92,11 +92,11 @@ class TestConstruction:
 
 class TestWafFields:
     def test_renders_honeypot_html(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.mixin import ProtectedForm
-        from icv_waf.forms.protection import FormProtection
+        import django_waf.conf as conf_mod
+        from django_waf.forms.mixin import ProtectedForm
+        from django_waf.forms.protection import FormProtection
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             redis = _redis()
 
             class ContactForm(ProtectedForm, forms.Form):
@@ -114,13 +114,13 @@ class TestWafFields:
         assert "position:absolute" in html
 
     def test_renders_empty_when_master_switch_off(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.mixin import ProtectedForm
-        from icv_waf.forms.protection import FormProtection
+        import django_waf.conf as conf_mod
+        from django_waf.forms.mixin import ProtectedForm
+        from django_waf.forms.protection import FormProtection
 
         with (
-            patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"),
-            patch.object(conf_mod, "ICV_WAF_FORM_PROTECTION_ENABLED", False),
+            patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"),
+            patch.object(conf_mod, "DJANGO_WAF_FORM_PROTECTION_ENABLED", False),
         ):
             redis = _redis()
 
@@ -142,8 +142,8 @@ class TestWafFields:
 
 class TestClean:
     def _form_class(self, defences=("honeypot",)):
-        from icv_waf.forms.mixin import ProtectedForm
-        from icv_waf.forms.protection import FormProtection
+        from django_waf.forms.mixin import ProtectedForm
+        from django_waf.forms.protection import FormProtection
 
         # Patch is applied by callers; the form needs a signing key
         # to render or evaluate render_token.
@@ -161,14 +161,14 @@ class TestClean:
 
     def test_blocked_verdict_raises_validation_error(self, settings):
         """Honeypot field filled → BLOCKED → ValidationError on clean."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             ContactForm, _ = self._form_class()
             # Find the honeypot field name and fill it.
-            from icv_waf.forms.defences.honeypot import _pick_field_names
+            from django_waf.forms.defences.honeypot import _pick_field_names
 
-            honeypot_name = _pick_field_names("c", conf_mod.ICV_WAF_FORM_HONEYPOT_FIELD_NAMES, 2)[0]
+            honeypot_name = _pick_field_names("c", conf_mod.DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES, 2)[0]
 
             form = ContactForm(
                 data={"name": "alice", honeypot_name: "spam"},
@@ -181,9 +181,9 @@ class TestClean:
 
     def test_passed_verdict_validates_normally(self, settings):
         """Clean honeypot → no validation error from the mixin."""
-        import icv_waf.conf as conf_mod
+        import django_waf.conf as conf_mod
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             ContactForm, _ = self._form_class()
 
             form = ContactForm(data={"name": "alice"}, request=_request())
@@ -191,10 +191,10 @@ class TestClean:
 
     def test_waf_result_populated_after_clean(self, settings):
         """The view code reads form.waf_result to decide on FLAGGED handling."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             ContactForm, _ = self._form_class()
             form = ContactForm(data={"name": "alice"}, request=_request())
             form.is_valid()  # triggers clean
@@ -205,12 +205,12 @@ class TestClean:
     def test_blocked_message_does_not_leak_defence_name(self, settings):
         """Pin enumeration-safety: the user-visible message must not
         say WHICH defence fired. Operators see the detail in the log."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.defences.honeypot import _pick_field_names
+        import django_waf.conf as conf_mod
+        from django_waf.forms.defences.honeypot import _pick_field_names
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             ContactForm, _ = self._form_class()
-            honeypot = _pick_field_names("c", conf_mod.ICV_WAF_FORM_HONEYPOT_FIELD_NAMES, 2)[0]
+            honeypot = _pick_field_names("c", conf_mod.DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES, 2)[0]
             form = ContactForm(data={"name": "alice", honeypot: "spam"}, request=_request())
             form.is_valid()
 
@@ -237,7 +237,7 @@ class TestClean:
 class TestPublicExports:
     def test_public_api_surface(self):
         """The top-level package exposes the documented entry points."""
-        import icv_waf.forms as forms_pkg
+        import django_waf.forms as forms_pkg
 
         # Names match PRD §2.3 and the public API table.
         for name in (
@@ -250,4 +250,4 @@ class TestPublicExports:
             "form_submission_blocked",
             "credential_attack_observed",
         ):
-            assert hasattr(forms_pkg, name), f"icv_waf.forms missing public name {name!r}"
+            assert hasattr(forms_pkg, name), f"django_waf.forms missing public name {name!r}"

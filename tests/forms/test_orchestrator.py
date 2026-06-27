@@ -42,10 +42,10 @@ class TestConstruction:
     def test_defences_ordered_canonically(self, settings):
         """Operators may pass defences in any order; the chain runs
         in canonical order so render_token always goes first."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             protection = FormProtection(
                 form_id="c",
                 defences=("pow_gate", "honeypot", "render_token"),
@@ -57,7 +57,7 @@ class TestConstruction:
     def test_unknown_defence_raises_at_construction(self):
         import pytest
 
-        from icv_waf.forms.protection import FormProtection
+        from django_waf.forms.protection import FormProtection
 
         with pytest.raises(ValueError, match="unknown defence"):
             FormProtection(form_id="c", defences=("doesnt_exist",))
@@ -67,7 +67,7 @@ class TestConstruction:
         signup_velocity) without a factory must surface at construction
         — not silently fail at first render."""
 
-        from icv_waf.forms.protection import FormProtection
+        from django_waf.forms.protection import FormProtection
 
         # We can't currently construct without a factory because
         # _default_redis_factory always returns something (or None).
@@ -89,10 +89,10 @@ class TestConstruction:
 
 class TestRenderFields:
     def test_collects_fields_from_every_defence(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             redis = _redis()
             protection = FormProtection(
                 form_id="contact",
@@ -108,13 +108,13 @@ class TestRenderFields:
         assert "waf_pow_nonce" in fields
 
     def test_master_switch_short_circuits_to_empty(self, settings):
-        """ICV_WAF_FORM_PROTECTION_ENABLED=False → no fields rendered."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection
+        """DJANGO_WAF_FORM_PROTECTION_ENABLED=False → no fields rendered."""
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection
 
         with (
-            patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"),
-            patch.object(conf_mod, "ICV_WAF_FORM_PROTECTION_ENABLED", False),
+            patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"),
+            patch.object(conf_mod, "DJANGO_WAF_FORM_PROTECTION_ENABLED", False),
         ):
             protection = FormProtection(
                 form_id="c",
@@ -129,11 +129,11 @@ class TestRenderFields:
         """In-product forms (skip_for_authenticated=True) drop spam
         defences when the user is logged in but keep render_token for
         integrity."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection
 
         authed = MagicMock(is_authenticated=True, pk=42)
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             protection = FormProtection(
                 form_id="c",
                 defences=("render_token", "honeypot", "js_touch"),
@@ -149,11 +149,11 @@ class TestRenderFields:
 
     def test_skip_for_authenticated_runs_full_chain_for_anonymous(self, settings):
         """Anonymous users always get the full chain regardless of the flag."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection
 
         anon = MagicMock(is_authenticated=False)
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             protection = FormProtection(
                 form_id="c",
                 defences=("render_token", "honeypot"),
@@ -172,10 +172,10 @@ class TestRenderFields:
 
 class TestEvaluate:
     def test_all_pass_returns_passed_verdict(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection, FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection, FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             redis = _redis()
             protection = FormProtection(
                 form_id="c",
@@ -190,7 +190,7 @@ class TestEvaluate:
             # because fields[...] was the raw token, post-bug it stops
             # working. Use the orchestrator's own _extract_token_value
             # helper so this test always reflects what browsers do.
-            from icv_waf.forms.protection import _extract_token_value
+            from django_waf.forms.protection import _extract_token_value
 
             fields = protection.render_fields(_request())
             token = _extract_token_value(fields["waf_token"])
@@ -205,10 +205,10 @@ class TestEvaluate:
 
     def test_block_short_circuits_chain(self, settings):
         """A defence returning block must stop later defences from running."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection, FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection, FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             redis = _redis()
             protection = FormProtection(
                 form_id="c",
@@ -231,11 +231,11 @@ class TestEvaluate:
         """After render_token verifies, time_trap should see the payload."""
         from datetime import UTC, datetime, timedelta
 
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection, FormVerdict
-        from icv_waf.forms.services.tokens import issue_token
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection, FormVerdict
+        from django_waf.forms.services.tokens import issue_token
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             redis = _redis()
             # Forge a token rendered 0.1s ago → time_trap should block on too_fast.
             old = datetime.now(tz=UTC) - timedelta(seconds=0.1)
@@ -255,12 +255,12 @@ class TestEvaluate:
         assert any(o.reason == "time_trap:too_fast" for o in result.outcomes)
 
     def test_master_switch_short_circuits_to_passed(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection, FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection, FormVerdict
 
         with (
-            patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"),
-            patch.object(conf_mod, "ICV_WAF_FORM_PROTECTION_ENABLED", False),
+            patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"),
+            patch.object(conf_mod, "DJANGO_WAF_FORM_PROTECTION_ENABLED", False),
         ):
             protection = FormProtection(
                 form_id="c",
@@ -274,10 +274,10 @@ class TestEvaluate:
     def test_defence_exception_treated_as_pass(self, settings):
         """A buggy defence must NOT lock users out. The orchestrator
         catches and logs, then treats the outcome as a silent pass."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection, FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection, FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             protection = FormProtection(
                 form_id="c",
                 defences=("honeypot",),  # only honeypot, no Redis dep
@@ -301,7 +301,7 @@ class TestEvaluate:
 
 class TestScoreAggregation:
     def _protection(self):
-        from icv_waf.forms.protection import FormProtection
+        from django_waf.forms.protection import FormProtection
 
         return FormProtection(
             form_id="c",
@@ -310,36 +310,36 @@ class TestScoreAggregation:
         )
 
     def test_sub_flag_threshold_passes(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_FORM_FLAG_THRESHOLD", 2.0):
+        with patch.object(conf_mod, "DJANGO_WAF_FORM_FLAG_THRESHOLD", 2.0):
             assert self._protection()._resolve_verdict(1.5) == FormVerdict.PASSED
 
     def test_crossing_flag_threshold_returns_flagged(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormVerdict
 
         with (
-            patch.object(conf_mod, "ICV_WAF_FORM_FLAG_THRESHOLD", 2.0),
-            patch.object(conf_mod, "ICV_WAF_FORM_BLOCK_THRESHOLD", 5.0),
+            patch.object(conf_mod, "DJANGO_WAF_FORM_FLAG_THRESHOLD", 2.0),
+            patch.object(conf_mod, "DJANGO_WAF_FORM_BLOCK_THRESHOLD", 5.0),
         ):
             assert self._protection()._resolve_verdict(3.0) == FormVerdict.FLAGGED
 
     def test_crossing_block_threshold_returns_blocked(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_FORM_BLOCK_THRESHOLD", 5.0):
+        with patch.object(conf_mod, "DJANGO_WAF_FORM_BLOCK_THRESHOLD", 5.0):
             assert self._protection()._resolve_verdict(6.0) == FormVerdict.BLOCKED
 
     def test_exact_threshold_value_crosses_inclusive(self, settings):
         """Pin >= semantics — operators tune thresholds expecting
         inclusive behaviour."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_FORM_FLAG_THRESHOLD", 2.0):
+        with patch.object(conf_mod, "DJANGO_WAF_FORM_FLAG_THRESHOLD", 2.0):
             assert self._protection()._resolve_verdict(2.0) == FormVerdict.FLAGGED
 
 
@@ -350,10 +350,10 @@ class TestScoreAggregation:
 
 class TestMarkerConsumption:
     def test_consume_calls_delete_on_redis(self, settings):
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.protection import FormProtection
+        import django_waf.conf as conf_mod
+        from django_waf.forms.protection import FormProtection
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             redis = _redis()
             protection = FormProtection(
                 form_id="c",
@@ -368,7 +368,7 @@ class TestMarkerConsumption:
         redis.delete.assert_called_once_with("waf:form:token:abc123")
 
     def test_consume_with_none_payload_is_noop(self):
-        from icv_waf.forms.protection import FormProtection
+        from django_waf.forms.protection import FormProtection
 
         redis = _redis()
         protection = FormProtection(
@@ -384,7 +384,7 @@ class TestMarkerConsumption:
         """Marker consume failures must not propagate — the form has
         already been processed; failing here would surface to the
         user as a 500."""
-        from icv_waf.forms.protection import FormProtection
+        from django_waf.forms.protection import FormProtection
 
         redis = _redis()
         redis.delete.side_effect = RuntimeError("redis down")

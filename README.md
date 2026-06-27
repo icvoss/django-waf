@@ -72,7 +72,7 @@ Add to `INSTALLED_APPS`:
 ```python
 INSTALLED_APPS = [
     # ...
-    "icv_waf",
+    "django_waf",
 ]
 ```
 
@@ -82,7 +82,7 @@ other middleware so it can block requests early:
 ```python
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "icv_waf.middleware.WafMiddleware",        # <-- here
+    "django_waf.middleware.WafMiddleware",        # <-- here
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     # ...
@@ -96,7 +96,7 @@ Include the URL routes for the challenge flow and staff dashboard:
 from django.urls import include, path
 
 urlpatterns = [
-    path("waf/", include("icv_waf.urls")),
+    path("waf/", include("django_waf.urls")),
     # ...
 ]
 ```
@@ -118,90 +118,90 @@ CACHES = {
 Run migrations:
 
 ```bash
-python manage.py migrate icv_waf
+python manage.py migrate django_waf
 ```
 
 ## Settings Reference
 
-All settings are namespaced under `ICV_WAF_*` and have sensible defaults.
+All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 
 ### Core
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ICV_WAF_ENABLED` | `True` | Master switch — disable to pass all requests through |
-| `ICV_WAF_EXEMPT_PATHS` | `["/static/", "/media/", "/health/", "/favicon.ico"]` | URL prefixes that bypass WAF evaluation entirely |
-| `ICV_WAF_EXEMPT_HOSTS` | `[]` | Hostnames that bypass WAF evaluation entirely. Exact match, or a leading-dot entry (`.example.com`) matching the domain and any subdomain (mirrors Django's `ALLOWED_HOSTS`). Port is stripped before matching |
-| `ICV_WAF_TRUST_X_FORWARDED_FOR` | `False` | Trust `X-Forwarded-For` header for client IP extraction |
-| `ICV_WAF_REDIS_ALIAS` | `"default"` | Django cache alias for Redis connections |
-| `ICV_WAF_ALLOWED_METHODS` | `None` | Allowed HTTP methods; requests with other methods receive 405 before rule evaluation. `None` allows all methods. |
+| `DJANGO_WAF_ENABLED` | `True` | Master switch — disable to pass all requests through |
+| `DJANGO_WAF_EXEMPT_PATHS` | `["/static/", "/media/", "/health/", "/favicon.ico"]` | URL prefixes that bypass WAF evaluation entirely |
+| `DJANGO_WAF_EXEMPT_HOSTS` | `[]` | Hostnames that bypass WAF evaluation entirely. Exact match, or a leading-dot entry (`.example.com`) matching the domain and any subdomain (mirrors Django's `ALLOWED_HOSTS`). Port is stripped before matching |
+| `DJANGO_WAF_TRUST_X_FORWARDED_FOR` | `False` | Trust `X-Forwarded-For` header for client IP extraction |
+| `DJANGO_WAF_REDIS_ALIAS` | `"default"` | Django cache alias for Redis connections |
+| `DJANGO_WAF_ALLOWED_METHODS` | `None` | Allowed HTTP methods; requests with other methods receive 405 before rule evaluation. `None` allows all methods. |
 
 ### Rate Limiting
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ICV_WAF_RATE_LIMIT_BURST` | `10` | Max requests per IP per second |
-| `ICV_WAF_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per IP per minute |
-| `ICV_WAF_RATE_LIMIT_PER_5MIN` | `600` | Max requests per IP per 5 minutes |
+| `DJANGO_WAF_RATE_LIMIT_BURST` | `10` | Max requests per IP per second |
+| `DJANGO_WAF_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per IP per minute |
+| `DJANGO_WAF_RATE_LIMIT_PER_5MIN` | `600` | Max requests per IP per 5 minutes |
 
 ### Challenges
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ICV_WAF_CHALLENGE_DIFFICULTY` | `20` | Fallback proof-of-work leading zero **bits** when the desktop/mobile overrides are not set. Average work is `2 ** bits` SHA-256 hashes |
-| `ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP` | `22` | PoW difficulty (bits) for non-mobile User-Agents. ~4M hashes, ~1–2s on a laptop |
-| `ICV_WAF_CHALLENGE_DIFFICULTY_MOBILE` | `18` | PoW difficulty (bits) for mobile User-Agents. ~260k hashes, ~1–3s on a budget phone |
-| `ICV_WAF_CHALLENGE_URL` | `""` | Optional literal path to the challenge view. Set this in projects using per-request urlconf routing (django-hosts and similar) where `reverse("icv_waf:challenge")` cannot resolve. Empty = use `reverse()` |
-| `ICV_WAF_VERIFY_URL` | `""` | Optional literal path to the verify view. Empty = use `reverse()` |
-| `ICV_WAF_CHALLENGE_COOKIE_TTL` | `86400` | Seconds a solved-challenge cookie remains valid |
-| `ICV_WAF_CHALLENGE_NO_REFERER` | `False` | Challenge requests that have no `Referer` header |
-| `ICV_WAF_NO_REFERER_EXEMPT_PATHS` | `["/", "/search/", "/robots.txt", "/sitemap.xml", "/favicon.ico"]` | Paths exempt from the no-referer challenge (only evaluated when `ICV_WAF_CHALLENGE_NO_REFERER` is `True`) |
-| `ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD` | `10` | Number of unsolved challenges before auto-escalating to a block |
-| `ICV_WAF_ESCALATION_BLOCK_TTL` | `3600` | TTL in seconds for escalation blocks |
+| `DJANGO_WAF_CHALLENGE_DIFFICULTY` | `20` | Fallback proof-of-work leading zero **bits** when the desktop/mobile overrides are not set. Average work is `2 ** bits` SHA-256 hashes |
+| `DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP` | `22` | PoW difficulty (bits) for non-mobile User-Agents. ~4M hashes, ~1–2s on a laptop |
+| `DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE` | `18` | PoW difficulty (bits) for mobile User-Agents. ~260k hashes, ~1–3s on a budget phone |
+| `DJANGO_WAF_CHALLENGE_URL` | `""` | Optional literal path to the challenge view. Set this in projects using per-request urlconf routing (django-hosts and similar) where `reverse("django_waf:challenge")` cannot resolve. Empty = use `reverse()` |
+| `DJANGO_WAF_VERIFY_URL` | `""` | Optional literal path to the verify view. Empty = use `reverse()` |
+| `DJANGO_WAF_CHALLENGE_COOKIE_TTL` | `86400` | Seconds a solved-challenge cookie remains valid |
+| `DJANGO_WAF_CHALLENGE_NO_REFERER` | `False` | Challenge requests that have no `Referer` header |
+| `DJANGO_WAF_NO_REFERER_EXEMPT_PATHS` | `["/", "/search/", "/robots.txt", "/sitemap.xml", "/favicon.ico"]` | Paths exempt from the no-referer challenge (only evaluated when `DJANGO_WAF_CHALLENGE_NO_REFERER` is `True`) |
+| `DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD` | `10` | Number of unsolved challenges before auto-escalating to a block |
+| `DJANGO_WAF_ESCALATION_BLOCK_TTL` | `3600` | TTL in seconds for escalation blocks |
 
 ### Anomaly Scoring
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ICV_WAF_SCORE_THRESHOLD_LOG` | `3.0` | Anomaly score at which a request is logged |
-| `ICV_WAF_SCORE_THRESHOLD_CHALLENGE` | `5.0` | Anomaly score at which a challenge is issued |
-| `ICV_WAF_SCORE_THRESHOLD_BLOCK` | `7.0` | Anomaly score at which a request is blocked |
-| `ICV_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS` | `20` | Distinct UAs per IP before triggering a UA-rotation anomaly |
-| `ICV_WAF_AUTO_RULE_EXPIRY_HOURS` | `24` | Hours before auto-generated rules expire |
-| `ICV_WAF_SUSPICIOUS_PATH_PATTERNS` | `[r"\.env", r"wp-config\.php", ...]` | Regex patterns for suspicious paths (credential probes, config files); matched paths add `ICV_WAF_SUSPICIOUS_PATH_SCORE` to the anomaly score |
-| `ICV_WAF_SUSPICIOUS_PATH_SCORE` | `3.0` | Score added per suspicious path match |
+| `DJANGO_WAF_SCORE_THRESHOLD_LOG` | `3.0` | Anomaly score at which a request is logged |
+| `DJANGO_WAF_SCORE_THRESHOLD_CHALLENGE` | `5.0` | Anomaly score at which a challenge is issued |
+| `DJANGO_WAF_SCORE_THRESHOLD_BLOCK` | `7.0` | Anomaly score at which a request is blocked |
+| `DJANGO_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS` | `20` | Distinct UAs per IP before triggering a UA-rotation anomaly |
+| `DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS` | `24` | Hours before auto-generated rules expire |
+| `DJANGO_WAF_SUSPICIOUS_PATH_PATTERNS` | `[r"\.env", r"wp-config\.php", ...]` | Regex patterns for suspicious paths (credential probes, config files); matched paths add `DJANGO_WAF_SUSPICIOUS_PATH_SCORE` to the anomaly score |
+| `DJANGO_WAF_SUSPICIOUS_PATH_SCORE` | `3.0` | Score added per suspicious path match |
 
 ### Logging
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ICV_WAF_LOG_SAMPLE_RATE` | `0.01` | Fraction of allowed requests to log (0.0–1.0) |
-| `ICV_WAF_LOG_RETENTION_DAYS` | `30` | Days to retain `RequestLog` entries |
+| `DJANGO_WAF_LOG_SAMPLE_RATE` | `0.01` | Fraction of allowed requests to log (0.0–1.0) |
+| `DJANGO_WAF_LOG_RETENTION_DAYS` | `30` | Days to retain `RequestLog` entries |
 
 ### GeoIP
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ICV_WAF_GEOIP_PATH` | `None` | Filesystem path to a MaxMind GeoLite2-Country `.mmdb` database. `None` disables GeoIP. |
+| `DJANGO_WAF_GEOIP_PATH` | `None` | Filesystem path to a MaxMind GeoLite2-Country `.mmdb` database. `None` disables GeoIP. |
 
 ### nginx Integration
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ICV_WAF_NGINX_BLOCKLIST_PATH` | `"/etc/nginx/conf.d/icv-waf-blocklist.conf"` | Output path for the generated nginx blocklist |
-| `ICV_WAF_ACCESS_LOG_PATH` | `"/var/log/nginx/access.log"` | nginx access log path for parsing |
-| `ICV_WAF_NGINX_RELOAD_COMMAND` | `["nginx", "-s", "reload"]` | Command to reload nginx after blocklist generation |
+| `DJANGO_WAF_NGINX_BLOCKLIST_PATH` | `"/etc/nginx/conf.d/django-waf-blocklist.conf"` | Output path for the generated nginx blocklist |
+| `DJANGO_WAF_ACCESS_LOG_PATH` | `"/var/log/nginx/access.log"` | nginx access log path for parsing |
+| `DJANGO_WAF_NGINX_RELOAD_COMMAND` | `["nginx", "-s", "reload"]` | Command to reload nginx after blocklist generation |
 
 ### Collective Threat Feed
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ICV_WAF_FEED_ENABLED` | `True` | Enable collective threat feed sync |
-| `ICV_WAF_FEED_URL` | `"https://threats.icv.dev/v1/feed.json"` | Threat feed JSON endpoint |
-| `ICV_WAF_FEED_MIN_CONFIDENCE` | `0.8` | Minimum confidence (0.0–1.0) to import a feed entry as a rule |
-| `ICV_WAF_FEED_REPORT` | `False` | Report local detections back to the feed (opt-in) |
-| `ICV_WAF_FEED_REPORT_URL` | `"https://threats.icv.dev/v1/report"` | Telemetry reporting endpoint |
-| `ICV_WAF_FEED_API_KEY` | `""` | API key for feed authentication |
+| `DJANGO_WAF_FEED_ENABLED` | `True` | Enable collective threat feed sync |
+| `DJANGO_WAF_FEED_URL` | `"https://threats.icv.dev/v1/feed.json"` | Threat feed JSON endpoint |
+| `DJANGO_WAF_FEED_MIN_CONFIDENCE` | `0.8` | Minimum confidence (0.0–1.0) to import a feed entry as a rule |
+| `DJANGO_WAF_FEED_REPORT` | `False` | Report local detections back to the feed (opt-in) |
+| `DJANGO_WAF_FEED_REPORT_URL` | `"https://threats.icv.dev/v1/report"` | Telemetry reporting endpoint |
+| `DJANGO_WAF_FEED_API_KEY` | `""` | API key for feed authentication |
 
 ### Form protection (v0.11.0)
 
@@ -210,30 +210,30 @@ until a form opts in via the mixin, decorator, or template tag.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `ICV_WAF_SIGNING_KEY` | `""` | Package-wide HMAC secret. Separate from Django's `SECRET_KEY` so rotation lifecycles are independent. Empty → derives from `SECRET_KEY` and `icv_waf.W003` warns at startup |
-| `ICV_WAF_FORM_PROTECTION_ENABLED` | `True` | Master kill switch. `False` makes the mixin/decorator/tag short-circuit to pass without running defences |
-| `ICV_WAF_FORM_FLAG_THRESHOLD` | `2.0` | Aggregate score crossing this triggers FLAGGED |
-| `ICV_WAF_FORM_BLOCK_THRESHOLD` | `5.0` | Aggregate score crossing this triggers BLOCKED |
-| `ICV_WAF_FORM_CHALLENGE_ON_FLAG` | `True` | Redirect FLAGGED submissions through `/waf/challenge/` (then replay the POST). `False` returns a generic rejection |
-| `ICV_WAF_FORM_EMIT_PASSED_SIGNAL` | `False` | Fire `form_submission_passed` on every PASS. Off by default — busy sites would burn cycles on the hot path; the structured log already records (sampled) passes |
-| `ICV_WAF_FORM_TOKEN_TTL` | `3600` | Render-token lifetime in seconds; also the Redis marker TTL |
-| `ICV_WAF_FORM_HONEYPOT_FIELD_NAMES` | `["url", "website", "homepage", "email_confirm"]` | Pool of names for the per-form rotating honeypot fields |
-| `ICV_WAF_FORM_TIME_TRAP_MIN_SECONDS` | `1.5` | Below this → flag; below 0.5 → block (hard floor) |
-| `ICV_WAF_FORM_TIME_TRAP_MAX_SECONDS` | `3600` | Above this → flag (stale form) |
-| `ICV_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW` | `900` | Sliding window for credential-failure counters (seconds) |
-| `ICV_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT` | `5` | Per-account threshold. Observation-only (drives `credential_attack_observed` signal); never user-visible |
-| `ICV_WAF_FORM_CREDENTIAL_IP_LIMIT` | `20` | Per-IP threshold. **Drives the user-visible challenge** — same behaviour regardless of which accounts were tried (enumeration-safe) |
-| `ICV_WAF_FORM_SIGNUP_VELOCITY_WINDOW` | `86400` | Window for completed-signup counter (24h) |
-| `ICV_WAF_FORM_SIGNUP_VELOCITY_LIMIT` | `5` | Successful signups per IP before next attempt is flagged |
-| `ICV_WAF_FORM_POW_DIFFICULTY` | `12` | Per-submission PoW difficulty (bits). 12 ≈ 4k SHA-256 hashes ≈ 50ms desktop / ~200ms mobile |
-| `ICV_WAF_FORM_REPLAY_STORE` | `"session"` | Where to stash FLAGGED POST data for replay. Only `"session"` is implemented |
-| `ICV_WAF_FORM_DEFENCE_WEIGHTS` | (see code) | Per-defence score weights; overridable per-form via `FormProtection(defence_weights={...})` |
+| `DJANGO_WAF_SIGNING_KEY` | `""` | Package-wide HMAC secret. Separate from Django's `SECRET_KEY` so rotation lifecycles are independent. Empty → derives from `SECRET_KEY` and `django_waf.W003` warns at startup |
+| `DJANGO_WAF_FORM_PROTECTION_ENABLED` | `True` | Master kill switch. `False` makes the mixin/decorator/tag short-circuit to pass without running defences |
+| `DJANGO_WAF_FORM_FLAG_THRESHOLD` | `2.0` | Aggregate score crossing this triggers FLAGGED |
+| `DJANGO_WAF_FORM_BLOCK_THRESHOLD` | `5.0` | Aggregate score crossing this triggers BLOCKED |
+| `DJANGO_WAF_FORM_CHALLENGE_ON_FLAG` | `True` | Redirect FLAGGED submissions through `/waf/challenge/` (then replay the POST). `False` returns a generic rejection |
+| `DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL` | `False` | Fire `form_submission_passed` on every PASS. Off by default — busy sites would burn cycles on the hot path; the structured log already records (sampled) passes |
+| `DJANGO_WAF_FORM_TOKEN_TTL` | `3600` | Render-token lifetime in seconds; also the Redis marker TTL |
+| `DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES` | `["url", "website", "homepage", "email_confirm"]` | Pool of names for the per-form rotating honeypot fields |
+| `DJANGO_WAF_FORM_TIME_TRAP_MIN_SECONDS` | `1.5` | Below this → flag; below 0.5 → block (hard floor) |
+| `DJANGO_WAF_FORM_TIME_TRAP_MAX_SECONDS` | `3600` | Above this → flag (stale form) |
+| `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW` | `900` | Sliding window for credential-failure counters (seconds) |
+| `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT` | `5` | Per-account threshold. Observation-only (drives `credential_attack_observed` signal); never user-visible |
+| `DJANGO_WAF_FORM_CREDENTIAL_IP_LIMIT` | `20` | Per-IP threshold. **Drives the user-visible challenge** — same behaviour regardless of which accounts were tried (enumeration-safe) |
+| `DJANGO_WAF_FORM_SIGNUP_VELOCITY_WINDOW` | `86400` | Window for completed-signup counter (24h) |
+| `DJANGO_WAF_FORM_SIGNUP_VELOCITY_LIMIT` | `5` | Successful signups per IP before next attempt is flagged |
+| `DJANGO_WAF_FORM_POW_DIFFICULTY` | `12` | Per-submission PoW difficulty (bits). 12 ≈ 4k SHA-256 hashes ≈ 50ms desktop / ~200ms mobile |
+| `DJANGO_WAF_FORM_REPLAY_STORE` | `"session"` | Where to stash FLAGGED POST data for replay. Only `"session"` is implemented |
+| `DJANGO_WAF_FORM_DEFENCE_WEIGHTS` | (see code) | Per-defence score weights; overridable per-form via `FormProtection(defence_weights={...})` |
 
 **Usage** — Django Form mixin (recommended for new forms):
 
 ```python
 from django import forms
-from icv_waf.forms import FormProtection, ProtectedForm
+from django_waf.forms import FormProtection, ProtectedForm
 
 class ContactForm(ProtectedForm, forms.Form):
     name = forms.CharField()
@@ -271,7 +271,7 @@ In the template:
 
 ```python
 # views.py
-from icv_waf.forms import waf_protect_post
+from django_waf.forms import waf_protect_post
 
 @waf_protect_post(form_id="contact-handwritten",
                   defences=("honeypot", "time_trap"))
@@ -319,40 +319,40 @@ If using Celery, configure the beat schedule for automated tasks:
 from celery.schedules import crontab
 
 CELERY_BEAT_SCHEDULE = {
-    "icv-waf-flush-rule-hit-counts": {
-        "task": "icv_waf.tasks.flush_rule_hit_counts",
+    "django-waf-flush-rule-hit-counts": {
+        "task": "django_waf.tasks.flush_rule_hit_counts",
         "schedule": crontab(minute="*/5"),
     },
-    "icv-waf-generate-blocklist": {
-        "task": "icv_waf.tasks.generate_blocklist",
+    "django-waf-generate-blocklist": {
+        "task": "django_waf.tasks.generate_blocklist",
         "schedule": crontab(minute="*/5"),
     },
-    "icv-waf-detect-anomalies": {
-        "task": "icv_waf.tasks.detect_anomalies",
+    "django-waf-detect-anomalies": {
+        "task": "django_waf.tasks.detect_anomalies",
         "schedule": crontab(minute="*/15"),
     },
-    "icv-waf-parse-access-log": {
-        "task": "icv_waf.tasks.parse_access_log",
+    "django-waf-parse-access-log": {
+        "task": "django_waf.tasks.parse_access_log",
         "schedule": crontab(minute="*/10"),
     },
-    "icv-waf-expire-rules": {
-        "task": "icv_waf.tasks.expire_rules",
+    "django-waf-expire-rules": {
+        "task": "django_waf.tasks.expire_rules",
         "schedule": crontab(minute="*/30"),
     },
-    "icv-waf-update-ip-reputation": {
-        "task": "icv_waf.tasks.update_ip_reputation",
+    "django-waf-update-ip-reputation": {
+        "task": "django_waf.tasks.update_ip_reputation",
         "schedule": crontab(hour="*/6", minute=0),
     },
-    "icv-waf-prune-request-logs": {
-        "task": "icv_waf.tasks.prune_request_logs",
+    "django-waf-prune-request-logs": {
+        "task": "django_waf.tasks.prune_request_logs",
         "schedule": crontab(hour=4, minute=0),
     },
-    "icv-waf-sync-threat-feed": {
-        "task": "icv_waf.tasks.sync_threat_feed",
+    "django-waf-sync-threat-feed": {
+        "task": "django_waf.tasks.sync_threat_feed",
         "schedule": crontab(hour=4, minute=30),
     },
-    "icv-waf-report-threat-telemetry": {
-        "task": "icv_waf.tasks.report_threat_telemetry",
+    "django-waf-report-threat-telemetry": {
+        "task": "django_waf.tasks.report_threat_telemetry",
         "schedule": crontab(hour=5, minute=0),
     },
 }
@@ -362,10 +362,10 @@ CELERY_BEAT_SCHEDULE = {
 
 | Command | Description |
 |---------|-------------|
-| `icv_waf_generate_blocklist` | Generate the nginx blocklist file (`--dry-run` to preview) |
-| `icv_waf_detect_anomalies` | Run anomaly detectors and auto-create block rules (`--dry-run`) |
-| `icv_waf_prune_logs` | Delete `RequestLog` entries older than the retention period (`--dry-run`) |
-| `icv_waf_sync_feed` | Fetch and import rules from the collective threat feed (`--dry-run`) |
+| `django_waf_generate_blocklist` | Generate the nginx blocklist file (`--dry-run` to preview) |
+| `django_waf_detect_anomalies` | Run anomaly detectors and auto-create block rules (`--dry-run`) |
+| `django_waf_prune_logs` | Delete `RequestLog` entries older than the retention period (`--dry-run`) |
+| `django_waf_sync_feed` | Fetch and import rules from the collective threat feed (`--dry-run`) |
 
 ## Dashboard
 
@@ -391,7 +391,7 @@ The middleware evaluates requests in this order:
 
 1. **Exempt paths/hosts bypass** — static assets, health endpoints, and exempt hosts skip all evaluation
 2. **HTTP method filtering** — disallowed methods receive 405 immediately
-3. **Master switch check** — `ICV_WAF_ENABLED = False` passes all requests through
+3. **Master switch check** — `DJANGO_WAF_ENABLED = False` passes all requests through
 4. **Staff/superuser bypass** — authenticated staff skip rule evaluation
 5. **Valid challenge cookie check** — previously-solved challenges are honoured
 6. **Allow rules → Block rules → Rate limits** — explicit rule matching
@@ -400,7 +400,7 @@ The middleware evaluates requests in this order:
    accumulates from suspicious paths and UA heuristics; score thresholds determine
    the verdict (log / challenge / block)
 9. **Challenge escalation** — IPs exceeding the unsolved-challenge threshold are
-   auto-blocked for `ICV_WAF_ESCALATION_BLOCK_TTL` seconds
+   auto-blocked for `DJANGO_WAF_ESCALATION_BLOCK_TTL` seconds
 10. **Verdict dispatch** — response rendered (allow / block / challenge / throttle),
     sampled logging written, and WAF signal emitted
 

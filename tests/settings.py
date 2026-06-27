@@ -1,6 +1,6 @@
-"""Django settings for icv-waf tests."""
+"""Django settings for django-waf tests."""
 
-SECRET_KEY = "icv-waf-test-secret-key"  # noqa: S105
+SECRET_KEY = "django-waf-test-secret-key"  # noqa: S105
 DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
@@ -11,7 +11,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "icv_waf",
+    "django_waf",
 ]
 
 MIDDLEWARE = [
@@ -50,7 +50,7 @@ DATABASES = {
 }
 
 MIGRATION_MODULES = {
-    "icv_waf": None,
+    "django_waf": None,
     "contenttypes": None,
     "auth": None,
     "admin": None,
@@ -77,8 +77,8 @@ CACHES = {
 # Celery
 CELERY_TASK_ALWAYS_EAGER = True
 
-# icv-waf settings
-ICV_WAF_ENABLED = True
-ICV_WAF_FEED_ENABLED = False  # Never hit the real feed in tests
-ICV_WAF_FEED_REPORT = False  # Never report to the feed in tests
-ICV_WAF_LOG_SAMPLE_RATE = 1.0  # Log everything in tests
+# django-waf settings
+DJANGO_WAF_ENABLED = True
+DJANGO_WAF_FEED_ENABLED = False  # Never hit the real feed in tests
+DJANGO_WAF_FEED_REPORT = False  # Never report to the feed in tests
+DJANGO_WAF_LOG_SAMPLE_RATE = 1.0  # Log everything in tests

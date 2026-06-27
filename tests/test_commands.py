@@ -1,4 +1,4 @@
-"""Tests for icv-waf management commands.
+"""Tests for django-waf management commands.
 
 Each command is tested for:
   - ``--dry-run`` mode (should report without side effects)
@@ -17,15 +17,15 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from icv_waf.testing.factories import BlockRuleFactory, RequestLogFactory
+from django_waf.testing.factories import BlockRuleFactory, RequestLogFactory
 
 # ---------------------------------------------------------------------------
-# icv_waf_generate_blocklist
+# django_waf_generate_blocklist
 # ---------------------------------------------------------------------------
 
 
 class TestGenerateBlocklistCommand:
-    """Tests for the ``icv_waf_generate_blocklist`` management command."""
+    """Tests for the ``django_waf_generate_blocklist`` management command."""
 
     @pytest.mark.django_db
     def test_dry_run_does_not_write_file(self, tmp_path):
@@ -34,11 +34,11 @@ class TestGenerateBlocklistCommand:
         fake_conf.write_text("# placeholder\n")
 
         with patch(
-            "icv_waf.services.blocklist_generator.generate_nginx_blocklist",
+            "django_waf.services.blocklist_generator.generate_nginx_blocklist",
             return_value=3,
         ) as mock_generate:
             out = StringIO()
-            call_command("icv_waf_generate_blocklist", "--dry-run", stdout=out)
+            call_command("django_waf_generate_blocklist", "--dry-run", stdout=out)
 
         # The service IS called (to populate the temp file), but the permanent
         # output path is not touched.
@@ -52,16 +52,16 @@ class TestGenerateBlocklistCommand:
         """Normal run calls generate_nginx_blocklist and reload_nginx."""
         with (
             patch(
-                "icv_waf.services.blocklist_generator.generate_nginx_blocklist",
+                "django_waf.services.blocklist_generator.generate_nginx_blocklist",
                 return_value=5,
             ) as mock_generate,
             patch(
-                "icv_waf.services.blocklist_generator.reload_nginx",
+                "django_waf.services.blocklist_generator.reload_nginx",
                 return_value=True,
             ) as mock_reload,
         ):
             out = StringIO()
-            call_command("icv_waf_generate_blocklist", stdout=out)
+            call_command("django_waf_generate_blocklist", stdout=out)
 
         mock_generate.assert_called_once_with(output_path=None)
         mock_reload.assert_called_once()
@@ -76,15 +76,15 @@ class TestGenerateBlocklistCommand:
 
         with (
             patch(
-                "icv_waf.services.blocklist_generator.generate_nginx_blocklist",
+                "django_waf.services.blocklist_generator.generate_nginx_blocklist",
                 return_value=1,
             ) as mock_generate,
             patch(
-                "icv_waf.services.blocklist_generator.reload_nginx",
+                "django_waf.services.blocklist_generator.reload_nginx",
                 return_value=True,
             ),
         ):
-            call_command("icv_waf_generate_blocklist", f"--output-path={custom_path}")
+            call_command("django_waf_generate_blocklist", f"--output-path={custom_path}")
 
         mock_generate.assert_called_once_with(output_path=custom_path)
 
@@ -93,16 +93,16 @@ class TestGenerateBlocklistCommand:
         """When nginx reload fails the command emits a warning, not an error."""
         with (
             patch(
-                "icv_waf.services.blocklist_generator.generate_nginx_blocklist",
+                "django_waf.services.blocklist_generator.generate_nginx_blocklist",
                 return_value=2,
             ),
             patch(
-                "icv_waf.services.blocklist_generator.reload_nginx",
+                "django_waf.services.blocklist_generator.reload_nginx",
                 return_value=False,
             ),
         ):
             out = StringIO()
-            call_command("icv_waf_generate_blocklist", stdout=out)
+            call_command("django_waf_generate_blocklist", stdout=out)
 
         output = out.getvalue()
         assert "reload nginx manually" in output
@@ -112,21 +112,21 @@ class TestGenerateBlocklistCommand:
         """A service exception is converted to CommandError."""
         with (
             patch(
-                "icv_waf.services.blocklist_generator.generate_nginx_blocklist",
+                "django_waf.services.blocklist_generator.generate_nginx_blocklist",
                 side_effect=RuntimeError("disk full"),
             ),
             pytest.raises(CommandError, match="Failed to generate blocklist"),
         ):
-            call_command("icv_waf_generate_blocklist")
+            call_command("django_waf_generate_blocklist")
 
 
 # ---------------------------------------------------------------------------
-# icv_waf_detect_anomalies
+# django_waf_detect_anomalies
 # ---------------------------------------------------------------------------
 
 
 class TestDetectAnomaliesCommand:
-    """Tests for the ``icv_waf_detect_anomalies`` management command."""
+    """Tests for the ``django_waf_detect_anomalies`` management command."""
 
     @pytest.mark.django_db
     def test_dry_run_reports_without_creating_rules(self):
@@ -134,11 +134,11 @@ class TestDetectAnomaliesCommand:
         results = {"burst_detector": [MagicMock(), MagicMock()], "ua_rotation": []}
 
         with patch(
-            "icv_waf.services.anomaly_detector.run_all_detectors",
+            "django_waf.services.anomaly_detector.run_all_detectors",
             return_value=results,
         ) as mock_detect:
             out = StringIO()
-            call_command("icv_waf_detect_anomalies", "--dry-run", stdout=out)
+            call_command("django_waf_detect_anomalies", "--dry-run", stdout=out)
 
         mock_detect.assert_called_once_with()
         output = out.getvalue()
@@ -152,11 +152,11 @@ class TestDetectAnomaliesCommand:
         results = {"burst_detector": [MagicMock()], "ua_rotation": [MagicMock(), MagicMock()]}
 
         with patch(
-            "icv_waf.services.anomaly_detector.run_all_detectors",
+            "django_waf.services.anomaly_detector.run_all_detectors",
             return_value=results,
         ) as mock_detect:
             out = StringIO()
-            call_command("icv_waf_detect_anomalies", stdout=out)
+            call_command("django_waf_detect_anomalies", stdout=out)
 
         mock_detect.assert_called_once_with()
         output = out.getvalue()
@@ -167,10 +167,10 @@ class TestDetectAnomaliesCommand:
     def test_window_minutes_forwarded_to_service(self):
         """--window-minutes is passed through to run_all_detectors."""
         with patch(
-            "icv_waf.services.anomaly_detector.run_all_detectors",
+            "django_waf.services.anomaly_detector.run_all_detectors",
             return_value={},
         ) as mock_detect:
-            call_command("icv_waf_detect_anomalies", "--window-minutes=10")
+            call_command("django_waf_detect_anomalies", "--window-minutes=10")
 
         mock_detect.assert_called_once_with(window_minutes=10)
 
@@ -178,11 +178,11 @@ class TestDetectAnomaliesCommand:
     def test_no_anomalies_detected_message(self):
         """When no anomalies are detected the success message is shown."""
         with patch(
-            "icv_waf.services.anomaly_detector.run_all_detectors",
+            "django_waf.services.anomaly_detector.run_all_detectors",
             return_value={"burst_detector": [], "ua_rotation": []},
         ):
             out = StringIO()
-            call_command("icv_waf_detect_anomalies", stdout=out)
+            call_command("django_waf_detect_anomalies", stdout=out)
 
         assert "No anomalies detected" in out.getvalue()
 
@@ -191,34 +191,34 @@ class TestDetectAnomaliesCommand:
         """A service exception is converted to CommandError."""
         with (
             patch(
-                "icv_waf.services.anomaly_detector.run_all_detectors",
+                "django_waf.services.anomaly_detector.run_all_detectors",
                 side_effect=ValueError("bad window"),
             ),
             pytest.raises(CommandError, match="Anomaly detection failed"),
         ):
-            call_command("icv_waf_detect_anomalies")
+            call_command("django_waf_detect_anomalies")
 
     @pytest.mark.django_db
     def test_dry_run_with_window_minutes(self):
         """Dry-run correctly forwards --window-minutes."""
         with patch(
-            "icv_waf.services.anomaly_detector.run_all_detectors",
+            "django_waf.services.anomaly_detector.run_all_detectors",
             return_value={"ua_rotation": [MagicMock()]},
         ) as mock_detect:
             out = StringIO()
-            call_command("icv_waf_detect_anomalies", "--dry-run", "--window-minutes=20", stdout=out)
+            call_command("django_waf_detect_anomalies", "--dry-run", "--window-minutes=20", stdout=out)
 
         mock_detect.assert_called_once_with(window_minutes=20)
         assert "dry-run" in out.getvalue()
 
 
 # ---------------------------------------------------------------------------
-# icv_waf_prune_logs
+# django_waf_prune_logs
 # ---------------------------------------------------------------------------
 
 
 class TestPruneLogsCommand:
-    """Tests for the ``icv_waf_prune_logs`` management command."""
+    """Tests for the ``django_waf_prune_logs`` management command."""
 
     @pytest.mark.django_db
     def test_dry_run_counts_without_deleting(self):
@@ -230,9 +230,9 @@ class TestPruneLogsCommand:
         RequestLogFactory()  # recent — should not be counted
 
         out = StringIO()
-        call_command("icv_waf_prune_logs", "--dry-run", "--days=30", stdout=out)
+        call_command("django_waf_prune_logs", "--dry-run", "--days=30", stdout=out)
 
-        from icv_waf.models import RequestLog
+        from django_waf.models import RequestLog
 
         # Nothing should have been deleted.
         assert RequestLog.objects.count() == 4
@@ -248,10 +248,10 @@ class TestPruneLogsCommand:
             RequestLogFactory(timestamp=cutoff - timezone.timedelta(hours=1))
         RequestLogFactory()  # recent — must survive
 
-        from icv_waf.models import RequestLog
+        from django_waf.models import RequestLog
 
         out = StringIO()
-        call_command("icv_waf_prune_logs", "--days=30", stdout=out)
+        call_command("django_waf_prune_logs", "--days=30", stdout=out)
 
         assert RequestLog.objects.count() == 1
         output = out.getvalue()
@@ -263,16 +263,16 @@ class TestPruneLogsCommand:
         cutoff = timezone.now() - timezone.timedelta(days=8)
         RequestLogFactory(timestamp=cutoff - timezone.timedelta(hours=1))
 
-        from icv_waf.models import RequestLog
+        from django_waf.models import RequestLog
 
-        call_command("icv_waf_prune_logs", "--days=7")
+        call_command("django_waf_prune_logs", "--days=7")
         assert RequestLog.objects.count() == 0
 
     @pytest.mark.django_db
     def test_zero_days_raises_command_error(self):
         """--days=0 is rejected with a CommandError."""
         with pytest.raises(CommandError, match="positive integer"):
-            call_command("icv_waf_prune_logs", "--days=0")
+            call_command("django_waf_prune_logs", "--days=0")
 
     @pytest.mark.django_db
     def test_no_old_records_reports_zero_deleted(self):
@@ -280,42 +280,42 @@ class TestPruneLogsCommand:
         RequestLogFactory()  # recent only
 
         out = StringIO()
-        call_command("icv_waf_prune_logs", "--days=30", stdout=out)
+        call_command("django_waf_prune_logs", "--days=30", stdout=out)
 
         assert "Deleted 0 log record(s)" in out.getvalue()
 
     @pytest.mark.django_db
     def test_default_retention_uses_conf_value(self):
-        """When --days is omitted the command reads ICV_WAF_LOG_RETENTION_DAYS from conf."""
-        from icv_waf import conf
+        """When --days is omitted the command reads DJANGO_WAF_LOG_RETENTION_DAYS from conf."""
+        from django_waf import conf
 
-        default_days = conf.ICV_WAF_LOG_RETENTION_DAYS
+        default_days = conf.DJANGO_WAF_LOG_RETENTION_DAYS
         cutoff = timezone.now() - timezone.timedelta(days=default_days + 1)
         RequestLogFactory(timestamp=cutoff)
 
-        from icv_waf.models import RequestLog
+        from django_waf.models import RequestLog
 
-        call_command("icv_waf_prune_logs")
+        call_command("django_waf_prune_logs")
         assert RequestLog.objects.count() == 0
 
 
 # ---------------------------------------------------------------------------
-# icv_waf_sync_feed
+# django_waf_sync_feed
 # ---------------------------------------------------------------------------
 
 
 class TestSyncFeedCommand:
-    """Tests for the ``icv_waf_sync_feed`` management command."""
+    """Tests for the ``django_waf_sync_feed`` management command."""
 
     @pytest.mark.django_db
     def test_skips_when_feed_disabled_and_no_url(self):
         """Command exits early with a warning when feed is disabled and no URL given."""
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", False),
-            patch("icv_waf.services.threat_feed.sync_feed") as mock_sync,
+            patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", False),
+            patch("django_waf.services.threat_feed.sync_feed") as mock_sync,
         ):
             out = StringIO()
-            call_command("icv_waf_sync_feed", stdout=out)
+            call_command("django_waf_sync_feed", stdout=out)
 
         mock_sync.assert_not_called()
         assert "Skipping sync" in out.getvalue()
@@ -325,11 +325,11 @@ class TestSyncFeedCommand:
         """Dry-run prints the notice before calling the service."""
         summary = {"created": 0, "updated": 0, "expired": 0, "skipped": 0}
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", True),
-            patch("icv_waf.services.threat_feed.sync_feed", return_value=summary),
+            patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", True),
+            patch("django_waf.services.threat_feed.sync_feed", return_value=summary),
         ):
             out = StringIO()
-            call_command("icv_waf_sync_feed", "--dry-run", stdout=out)
+            call_command("django_waf_sync_feed", "--dry-run", stdout=out)
 
         assert "dry-run" in out.getvalue()
 
@@ -338,11 +338,11 @@ class TestSyncFeedCommand:
         """Normal run calls sync_feed and reports the summary."""
         summary = {"created": 4, "updated": 1, "expired": 2, "skipped": 3}
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", True),
-            patch("icv_waf.services.threat_feed.sync_feed", return_value=summary) as mock_sync,
+            patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", True),
+            patch("django_waf.services.threat_feed.sync_feed", return_value=summary) as mock_sync,
         ):
             out = StringIO()
-            call_command("icv_waf_sync_feed", stdout=out)
+            call_command("django_waf_sync_feed", stdout=out)
 
         mock_sync.assert_called_once_with(feed_url=None, min_confidence=None)
         output = out.getvalue()
@@ -357,12 +357,12 @@ class TestSyncFeedCommand:
         summary = {"created": 1, "updated": 0, "expired": 0, "skipped": 0}
         # Feed disabled at conf level — but --feed-url should bypass the guard.
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", False),
-            patch("icv_waf.services.threat_feed.sync_feed", return_value=summary) as mock_sync,
+            patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", False),
+            patch("django_waf.services.threat_feed.sync_feed", return_value=summary) as mock_sync,
         ):
             out = StringIO()
             call_command(
-                "icv_waf_sync_feed",
+                "django_waf_sync_feed",
                 "--feed-url=https://example.com/feed.json",
                 stdout=out,
             )
@@ -378,10 +378,10 @@ class TestSyncFeedCommand:
         """--min-confidence is forwarded to sync_feed."""
         summary = {"created": 0, "updated": 0, "expired": 0, "skipped": 10}
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", True),
-            patch("icv_waf.services.threat_feed.sync_feed", return_value=summary) as mock_sync,
+            patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", True),
+            patch("django_waf.services.threat_feed.sync_feed", return_value=summary) as mock_sync,
         ):
-            call_command("icv_waf_sync_feed", "--min-confidence=0.9")
+            call_command("django_waf_sync_feed", "--min-confidence=0.9")
 
         mock_sync.assert_called_once_with(feed_url=None, min_confidence=0.9)
 
@@ -389,27 +389,27 @@ class TestSyncFeedCommand:
     def test_service_exception_raises_command_error(self):
         """A service exception is converted to CommandError."""
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", True),
+            patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", True),
             patch(
-                "icv_waf.services.threat_feed.sync_feed",
+                "django_waf.services.threat_feed.sync_feed",
                 side_effect=ConnectionError("timeout"),
             ),
             pytest.raises(CommandError, match="Feed sync failed"),
         ):
-            call_command("icv_waf_sync_feed")
+            call_command("django_waf_sync_feed")
 
     @pytest.mark.django_db
     def test_partial_summary_keys_default_to_zero(self):
         """A summary dict with missing keys defaults missing counts to zero without error."""
         with (
-            patch("icv_waf.conf.ICV_WAF_FEED_ENABLED", True),
+            patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", True),
             patch(
-                "icv_waf.services.threat_feed.sync_feed",
+                "django_waf.services.threat_feed.sync_feed",
                 return_value={"created": 2},
             ),
         ):
             out = StringIO()
-            call_command("icv_waf_sync_feed", stdout=out)
+            call_command("django_waf_sync_feed", stdout=out)
 
         output = out.getvalue()
         assert "2 created" in output
@@ -419,21 +419,21 @@ class TestSyncFeedCommand:
 
 
 # ---------------------------------------------------------------------------
-# icv_waf_block
+# django_waf_block
 # ---------------------------------------------------------------------------
 
 
 class TestBlockCommand:
-    """Tests for the ``icv_waf_block`` management command."""
+    """Tests for the ``django_waf_block`` management command."""
 
     @pytest.mark.django_db
     def test_block_creates_ip_rule(self):
         """Blocking a plain IP creates a BlockRule with rule_type=ip, match_type=exact."""
-        from icv_waf.enums import RuleSource, RuleType
-        from icv_waf.models import BlockRule
+        from django_waf.enums import RuleSource, RuleType
+        from django_waf.models import BlockRule
 
         out = StringIO()
-        call_command("icv_waf_block", "203.0.113.42", stdout=out)
+        call_command("django_waf_block", "203.0.113.42", stdout=out)
 
         rule = BlockRule.objects.get(pattern="203.0.113.42")
         assert rule.rule_type == RuleType.IP
@@ -449,10 +449,10 @@ class TestBlockCommand:
     @pytest.mark.django_db
     def test_block_creates_cidr_rule(self):
         """Blocking a CIDR range creates a rule with rule_type=cidr, match_type=cidr."""
-        from icv_waf.enums import RuleType
-        from icv_waf.models import BlockRule
+        from django_waf.enums import RuleType
+        from django_waf.models import BlockRule
 
-        call_command("icv_waf_block", "10.0.0.0/24")
+        call_command("django_waf_block", "10.0.0.0/24")
 
         rule = BlockRule.objects.get(pattern="10.0.0.0/24")
         assert rule.rule_type == RuleType.CIDR
@@ -461,10 +461,10 @@ class TestBlockCommand:
     @pytest.mark.django_db
     def test_block_with_ttl_sets_expires_at(self):
         """--ttl converts hours into an absolute expires_at timestamp."""
-        from icv_waf.models import BlockRule
+        from django_waf.models import BlockRule
 
         out = StringIO()
-        call_command("icv_waf_block", "203.0.113.99", "--ttl", "24", stdout=out)
+        call_command("django_waf_block", "203.0.113.99", "--ttl", "24", stdout=out)
 
         rule = BlockRule.objects.get(pattern="203.0.113.99")
         assert rule.expires_at is not None
@@ -476,11 +476,11 @@ class TestBlockCommand:
     @pytest.mark.django_db
     def test_block_with_reason_populates_notes(self):
         """--reason is stored in the rule's notes field and echoed to stdout."""
-        from icv_waf.models import BlockRule
+        from django_waf.models import BlockRule
 
         out = StringIO()
         call_command(
-            "icv_waf_block",
+            "django_waf_block",
             "203.0.113.10",
             "--reason",
             "scanner from threat feed",
@@ -494,10 +494,10 @@ class TestBlockCommand:
     @pytest.mark.django_db
     def test_block_with_challenge_action(self):
         """--action=challenge produces a challenge rule rather than a block."""
-        from icv_waf.models import BlockRule
+        from django_waf.models import BlockRule
 
         out = StringIO()
-        call_command("icv_waf_block", "203.0.113.11", "--action", "challenge", stdout=out)
+        call_command("django_waf_block", "203.0.113.11", "--action", "challenge", stdout=out)
 
         rule = BlockRule.objects.get(pattern="203.0.113.11")
         assert rule.action == "challenge"
@@ -506,11 +506,11 @@ class TestBlockCommand:
     @pytest.mark.django_db
     def test_block_idempotent_updates_existing_rule(self):
         """Blocking the same pattern twice updates the existing rule (update_or_create)."""
-        from icv_waf.models import BlockRule
+        from django_waf.models import BlockRule
 
-        call_command("icv_waf_block", "203.0.113.50", "--reason", "first")
+        call_command("django_waf_block", "203.0.113.50", "--reason", "first")
         out = StringIO()
-        call_command("icv_waf_block", "203.0.113.50", "--reason", "second", stdout=out)
+        call_command("django_waf_block", "203.0.113.50", "--reason", "second", stdout=out)
 
         # Only one rule exists
         rules = BlockRule.objects.filter(pattern="203.0.113.50")
@@ -523,31 +523,31 @@ class TestBlockCommand:
         """A BlockRule.update_or_create exception is converted to CommandError."""
         with (
             patch(
-                "icv_waf.models.BlockRule.objects.update_or_create",
+                "django_waf.models.BlockRule.objects.update_or_create",
                 side_effect=RuntimeError("db error"),
             ),
             pytest.raises(CommandError, match="Failed to create rule"),
         ):
-            call_command("icv_waf_block", "203.0.113.200")
+            call_command("django_waf_block", "203.0.113.200")
 
 
 # ---------------------------------------------------------------------------
-# icv_waf_unblock
+# django_waf_unblock
 # ---------------------------------------------------------------------------
 
 
 class TestUnblockCommand:
-    """Tests for the ``icv_waf_unblock`` management command."""
+    """Tests for the ``django_waf_unblock`` management command."""
 
     @pytest.mark.django_db
     def test_unblock_deactivates_matching_rules(self):
         """Without --delete, matching rules are deactivated (is_active=False)."""
-        from icv_waf.models import BlockRule
+        from django_waf.models import BlockRule
 
         rule = BlockRuleFactory(pattern="198.51.100.1", is_active=True)
 
         out = StringIO()
-        call_command("icv_waf_unblock", "198.51.100.1", stdout=out)
+        call_command("django_waf_unblock", "198.51.100.1", stdout=out)
 
         rule.refresh_from_db()
         assert rule.is_active is False
@@ -558,12 +558,12 @@ class TestUnblockCommand:
     @pytest.mark.django_db
     def test_unblock_with_delete_removes_rules(self):
         """--delete removes matching rules from the database entirely."""
-        from icv_waf.models import BlockRule
+        from django_waf.models import BlockRule
 
         rule = BlockRuleFactory(pattern="198.51.100.2", is_active=True)
 
         out = StringIO()
-        call_command("icv_waf_unblock", "198.51.100.2", "--delete", stdout=out)
+        call_command("django_waf_unblock", "198.51.100.2", "--delete", stdout=out)
 
         assert not BlockRule.objects.filter(pk=rule.pk).exists()
         assert "Deleted 1 rule" in out.getvalue()
@@ -572,19 +572,19 @@ class TestUnblockCommand:
     def test_unblock_no_matching_rules_reports_nothing_to_do(self):
         """When no active rule matches, the command reports and exits cleanly."""
         out = StringIO()
-        call_command("icv_waf_unblock", "198.51.100.99", stdout=out)
+        call_command("django_waf_unblock", "198.51.100.99", stdout=out)
 
         assert "No active rules found" in out.getvalue()
 
     @pytest.mark.django_db
     def test_unblock_ignores_already_inactive_rules(self):
         """Rules that are already inactive are not counted or touched."""
-        from icv_waf.models import BlockRule
+        from django_waf.models import BlockRule
 
         BlockRuleFactory(pattern="198.51.100.3", is_active=False)
 
         out = StringIO()
-        call_command("icv_waf_unblock", "198.51.100.3", stdout=out)
+        call_command("django_waf_unblock", "198.51.100.3", stdout=out)
 
         # The inactive rule survives untouched
         assert BlockRule.objects.filter(pattern="198.51.100.3", is_active=False).exists()
@@ -597,18 +597,18 @@ class TestUnblockCommand:
         BlockRuleFactory(pattern="198.51.100.4", is_active=True, action="challenge")
 
         out = StringIO()
-        call_command("icv_waf_unblock", "198.51.100.4", stdout=out)
+        call_command("django_waf_unblock", "198.51.100.4", stdout=out)
 
         assert "Deactivated 2 rule" in out.getvalue()
 
 
 # ---------------------------------------------------------------------------
-# icv_waf_install_geoip
+# django_waf_install_geoip
 # ---------------------------------------------------------------------------
 
 
 class TestInstallGeoipCommand:
-    """Tests for the ``icv_waf_install_geoip`` management command.
+    """Tests for the ``django_waf_install_geoip`` management command.
 
     The command delegates all work to ``services.geoip.install_geoip_database``
     — these tests mock that function and verify argument wiring and output.
@@ -616,38 +616,38 @@ class TestInstallGeoipCommand:
 
     def test_missing_license_key_raises_command_error(self):
         """A missing licence key surfaces as a CommandError with the signup link."""
-        from icv_waf.services.geoip import GeoIPLicenseMissingError
+        from django_waf.services.geoip import GeoIPLicenseMissingError
 
         with (
             patch(
-                "icv_waf.services.geoip.install_geoip_database",
+                "django_waf.services.geoip.install_geoip_database",
                 side_effect=GeoIPLicenseMissingError(
                     "No MaxMind licence key configured. Sign up at https://www.maxmind.com/en/geolite2/signup"
                 ),
             ),
             pytest.raises(CommandError, match="Sign up at"),
         ):
-            call_command("icv_waf_install_geoip")
+            call_command("django_waf_install_geoip")
 
     def test_missing_geoip2_package_raises_command_error(self):
         """A missing geoip2 import surfaces as a CommandError with the pip hint."""
-        from icv_waf.services.geoip import GeoIPNotInstalledError
+        from django_waf.services.geoip import GeoIPNotInstalledError
 
         with (
             patch(
-                "icv_waf.services.geoip.install_geoip_database",
+                "django_waf.services.geoip.install_geoip_database",
                 side_effect=GeoIPNotInstalledError("pip install django-waf[geoip]"),
             ),
             pytest.raises(CommandError, match="pip install"),
         ):
-            call_command("icv_waf_install_geoip")
+            call_command("django_waf_install_geoip")
 
     def test_successful_install_prints_path_and_size(self):
         """A successful install prints the destination path, size, and build date."""
         with patch(
-            "icv_waf.services.geoip.install_geoip_database",
+            "django_waf.services.geoip.install_geoip_database",
             return_value={
-                "path": "/var/lib/icv-waf/GeoLite2-Country.mmdb",
+                "path": "/var/lib/django-waf/GeoLite2-Country.mmdb",
                 "size_bytes": 6_291_456,
                 "skipped": False,
                 "edition": "GeoLite2-Country",
@@ -655,11 +655,11 @@ class TestInstallGeoipCommand:
             },
         ) as mock_install:
             out = StringIO()
-            call_command("icv_waf_install_geoip", stdout=out)
+            call_command("django_waf_install_geoip", stdout=out)
 
         output = out.getvalue()
         assert "Installed GeoLite2-Country" in output
-        assert "/var/lib/icv-waf/GeoLite2-Country.mmdb" in output
+        assert "/var/lib/django-waf/GeoLite2-Country.mmdb" in output
         assert "6.0 MB" in output
         assert "Database build:" in output
         assert "restart" in output.lower()
@@ -673,9 +673,9 @@ class TestInstallGeoipCommand:
     def test_skipped_output_when_file_is_fresh(self):
         """When the service reports skipped=True, the command says so and does not print install details."""
         with patch(
-            "icv_waf.services.geoip.install_geoip_database",
+            "django_waf.services.geoip.install_geoip_database",
             return_value={
-                "path": "/var/lib/icv-waf/GeoLite2-Country.mmdb",
+                "path": "/var/lib/django-waf/GeoLite2-Country.mmdb",
                 "size_bytes": 6_291_456,
                 "skipped": True,
                 "edition": "GeoLite2-Country",
@@ -683,7 +683,7 @@ class TestInstallGeoipCommand:
             },
         ):
             out = StringIO()
-            call_command("icv_waf_install_geoip", "--if-older-than", "7", stdout=out)
+            call_command("django_waf_install_geoip", "--if-older-than", "7", stdout=out)
 
         output = out.getvalue()
         assert "fresh" in output.lower()
@@ -692,7 +692,7 @@ class TestInstallGeoipCommand:
     def test_license_key_cli_arg_forwarded(self):
         """--license-key is passed through to the service."""
         with patch(
-            "icv_waf.services.geoip.install_geoip_database",
+            "django_waf.services.geoip.install_geoip_database",
             return_value={
                 "path": "/tmp/out.mmdb",
                 "size_bytes": 1000,
@@ -701,14 +701,14 @@ class TestInstallGeoipCommand:
                 "build_epoch": None,
             },
         ) as mock_install:
-            call_command("icv_waf_install_geoip", "--license-key", "my-key")
+            call_command("django_waf_install_geoip", "--license-key", "my-key")
 
         assert mock_install.call_args.kwargs["license_key"] == "my-key"
 
     def test_output_path_cli_arg_forwarded(self):
         """--output-path is passed through to the service."""
         with patch(
-            "icv_waf.services.geoip.install_geoip_database",
+            "django_waf.services.geoip.install_geoip_database",
             return_value={
                 "path": "/etc/geoip/country.mmdb",
                 "size_bytes": 1000,
@@ -717,14 +717,14 @@ class TestInstallGeoipCommand:
                 "build_epoch": None,
             },
         ) as mock_install:
-            call_command("icv_waf_install_geoip", "--output-path", "/etc/geoip/country.mmdb")
+            call_command("django_waf_install_geoip", "--output-path", "/etc/geoip/country.mmdb")
 
         assert mock_install.call_args.kwargs["output_path"] == "/etc/geoip/country.mmdb"
 
     def test_if_older_than_cli_arg_forwarded(self):
         """--if-older-than is passed through to the service."""
         with patch(
-            "icv_waf.services.geoip.install_geoip_database",
+            "django_waf.services.geoip.install_geoip_database",
             return_value={
                 "path": "/tmp/out.mmdb",
                 "size_bytes": 1000,
@@ -733,14 +733,14 @@ class TestInstallGeoipCommand:
                 "build_epoch": None,
             },
         ) as mock_install:
-            call_command("icv_waf_install_geoip", "--if-older-than", "14")
+            call_command("django_waf_install_geoip", "--if-older-than", "14")
 
         assert mock_install.call_args.kwargs["if_older_than_days"] == 14
 
     def test_quiet_flag_suppresses_output(self):
         """--quiet emits no stdout on success."""
         with patch(
-            "icv_waf.services.geoip.install_geoip_database",
+            "django_waf.services.geoip.install_geoip_database",
             return_value={
                 "path": "/tmp/out.mmdb",
                 "size_bytes": 1000,
@@ -750,19 +750,19 @@ class TestInstallGeoipCommand:
             },
         ):
             out = StringIO()
-            call_command("icv_waf_install_geoip", "--quiet", stdout=out)
+            call_command("django_waf_install_geoip", "--quiet", stdout=out)
 
         assert out.getvalue() == ""
 
     def test_download_error_raises_command_error(self):
         """A GeoIPDownloadError surfaces as a CommandError with the 'Download failed' prefix."""
-        from icv_waf.services.geoip import GeoIPDownloadError
+        from django_waf.services.geoip import GeoIPDownloadError
 
         with (
             patch(
-                "icv_waf.services.geoip.install_geoip_database",
+                "django_waf.services.geoip.install_geoip_database",
                 side_effect=GeoIPDownloadError("MaxMind download failed with HTTP 503."),
             ),
             pytest.raises(CommandError, match="Download failed: MaxMind"),
         ):
-            call_command("icv_waf_install_geoip")
+            call_command("django_waf_install_geoip")

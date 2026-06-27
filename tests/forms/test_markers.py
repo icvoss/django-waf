@@ -20,7 +20,7 @@ def _redis():
 
 class TestIssueMarker:
     def test_setex_called_with_namespaced_key_and_ttl(self):
-        from icv_waf.forms.services.markers import issue_marker
+        from django_waf.forms.services.markers import issue_marker
 
         r = _redis()
         issue_marker(r, nonce="abc", ttl_seconds=3600)
@@ -28,7 +28,7 @@ class TestIssueMarker:
         r.setex.assert_called_once_with("waf:form:token:abc", 3600, "1")
 
     def test_distinct_nonces_use_distinct_keys(self):
-        from icv_waf.forms.services.markers import issue_marker
+        from django_waf.forms.services.markers import issue_marker
 
         r = _redis()
         issue_marker(r, nonce="aaa", ttl_seconds=60)
@@ -40,7 +40,7 @@ class TestIssueMarker:
 
 class TestMarkerExists:
     def test_returns_true_when_redis_exists_returns_one(self):
-        from icv_waf.forms.services.markers import marker_exists
+        from django_waf.forms.services.markers import marker_exists
 
         r = _redis()
         r.exists.return_value = 1
@@ -49,7 +49,7 @@ class TestMarkerExists:
         r.exists.assert_called_once_with("waf:form:token:abc")
 
     def test_returns_false_when_redis_exists_returns_zero(self):
-        from icv_waf.forms.services.markers import marker_exists
+        from django_waf.forms.services.markers import marker_exists
 
         r = _redis()
         r.exists.return_value = 0
@@ -58,7 +58,7 @@ class TestMarkerExists:
 
     def test_returns_false_for_none_response(self):
         """Defensive — some Redis clients return None instead of 0."""
-        from icv_waf.forms.services.markers import marker_exists
+        from django_waf.forms.services.markers import marker_exists
 
         r = _redis()
         r.exists.return_value = None
@@ -68,7 +68,7 @@ class TestMarkerExists:
 
 class TestConsumeMarker:
     def test_delete_called_with_namespaced_key(self):
-        from icv_waf.forms.services.markers import consume_marker
+        from django_waf.forms.services.markers import consume_marker
 
         r = _redis()
         consume_marker(r, "abc")
@@ -77,7 +77,7 @@ class TestConsumeMarker:
 
     def test_consume_does_not_touch_other_redis_state(self):
         """Marker consumption must NOT trigger setex or exists calls."""
-        from icv_waf.forms.services.markers import consume_marker
+        from django_waf.forms.services.markers import consume_marker
 
         r = _redis()
         consume_marker(r, "abc")

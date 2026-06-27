@@ -43,7 +43,7 @@ def _flagged_protection_for(form_id):
     is the decorator's redirect-and-replay behaviour, not the
     orchestrator's verdict logic (which has its own tests).
     """
-    from icv_waf.forms.protection import (
+    from django_waf.forms.protection import (
         FormEvaluationResult,
         FormProtection,
         FormVerdict,
@@ -75,11 +75,11 @@ def _flagged_protection_for(form_id):
 class TestFlaggedRedirect:
     def test_flagged_post_redirects_to_challenge(self, settings):
         """FLAGGED + session + setting True → 302 to /waf/challenge/?form_replay=..."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import _registry_get, waf_protect_post
-        from icv_waf.forms.protection import FormEvaluationResult, FormVerdict
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import _registry_get, waf_protect_post
+        from django_waf.forms.protection import FormEvaluationResult, FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             form_id = "contact-flagged-redirect"
 
             @waf_protect_post(
@@ -119,14 +119,14 @@ class TestFlaggedRedirect:
     def test_flagged_without_session_falls_back_to_view(self, settings):
         """If the request has no session, the decorator falls back to
         calling the view (operators see FLAGGED in request.waf_form_result)."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import (
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import (
             _registry_get,
             waf_protect_post,
         )
-        from icv_waf.forms.protection import FormEvaluationResult, FormVerdict
+        from django_waf.forms.protection import FormEvaluationResult, FormVerdict
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             form_id = "contact-no-session"
 
             @waf_protect_post(
@@ -157,17 +157,17 @@ class TestFlaggedRedirect:
         assert response.content.decode() == "view-ran"
 
     def test_challenge_redirect_disabled_setting(self, settings):
-        """ICV_WAF_FORM_CHALLENGE_ON_FLAG=False → no redirect; view runs."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import (
+        """DJANGO_WAF_FORM_CHALLENGE_ON_FLAG=False → no redirect; view runs."""
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import (
             _registry_get,
             waf_protect_post,
         )
-        from icv_waf.forms.protection import FormEvaluationResult, FormVerdict
+        from django_waf.forms.protection import FormEvaluationResult, FormVerdict
 
         with (
-            patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"),
-            patch.object(conf_mod, "ICV_WAF_FORM_CHALLENGE_ON_FLAG", False),
+            patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"),
+            patch.object(conf_mod, "DJANGO_WAF_FORM_CHALLENGE_ON_FLAG", False),
         ):
             form_id = "contact-challenge-disabled"
 
@@ -201,20 +201,20 @@ class TestFlaggedRedirect:
 class TestReplayDispatch:
     def test_valid_replay_invokes_view_as_post(self, settings):
         """GET ?form_replay=<valid> + matching session → view sees POST."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import (
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import (
             _registry_get,
             waf_protect_post,
         )
-        from icv_waf.forms.protection import FormEvaluationResult, FormVerdict
-        from icv_waf.forms.services.replay import (
+        from django_waf.forms.protection import FormEvaluationResult, FormVerdict
+        from django_waf.forms.services.replay import (
             issue_replay_token,
             store_in_session,
         )
 
         captured = {}
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             form_id = "contact-replay-valid"
 
             @waf_protect_post(
@@ -250,12 +250,12 @@ class TestReplayDispatch:
 
     def test_invalid_replay_falls_back_to_normal_get(self, settings):
         """GET ?form_replay=garbage → no replay → view sees GET."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import waf_protect_post
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import waf_protect_post
 
         captured = {}
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
 
             @waf_protect_post(
                 form_id="contact-replay-invalid",
@@ -277,15 +277,15 @@ class TestReplayDispatch:
     def test_replay_consumed_after_use(self, settings):
         """The session record is removed after a successful replay so
         the same token can't be re-used."""
-        import icv_waf.conf as conf_mod
-        from icv_waf.forms.decorators import _registry_get, waf_protect_post
-        from icv_waf.forms.protection import FormEvaluationResult, FormVerdict
-        from icv_waf.forms.services.replay import (
+        import django_waf.conf as conf_mod
+        from django_waf.forms.decorators import _registry_get, waf_protect_post
+        from django_waf.forms.protection import FormEvaluationResult, FormVerdict
+        from django_waf.forms.services.replay import (
             issue_replay_token,
             store_in_session,
         )
 
-        with patch.object(conf_mod, "ICV_WAF_SIGNING_KEY", "k"):
+        with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             form_id = "contact-replay-consumed"
 
             @waf_protect_post(

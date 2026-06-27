@@ -27,7 +27,7 @@ def _redis():
 
 
 def _ctx(*, ip="1.2.3.4", config=None):
-    from icv_waf.forms.defences.base import EvaluateContext
+    from django_waf.forms.defences.base import EvaluateContext
 
     request = MagicMock()
     request.META = {"REMOTE_ADDR": ip}
@@ -46,7 +46,7 @@ def _ctx(*, ip="1.2.3.4", config=None):
 
 class TestCounters:
     def test_record_credential_failure_increments_both_counters(self):
-        from icv_waf.forms.services.counters import record_credential_failure
+        from django_waf.forms.services.counters import record_credential_failure
 
         redis = _redis()
         redis.pipeline.return_value.execute.return_value = [3, True, 7, True]
@@ -63,7 +63,7 @@ class TestCounters:
     def test_record_credential_failure_hashes_identifier(self):
         """The Redis key for the account counter must contain a HASH,
         not the plain typed identifier."""
-        from icv_waf.forms.services.counters import record_credential_failure
+        from django_waf.forms.services.counters import record_credential_failure
 
         redis = _redis()
         record_credential_failure(redis, identifier="admin@example.com", ip="1.2.3.4", window_seconds=900)
@@ -78,7 +78,7 @@ class TestCounters:
 
     def test_redis_failure_returns_zero_zero(self):
         """Redis pipeline failure must return (0, 0), not raise."""
-        from icv_waf.forms.services.counters import record_credential_failure
+        from django_waf.forms.services.counters import record_credential_failure
 
         redis = _redis()
         redis.pipeline.return_value.execute.side_effect = RuntimeError("redis down")
@@ -88,7 +88,7 @@ class TestCounters:
 
     def test_empty_identifier_does_not_touch_redis(self):
         """No identifier → no-op (defensive)."""
-        from icv_waf.forms.services.counters import record_credential_failure
+        from django_waf.forms.services.counters import record_credential_failure
 
         redis = _redis()
         record_credential_failure(redis, identifier="", ip="1.2.3.4", window_seconds=900)
@@ -96,14 +96,14 @@ class TestCounters:
         redis.pipeline.assert_not_called()
 
     def test_credential_ip_count_reads_without_incrementing(self):
-        from icv_waf.forms.services.counters import credential_ip_count
+        from django_waf.forms.services.counters import credential_ip_count
 
         redis = _redis()
         redis.get.return_value = b"15"
         assert credential_ip_count(redis, ip="1.2.3.4") == 15
 
     def test_credential_ip_count_missing_key_returns_zero(self):
-        from icv_waf.forms.services.counters import credential_ip_count
+        from django_waf.forms.services.counters import credential_ip_count
 
         redis = _redis()
         redis.get.return_value = None
@@ -117,12 +117,12 @@ class TestCounters:
 
 class TestCredentialThrottleDefence:
     def _defence(self, redis_client):
-        from icv_waf.forms.defences.credential_throttle import CredentialThrottleDefence
+        from django_waf.forms.defences.credential_throttle import CredentialThrottleDefence
 
         return CredentialThrottleDefence(redis_client_factory=lambda: redis_client)
 
     def test_passes_when_below_threshold(self):
-        from icv_waf.forms.defences.credential_throttle import CredentialThrottleDefence
+        from django_waf.forms.defences.credential_throttle import CredentialThrottleDefence
 
         redis = _redis()
         redis.get.return_value = b"5"  # well below default limit of 20
@@ -131,7 +131,7 @@ class TestCredentialThrottleDefence:
         assert defence.evaluate(_ctx()).verdict == "pass"
 
     def test_flags_when_ip_threshold_crossed(self):
-        from icv_waf.forms.defences.credential_throttle import CredentialThrottleDefence
+        from django_waf.forms.defences.credential_throttle import CredentialThrottleDefence
 
         redis = _redis()
         redis.get.return_value = b"25"  # above default limit of 20
@@ -144,7 +144,7 @@ class TestCredentialThrottleDefence:
 
     def test_per_form_ip_limit_override(self):
         """Per-form config can lower the threshold for tighter forms."""
-        from icv_waf.forms.defences.credential_throttle import CredentialThrottleDefence
+        from django_waf.forms.defences.credential_throttle import CredentialThrottleDefence
 
         redis = _redis()
         redis.get.return_value = b"5"
@@ -155,7 +155,7 @@ class TestCredentialThrottleDefence:
 
     def test_redis_failure_passes(self):
         """Counter unreadable → fail-open (don't block legitimate logins)."""
-        from icv_waf.forms.defences.credential_throttle import CredentialThrottleDefence
+        from django_waf.forms.defences.credential_throttle import CredentialThrottleDefence
 
         redis = _redis()
         redis.get.side_effect = RuntimeError("redis down")
@@ -164,7 +164,7 @@ class TestCredentialThrottleDefence:
         assert defence.evaluate(_ctx()).verdict == "pass"
 
     def test_missing_ip_passes(self):
-        from icv_waf.forms.defences.credential_throttle import CredentialThrottleDefence
+        from django_waf.forms.defences.credential_throttle import CredentialThrottleDefence
 
         redis = _redis()
         defence = CredentialThrottleDefence(redis_client_factory=lambda: redis)
@@ -180,7 +180,7 @@ class TestCredentialThrottleDefence:
         wildly different identifiers but the same per-IP count
         produce identical outcomes.
         """
-        from icv_waf.forms.defences.credential_throttle import CredentialThrottleDefence
+        from django_waf.forms.defences.credential_throttle import CredentialThrottleDefence
 
         redis = _redis()
         redis.get.return_value = b"25"

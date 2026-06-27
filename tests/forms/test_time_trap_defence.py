@@ -19,7 +19,7 @@ def _payload(render_time):
 
 
 def _ctx(payload, config=None):
-    from icv_waf.forms.defences.base import EvaluateContext
+    from django_waf.forms.defences.base import EvaluateContext
 
     return EvaluateContext(
         form_id="c",
@@ -42,8 +42,8 @@ def _ago(seconds):
 class TestRenderFields:
     def test_returns_empty_dict(self):
         """TimeTrap relies on the render-token timestamp; no fields of its own."""
-        from icv_waf.forms.defences.base import RenderContext
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.base import RenderContext
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         defence = TimeTrapDefence()
         fields = defence.render_fields(RenderContext(form_id="c", request=MagicMock()))
@@ -59,7 +59,7 @@ class TestRenderFields:
 class TestEvaluateTruthTable:
     def test_too_fast_blocks(self):
         """delta < 0.5s → hard block."""
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         defence = TimeTrapDefence()
         outcome = defence.evaluate(_ctx(_payload(_ago(0.1))))
@@ -70,7 +70,7 @@ class TestEvaluateTruthTable:
 
     def test_fast_band_flags(self):
         """0.5s ≤ delta < min → flag."""
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         # Default min is 1.5s; 1.0s is in the fast band.
         defence = TimeTrapDefence()
@@ -81,7 +81,7 @@ class TestEvaluateTruthTable:
         assert outcome.score == 2.0
 
     def test_within_min_max_passes(self):
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         defence = TimeTrapDefence()
         outcome = defence.evaluate(_ctx(_payload(_ago(10.0))))
@@ -90,7 +90,7 @@ class TestEvaluateTruthTable:
 
     def test_expired_flags(self):
         """delta > max → flag with expired reason."""
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         # Default max is 3600s; 7200 (2h) is well past.
         defence = TimeTrapDefence()
@@ -104,7 +104,7 @@ class TestEvaluateTruthTable:
 
         Better to flag a false positive than ignore a genuine replay.
         """
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         future = datetime.now(tz=UTC) + timedelta(seconds=30)
         defence = TimeTrapDefence()
@@ -122,7 +122,7 @@ class TestEvaluateTruthTable:
 class TestConfigurable:
     def test_per_form_min_overrides_default(self):
         """Newsletter-style short forms set min_fill_seconds lower."""
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         defence = TimeTrapDefence()
         outcome = defence.evaluate(_ctx(_payload(_ago(0.7)), config={"min_fill_seconds": 0.6}))
@@ -132,7 +132,7 @@ class TestConfigurable:
 
     def test_per_form_max_overrides_default(self):
         """A form with a tight max flags submissions sooner."""
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         defence = TimeTrapDefence()
         outcome = defence.evaluate(_ctx(_payload(_ago(120)), config={"max_fill_seconds": 60}))
@@ -145,7 +145,7 @@ class TestConfigurable:
         The floor is a security invariant — a configuration mistake
         shouldn't lower it.
         """
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         defence = TimeTrapDefence()
         outcome = defence.evaluate(_ctx(_payload(_ago(0.1)), config={"min_fill_seconds": 0.0}))
@@ -164,7 +164,7 @@ class TestDefensive:
     def test_missing_token_payload_passes_silently(self):
         """No token_payload means RenderTokenDefence already blocked.
         Don't compound the penalty — just pass."""
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         defence = TimeTrapDefence()
         outcome = defence.evaluate(_ctx(payload=None))
@@ -174,7 +174,7 @@ class TestDefensive:
     def test_naive_render_time_treated_as_utc(self):
         """Defensive: if a future bug produces a naive datetime, the
         defence must not crash. Treat as UTC."""
-        from icv_waf.forms.defences.time_trap import TimeTrapDefence
+        from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         # Strip tzinfo from a known-aware datetime so we get a naive value
         # without using the deprecated datetime.utcnow().
