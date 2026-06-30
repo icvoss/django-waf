@@ -244,16 +244,16 @@ class Migration(migrations.Migration):
                     ),
                     models.Index(
                         fields=["source", "is_active"],
-                        name="django_waf_br_source_active_idx",
+                        name="django_waf_br_src_active_idx",
                     ),
                     models.Index(
                         fields=["priority", "is_active"],
-                        name="django_waf_br_priority_active_idx",
+                        name="django_waf_br_prio_active_idx",
                     ),
                     models.Index(
                         condition=models.Q(("is_active", True)),
                         fields=["expires_at"],
-                        name="django_waf_br_expires_active_idx",
+                        name="django_waf_br_exp_active_idx",
                     ),
                 ],
             },

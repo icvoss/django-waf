@@ -171,12 +171,12 @@ class BlockRule(BaseModel):
         verbose_name_plural = _("block rules")
         indexes = [
             models.Index(fields=["rule_type", "is_active"], name="django_waf_br_type_active_idx"),
-            models.Index(fields=["source", "is_active"], name="django_waf_br_source_active_idx"),
-            models.Index(fields=["priority", "is_active"], name="django_waf_br_priority_active_idx"),
+            models.Index(fields=["source", "is_active"], name="django_waf_br_src_active_idx"),
+            models.Index(fields=["priority", "is_active"], name="django_waf_br_prio_active_idx"),
             models.Index(
                 fields=["expires_at"],
                 condition=Q(is_active=True),
-                name="django_waf_br_expires_active_idx",
+                name="django_waf_br_exp_active_idx",
             ),
         ]
 

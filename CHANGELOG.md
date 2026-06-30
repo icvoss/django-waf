@@ -5,6 +5,16 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-06-30
+
+### Fixed
+
+- Shorten three `BlockRule` index names that exceeded Django's 30-character
+  limit (`models.E034`): `..._source_active_idx` → `..._src_active_idx`,
+  `..._priority_active_idx` → `..._prio_active_idx`, and
+  `..._expires_active_idx` → `..._exp_active_idx`. Renamed in both the model
+  `Meta.indexes` and `0001_initial`.
+
 ## [1.0.0] - 2026-06-27
 
 ### Changed (BREAKING) — package renamed `icv_waf` → `django_waf`
