@@ -1,30 +1,170 @@
-name: Publish to PyPI
+name: Publish django-waf to PyPI
+
+# Triggered by tags of the form: v1.0.2
+#
+# OIDC trusted publishing: no API token is required in repository secrets.
+# Configure trusted publishing in your PyPI project settings:
+#   Publisher: GitHub Actions
+#   Owner: nigelcopley
+#   Repository: django-waf
+#   Workflow: publish.yml
+#   Environment: pypi
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
+
+env:
+  FORCE_COLOR: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_PYTHON_VERSION_WARNING: "1"
 
 permissions:
+  contents: write
   id-token: write
 
 jobs:
-  publish:
+  # 1. Parse version from the tag
+  resolve:
+    name: Resolve version from tag
     runs-on: ubuntu-latest
-    environment: pypi
+    outputs:
+      version: ${{ steps.parse.outputs.version }}
+      release_title: ${{ steps.parse.outputs.release_title }}
+    steps:
+      - name: Parse tag
+        id: parse
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          if [[ -z "$VERSION" ]]; then
+            echo "ERROR: Could not parse version from tag '$TAG'"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release_title=django-waf v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+
+      - uses: actions/checkout@v6
+
+      - name: Require a CHANGELOG entry for this version
+        env:
+          VERSION: ${{ steps.parse.outputs.version }}
+        run: |
+          CHANGELOG="CHANGELOG.md"
+          if [[ ! -f "$CHANGELOG" ]]; then
+            echo "ERROR: $CHANGELOG does not exist. Every release must ship a CHANGELOG."
+            exit 1
+          fi
+          # Require a heading like "## [1.0.2]" (date and surrounding text optional).
+          if ! grep -qE "^##[[:space:]]+\[${VERSION//./\\.}\]" "$CHANGELOG"; then
+            echo "ERROR: No CHANGELOG entry found for version ${VERSION} in $CHANGELOG."
+            echo "Add a '## [${VERSION}] - <date>' section (rename [Unreleased]) before tagging."
+            echo "See RELEASING.md: every release must ship a dated CHANGELOG entry."
+            exit 1
+          fi
+          echo "Found CHANGELOG entry for ${VERSION}."
+
+  # 2. Run the test suite before publishing
+  test:
+    name: Test django-waf
+    runs-on: ubuntu-latest
+    needs: resolve
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
-      - name: Set up Python
+      - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "Django~=5.2.0"
+          pip install -e ".[dev,celery]"
+
+      - name: Run tests
+        run: pytest --cov=src --cov-report=term-missing
+
+  # 3. Build wheel and sdist
+  build:
+    name: Build django-waf
+    runs-on: ubuntu-latest
+    needs: [resolve, test]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
 
       - name: Install build tools
-        run: pip install build
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
 
-      - name: Build package
+      - name: Build wheel and sdist
         run: python -m build
+
+      - name: Verify distributions with twine
+        run: twine check dist/*
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-django-waf-${{ needs.resolve.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+  # 4. Publish to PyPI via OIDC trusted publishing
+  publish:
+    name: Publish django-waf to PyPI
+    runs-on: ubuntu-latest
+    needs: [resolve, build]
+    environment: pypi
+
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist-django-waf-${{ needs.resolve.outputs.version }}
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          verbose: true
+
+  # 5. Create GitHub Release
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [resolve, publish]
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: dist-django-waf-${{ needs.resolve.outputs.version }}
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ needs.resolve.outputs.release_title }}
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ startsWith(needs.resolve.outputs.version, '0.') }}
+          fail_on_unmatched_files: true
