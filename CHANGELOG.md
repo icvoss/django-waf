@@ -5,6 +5,14 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Publishing is now triggered by pushing a `v<semver>` tag instead of creating
+  a GitHub release. The publish workflow gained test, build, and CHANGELOG-gate
+  jobs, and creates the GitHub release itself. See the new `RELEASING.md`.
+
 ## [1.0.1] - 2026-06-30
 
 ### Fixed
