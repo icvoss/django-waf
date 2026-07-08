@@ -122,7 +122,7 @@ change.
 
 ## Reporting Issues
 
-Open an issue at https://github.com/nigelcopley/django-waf/issues with:
+Open an issue at https://github.com/icvoss/django-waf/issues with:
 
 - django-waf version (`python -c "import django_waf; print(django_waf.__version__)"`)
 - Django version

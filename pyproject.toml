@@ -36,11 +36,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nigelcopley/django-waf"
-Documentation = "https://github.com/nigelcopley/django-waf"
-Changelog = "https://github.com/nigelcopley/django-waf/blob/main/CHANGELOG.md"
-"Issue Tracker" = "https://github.com/nigelcopley/django-waf/issues"
-"Source Code" = "https://github.com/nigelcopley/django-waf"
+Homepage = "https://github.com/icvoss/django-waf"
+Documentation = "https://github.com/icvoss/django-waf"
+Changelog = "https://github.com/icvoss/django-waf/blob/main/CHANGELOG.md"
+"Issue Tracker" = "https://github.com/icvoss/django-waf/issues"
+"Source Code" = "https://github.com/icvoss/django-waf"
 
 [project.optional-dependencies]
 celery = ["celery>=5.3", "django-celery-beat>=2.6"]
