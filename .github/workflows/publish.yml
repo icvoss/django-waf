@@ -5,7 +5,7 @@ name: Publish django-waf to PyPI
 # OIDC trusted publishing: no API token is required in repository secrets.
 # Configure trusted publishing in your PyPI project settings:
 #   Publisher: GitHub Actions
-#   Owner: nigelcopley
+#   Owner: icvoss
 #   Repository: django-waf
 #   Workflow: publish.yml
 #   Environment: pypi
