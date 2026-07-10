@@ -437,6 +437,39 @@ class TestLoadRuleCache:
         # Still returns valid cache rebuilt from DB
         assert len(cache.block_rules) == 1
 
+    def test_rebuild_acquires_and_releases_stampede_lock(self, db):
+        """On a cache miss, the rebuild acquires the Redis lock and releases it after."""
+        BlockRuleFactory(is_active=True)
+
+        redis = _make_redis()
+        redis.set.return_value = True  # Lock acquired on first try
+
+        load_rule_cache(redis)
+
+        redis.set.assert_any_call("waf:rule_cache:lock", "1", nx=True, ex=5)
+        redis.delete.assert_any_call("waf:rule_cache:lock")
+
+    def test_rebuild_proceeds_fail_open_when_lock_unavailable(self, db):
+        """When the lock cannot be acquired after retrying, the rebuild proceeds anyway.
+
+        Per the stampede-protection fix: losing the lock race must not block
+        the request. The rebuild still returns a valid RuleCache and the
+        lock is never released by this process (it never held it).
+        """
+        BlockRuleFactory(is_active=True)
+
+        redis = _make_redis()
+        redis.set.return_value = False  # Lock always contended
+
+        with patch("time.sleep") as mock_sleep:
+            cache = load_rule_cache(redis)
+
+        assert len(cache.block_rules) == 1
+        # Retried up to 3 times, sleeping between attempts, then gave up.
+        assert mock_sleep.call_count == 3
+        # Never held the lock, so must not have tried to release it.
+        redis.delete.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # evaluate_request
@@ -1420,6 +1453,38 @@ class TestDetectSubnetBurst:
 
 
 # ---------------------------------------------------------------------------
+# _get_subnet_prefix
+# ---------------------------------------------------------------------------
+
+
+class TestGetSubnetPrefix:
+    def test_ipv4_returns_slash24(self):
+        """An IPv4 address is truncated to its /24 network."""
+        from django_waf.services.anomaly_detector import _get_subnet_prefix
+
+        assert _get_subnet_prefix("192.0.2.100") == "192.0.2.0/24"
+
+    def test_ipv6_returns_slash48(self):
+        """An IPv6 address is truncated to its /48 network, not a /24.
+
+        Regression: naively applying "/24" to an IPv6 address (as
+        ipaddress.ip_network(f"{ip}/24", strict=False) does) produces an
+        absurdly wide network — a /24 IPv6 prefix still spans 2**104
+        addresses. /48 is the correct IPv6-equivalent aggregation.
+        """
+        from django_waf.services.anomaly_detector import _get_subnet_prefix
+
+        assert _get_subnet_prefix("2001:db8:abcd:1234::1") == "2001:db8:abcd::/48"
+
+    def test_invalid_ip_raises_value_error(self):
+        """An invalid IP string raises ValueError so callers can skip it."""
+        from django_waf.services.anomaly_detector import _get_subnet_prefix
+
+        with pytest.raises(ValueError):
+            _get_subnet_prefix("999.999.999.999")
+
+
+# ---------------------------------------------------------------------------
 # detect_challenge_farms
 # ---------------------------------------------------------------------------
 
@@ -1682,6 +1747,49 @@ class TestDetectSubnetBurstBranches:
             result = detect_subnet_burst(window_minutes=60)
 
         assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# detect_cloud_spray — IPv6 subnet aggregation
+# ---------------------------------------------------------------------------
+
+
+class TestDetectCloudSprayIPv6:
+    def test_ipv6_suspicious_ips_are_aggregated_to_slash48_not_slash24(self, db):
+        """detect_cloud_spray aggregates IPv6 IPs to their /48 network.
+
+        Regression: the subnet aggregation step naively applied
+        ``ipaddress.ip_network(f"{ip}/24", strict=False)`` to every IP,
+        which for IPv6 addresses produces an absurdly wide network (a /24
+        IPv6 prefix still spans 2**104 addresses). It must instead go
+        through ``_get_subnet_prefix``, the same helper used by
+        ``detect_subnet_burst``, which truncates IPv6 to /48.
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_cloud_spray
+
+        now = timezone.now()
+        shared_ua = "curl/8.0.0"
+        # DJANGO_WAF_CLOUD_SPRAY_MIN_IPS distinct IPv6 IPs in the same /48,
+        # each making a single request with no referer.
+        min_ips = 20
+        for i in range(min_ips):
+            RequestLogFactory(
+                ip_address=f"2001:db8:abcd:1234::{i:x}",
+                user_agent=shared_ua,
+                referer="",
+                timestamp=now,
+            )
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_CLOUD_SPRAY_MIN_IPS", min_ips),
+            patch.object(conf_mod, "DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP", 3),
+            patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24),
+        ):
+            created = detect_cloud_spray(window_minutes=30)
+
+        assert len(created) == 1
+        assert created[0].pattern == "2001:db8:abcd::/48"
 
 
 # ---------------------------------------------------------------------------
@@ -2021,6 +2129,31 @@ class TestBuildTelemetryPayload:
             payload = build_telemetry_payload(period_start, period_end)
 
         assert isinstance(payload["subnets"], list)
+
+    def test_ipv6_subnets_are_truncated_to_slash48_not_full_address(self, db):
+        """IPv6 addresses are truncated to /48 subnets — a full IPv6 address
+        must never appear in the telemetry payload (BR-TEL-002).
+
+        Regression: the pre-fix code applied "/24" unconditionally, which for
+        IPv6 produces a network so wide it is effectively meaningless as
+        aggregation and leaks far more positional information than intended.
+        """
+        from django_waf.services.threat_feed import build_telemetry_payload
+
+        now = timezone.now()
+        period_start = now - timezone.timedelta(hours=1)
+        period_end = now
+
+        full_ip = "2001:db8:abcd:1234::1"
+        RequestLogFactory(ip_address=full_ip, timestamp=now - timezone.timedelta(minutes=5))
+
+        with patch("django_waf.services.threat_feed.get_or_create_install_id", return_value="id"):
+            payload = build_telemetry_payload(period_start, period_end)
+
+        subnet_cidrs = [s["cidr"] for s in payload["subnets"]]
+        assert "2001:db8:abcd::/48" in subnet_cidrs
+        # The full address must not appear anywhere in the payload.
+        assert full_ip not in str(payload)
 
 
 # ---------------------------------------------------------------------------

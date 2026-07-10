@@ -78,7 +78,7 @@ def detect_ua_rotation(
 
 
 def detect_subnet_burst(window_minutes: int = 15) -> list:
-    """Detect /24 subnets with anomalously high request volume.
+    """Detect /24 (IPv4) or /48 (IPv6) subnets with anomalously high request volume.
 
     Per BR-ANOM-002: flags subnets where request count exceeds 3× the mean
     per-subnet rate in the last window_minutes.
@@ -96,11 +96,11 @@ def detect_subnet_burst(window_minutes: int = 15) -> list:
     cutoff = timezone.now() - timedelta(minutes=window_minutes)
     logs = RequestLog.objects.filter(timestamp__gte=cutoff).values_list("ip_address", flat=True)
 
-    # Count requests per /24 subnet
+    # Count requests per subnet (/24 for IPv4, /48 for IPv6)
     subnet_counts: dict[str, int] = {}
     for ip in logs:
         try:
-            subnet = str(ipaddress.ip_network(f"{ip}/24", strict=False))
+            subnet = _get_subnet_prefix(ip)
         except ValueError:
             continue
         subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
@@ -330,8 +330,10 @@ def detect_cloud_spray(window_minutes: int = 30) -> list:
     where each IP makes only 1-3 requests with no referer. This pattern is
     characteristic of cloud-hosted bot farms that evade per-IP rate limits.
 
-    Flags /24 subnets rather than individual IPs — cloud providers allocate
-    contiguous blocks, so a single /24 CIDR catches the cluster efficiently.
+    Flags subnets rather than individual IPs — cloud providers allocate
+    contiguous blocks, so a single CIDR catches the cluster efficiently.
+    Aggregation uses ``_get_subnet_prefix`` (the /24 network for IPv4, the
+    /48 network for IPv6), shared with ``detect_subnet_burst``.
 
     Args:
         window_minutes: Time window to analyse (default 30).
@@ -384,11 +386,11 @@ def detect_cloud_spray(window_minutes: int = 30) -> list:
         if len(suspicious_ips) < min_ips:
             continue
 
-        # Step 3: Aggregate into /24 subnets and create rules
+        # Step 3: Aggregate into subnets (/24 IPv4, /48 IPv6) and create rules
         subnet_counts: dict[str, int] = {}
         for ip in suspicious_ips:
             try:
-                subnet = str(ipaddress.ip_network(f"{ip}/24", strict=False))
+                subnet = _get_subnet_prefix(ip)
             except ValueError:
                 continue
             subnet_counts[subnet] = subnet_counts.get(subnet, 0) + 1
@@ -427,18 +429,33 @@ def detect_cloud_spray(window_minutes: int = 30) -> list:
     return created_rules
 
 
-def run_all_detectors() -> dict:
+def run_all_detectors(window_minutes: int | None = None) -> dict:
     """Run all anomaly detectors and return a summary of findings.
+
+    Args:
+        window_minutes: Override the analysis window, in minutes, for every
+            detector. ``None`` (the default) leaves each detector on its own
+            configured default window. ``detect_challenge_farms`` takes its
+            window in hours, so the value is converted (rounded up to the
+            nearest hour, minimum 1) before being forwarded to it.
 
     Returns:
         Dict with keys: ua_rotation_rules, subnet_burst_rules,
         challenge_farm_rules, total_rules_created.
     """
-    ua_rules = detect_ua_rotation()
-    subnet_rules = detect_subnet_burst()
-    farm_rules = detect_challenge_farms()
-    unsolved_rules = detect_unsolved_challenges()
-    spray_rules = detect_cloud_spray()
+    if window_minutes is None:
+        ua_rules = detect_ua_rotation()
+        subnet_rules = detect_subnet_burst()
+        farm_rules = detect_challenge_farms()
+        unsolved_rules = detect_unsolved_challenges()
+        spray_rules = detect_cloud_spray()
+    else:
+        window_hours = max(1, -(-window_minutes // 60))  # ceiling division
+        ua_rules = detect_ua_rotation(window_minutes=window_minutes)
+        subnet_rules = detect_subnet_burst(window_minutes=window_minutes)
+        farm_rules = detect_challenge_farms(window_hours=window_hours)
+        unsolved_rules = detect_unsolved_challenges(window_minutes=window_minutes)
+        spray_rules = detect_cloud_spray(window_minutes=window_minutes)
 
     total = len(ua_rules) + len(subnet_rules) + len(farm_rules) + len(unsolved_rules) + len(spray_rules)
     logger.info(
@@ -465,6 +482,31 @@ def run_all_detectors() -> dict:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _get_subnet_prefix(ip: str) -> str:
+    """Return the subnet prefix used for aggregating an IP address.
+
+    IPv4 addresses are truncated to their /24 network. IPv6 addresses are
+    truncated to their /48 network — a /24-equivalent aggregation for IPv6
+    would silently span an enormous address range (a /24 IPv6 network still
+    contains 2**104 addresses), corrupting burst detection, cloud-spray
+    aggregation, and telemetry aggregation alike. Shared by
+    ``detect_subnet_burst`` and ``detect_cloud_spray`` (this module) and
+    ``threat_feed.build_telemetry_payload``.
+
+    Args:
+        ip: An IPv4 or IPv6 address string.
+
+    Returns:
+        The subnet in CIDR notation, e.g. "192.0.2.0/24" or "2001:db8::/48".
+
+    Raises:
+        ValueError: If ``ip`` is not a valid IP address.
+    """
+    parsed = ipaddress.ip_address(ip)
+    prefix_length = 24 if parsed.version == 4 else 48
+    return str(ipaddress.ip_network(f"{ip}/{prefix_length}", strict=False))
 
 
 def _get_or_create_auto_rule(

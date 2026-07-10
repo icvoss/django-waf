@@ -376,10 +376,14 @@ class DashboardTopBlockedPanel(StaffRequiredMixin, TemplateView):
     template_name = "django_waf/partials/top_blocked_panel.html"
 
     def get_context_data(self, **kwargs) -> dict:
-        from django_waf.models import IPReputation
-
         ctx = super().get_context_data(**kwargs)
-        ctx["ips"] = IPReputation.objects.order_by("-blocked_requests")[:10]
+        try:
+            from django_waf.models import IPReputation
+
+            ctx["ips"] = IPReputation.objects.order_by("-blocked_requests")[:10]
+        except Exception:
+            logger.warning("django-waf: could not fetch top-blocked IPs; degrading to empty panel")
+            ctx["ips"] = []
         return ctx
 
 
@@ -397,19 +401,23 @@ class DashboardAnomalyPanel(StaffRequiredMixin, TemplateView):
     template_name = "django_waf/partials/anomalies_panel.html"
 
     def get_context_data(self, **kwargs) -> dict:
-        from datetime import timedelta
-
-        from django.utils import timezone
-
-        from django_waf.enums import RuleSource
-        from django_waf.models import BlockRule
-
         ctx = super().get_context_data(**kwargs)
-        cutoff = timezone.now() - timedelta(hours=48)
-        ctx["rules"] = BlockRule.objects.filter(
-            source=RuleSource.AUTO,
-            created_at__gte=cutoff,
-        ).order_by("-created_at")
+        try:
+            from datetime import timedelta
+
+            from django.utils import timezone
+
+            from django_waf.enums import RuleSource
+            from django_waf.models import BlockRule
+
+            cutoff = timezone.now() - timedelta(hours=48)
+            ctx["rules"] = BlockRule.objects.filter(
+                source=RuleSource.AUTO,
+                created_at__gte=cutoff,
+            ).order_by("-created_at")
+        except Exception:
+            logger.warning("django-waf: could not fetch anomaly rules; degrading to empty panel")
+            ctx["rules"] = []
         return ctx
 
 

@@ -509,6 +509,22 @@ class TestDashboardTopBlockedPanelView:
         # Ordered by -blocked_requests
         assert str(ips[0].ip_address) == "1.1.1.1"
 
+    def test_db_error_degrades_to_empty_context(self):
+        """A DB error while fetching top-blocked IPs degrades to an empty panel
+        instead of raising (matches DashboardStatsPanel's fallback pattern)."""
+        client = Client()
+        user = _make_staff_user(username="stafftopblkerr", email="stafftopblkerr@example.com")
+        client.force_login(user)
+
+        with patch(
+            "django_waf.models.IPReputation.objects.order_by",
+            side_effect=Exception("db unavailable"),
+        ):
+            response = client.get("/waf/dashboard/top-blocked/")
+
+        assert response.status_code == 200
+        assert response.context["ips"] == []
+
 
 class TestDashboardAnomalyPanelView:
     """GET /dashboard/anomalies/ returns auto-generated rules from the last 48 hours."""
@@ -549,6 +565,22 @@ class TestDashboardAnomalyPanelView:
         assert all(r.source == RuleSource.AUTO for r in rules)
         rule_ids = [r.id for r in rules]
         assert auto_rule.id in rule_ids
+
+    def test_db_error_degrades_to_empty_context(self):
+        """A DB error while fetching anomaly rules degrades to an empty panel
+        instead of raising (matches DashboardStatsPanel's fallback pattern)."""
+        client = Client()
+        user = _make_staff_user(username="staffanomerr", email="staffanomerr@example.com")
+        client.force_login(user)
+
+        with patch(
+            "django_waf.models.BlockRule.objects.filter",
+            side_effect=Exception("db unavailable"),
+        ):
+            response = client.get("/waf/dashboard/anomalies/")
+
+        assert response.status_code == 200
+        assert response.context["rules"] == []
 
 
 # ---------------------------------------------------------------------------

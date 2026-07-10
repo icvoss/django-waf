@@ -5,7 +5,43 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-07-10
+
+Minor rather than patch because two changes are consumer-visible behaviour:
+IPv6 sources now produce /48 rule patterns and telemetry keys (previously
+an IPv4-style /24 of IPv6 space), so anything consuming auto-created rule
+patterns or telemetry payloads will see new shapes; and
+`run_all_detectors()` gained an optional `window_minutes` parameter (new
+public API).
+
+### Fixed
+
+- `detect_subnet_burst`, `detect_cloud_spray`, and `build_telemetry_payload`
+  now aggregate IPv6 addresses to their /48 network instead of naively
+  applying an IPv4-style /24, which for IPv6 produced an absurdly wide (and
+  meaningless) network and, for telemetry, was one step away from leaking
+  full IPv6 addresses. All three call sites now share a
+  `_get_subnet_prefix()` helper in `anomaly_detector.py` (IPv4 stays /24,
+  IPv6 is /48).
+- `load_rule_cache` now guards its database rebuild with a short-lived Redis
+  lock (`waf:rule_cache:lock`, 5s TTL) so that concurrent worker processes
+  racing on a cache miss (typically right after the rule version bumps) no
+  longer all hit the database simultaneously. Retries acquiring the lock up
+  to 3 times with a 100ms delay, then proceeds without it (fail-open) rather
+  than blocking the request.
+- `DashboardTopBlockedPanel` and `DashboardAnomalyPanel` now catch database
+  errors in `get_context_data` and degrade to an empty panel (`ips=[]` /
+  `rules=[]`), matching the fallback already in place on
+  `DashboardStatsPanel`. Previously a DB or Redis error on either panel
+  raised and broke the whole dashboard fragment.
+- `django_waf_detect_anomalies --window-minutes` was broken since the flag
+  was added: the command forwarded `window_minutes` to
+  `anomaly_detector.run_all_detectors()`, but that function accepted no
+  parameters, so passing the flag always raised `TypeError` (surfaced as a
+  `CommandError`). `run_all_detectors` now takes `window_minutes: int | None
+  = None` and forwards it to all five detectors (converted to hours for
+  `detect_challenge_farms`, which takes its window in hours); omitting the
+  flag is unchanged and leaves each detector on its own default window.
 
 ### Changed
 

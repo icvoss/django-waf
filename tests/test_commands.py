@@ -10,13 +10,14 @@ Each command is tested for:
 from __future__ import annotations
 
 from io import StringIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.utils import timezone
 
+from django_waf.services.anomaly_detector import run_all_detectors
 from django_waf.testing.factories import BlockRuleFactory, RequestLogFactory
 
 # ---------------------------------------------------------------------------
@@ -128,19 +129,34 @@ class TestGenerateBlocklistCommand:
 class TestDetectAnomaliesCommand:
     """Tests for the ``django_waf_detect_anomalies`` management command."""
 
+    @staticmethod
+    def _autospec_detector(return_value=None, side_effect=None):
+        """Build an autospec'd mock of run_all_detectors.
+
+        Using ``create_autospec`` (rather than a loose ``patch(...)``) means a
+        call with a signature the real function doesn't accept raises
+        ``TypeError`` from the mock itself, catching regressions like the one
+        that let ``--window-minutes`` silently pass an unsupported keyword
+        argument through to the service for an entire release.
+        """
+        mock_detect = create_autospec(run_all_detectors, spec_set=True)
+        if side_effect is not None:
+            mock_detect.side_effect = side_effect
+        else:
+            mock_detect.return_value = return_value
+        return mock_detect
+
     @pytest.mark.django_db
     def test_dry_run_reports_without_creating_rules(self):
         """Dry-run emits the dry-run notice and displays detector results."""
         results = {"burst_detector": [MagicMock(), MagicMock()], "ua_rotation": []}
+        mock_detect = self._autospec_detector(return_value=results)
 
-        with patch(
-            "django_waf.services.anomaly_detector.run_all_detectors",
-            return_value=results,
-        ) as mock_detect:
+        with patch("django_waf.services.anomaly_detector.run_all_detectors", mock_detect):
             out = StringIO()
             call_command("django_waf_detect_anomalies", "--dry-run", stdout=out)
 
-        mock_detect.assert_called_once_with()
+        mock_detect.assert_called_once_with(window_minutes=None)
         output = out.getvalue()
         assert "dry-run" in output
         assert "would create" in output
@@ -150,15 +166,13 @@ class TestDetectAnomaliesCommand:
     def test_normal_run_calls_service(self):
         """Normal run calls run_all_detectors and reports created rule counts."""
         results = {"burst_detector": [MagicMock()], "ua_rotation": [MagicMock(), MagicMock()]}
+        mock_detect = self._autospec_detector(return_value=results)
 
-        with patch(
-            "django_waf.services.anomaly_detector.run_all_detectors",
-            return_value=results,
-        ) as mock_detect:
+        with patch("django_waf.services.anomaly_detector.run_all_detectors", mock_detect):
             out = StringIO()
             call_command("django_waf_detect_anomalies", stdout=out)
 
-        mock_detect.assert_called_once_with()
+        mock_detect.assert_called_once_with(window_minutes=None)
         output = out.getvalue()
         assert "created" in output
         assert "3 anomaly rule(s)" in output
@@ -166,10 +180,9 @@ class TestDetectAnomaliesCommand:
     @pytest.mark.django_db
     def test_window_minutes_forwarded_to_service(self):
         """--window-minutes is passed through to run_all_detectors."""
-        with patch(
-            "django_waf.services.anomaly_detector.run_all_detectors",
-            return_value={},
-        ) as mock_detect:
+        mock_detect = self._autospec_detector(return_value={})
+
+        with patch("django_waf.services.anomaly_detector.run_all_detectors", mock_detect):
             call_command("django_waf_detect_anomalies", "--window-minutes=10")
 
         mock_detect.assert_called_once_with(window_minutes=10)
@@ -177,10 +190,9 @@ class TestDetectAnomaliesCommand:
     @pytest.mark.django_db
     def test_no_anomalies_detected_message(self):
         """When no anomalies are detected the success message is shown."""
-        with patch(
-            "django_waf.services.anomaly_detector.run_all_detectors",
-            return_value={"burst_detector": [], "ua_rotation": []},
-        ):
+        mock_detect = self._autospec_detector(return_value={"burst_detector": [], "ua_rotation": []})
+
+        with patch("django_waf.services.anomaly_detector.run_all_detectors", mock_detect):
             out = StringIO()
             call_command("django_waf_detect_anomalies", stdout=out)
 
@@ -189,11 +201,10 @@ class TestDetectAnomaliesCommand:
     @pytest.mark.django_db
     def test_service_exception_raises_command_error(self):
         """A service exception is converted to CommandError."""
+        mock_detect = self._autospec_detector(side_effect=ValueError("bad window"))
+
         with (
-            patch(
-                "django_waf.services.anomaly_detector.run_all_detectors",
-                side_effect=ValueError("bad window"),
-            ),
+            patch("django_waf.services.anomaly_detector.run_all_detectors", mock_detect),
             pytest.raises(CommandError, match="Anomaly detection failed"),
         ):
             call_command("django_waf_detect_anomalies")
@@ -201,15 +212,30 @@ class TestDetectAnomaliesCommand:
     @pytest.mark.django_db
     def test_dry_run_with_window_minutes(self):
         """Dry-run correctly forwards --window-minutes."""
-        with patch(
-            "django_waf.services.anomaly_detector.run_all_detectors",
-            return_value={"ua_rotation": [MagicMock()]},
-        ) as mock_detect:
+        mock_detect = self._autospec_detector(return_value={"ua_rotation": [MagicMock()]})
+
+        with patch("django_waf.services.anomaly_detector.run_all_detectors", mock_detect):
             out = StringIO()
             call_command("django_waf_detect_anomalies", "--dry-run", "--window-minutes=20", stdout=out)
 
         mock_detect.assert_called_once_with(window_minutes=20)
         assert "dry-run" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_window_minutes_end_to_end_against_real_service(self):
+        """--window-minutes reaches the real run_all_detectors without mocking.
+
+        Regression test for the bug where the command forwarded
+        ``window_minutes`` to a ``run_all_detectors()`` that accepted no
+        parameters at all, raising ``TypeError`` (masked as a CommandError)
+        whenever ``--window-minutes`` was passed. No RequestLog data is
+        created, so no anomalies are expected; the point is that the command
+        completes successfully end-to-end with the flag set.
+        """
+        out = StringIO()
+        call_command("django_waf_detect_anomalies", "--window-minutes=10", stdout=out)
+
+        assert "No anomalies detected" in out.getvalue()
 
 
 # ---------------------------------------------------------------------------
