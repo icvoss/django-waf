@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/logo.svg" alt="" width="88">
+</p>
+
 # django-waf
 
 Self-hosted request filtering, bot management, and WAF middleware for Django.
