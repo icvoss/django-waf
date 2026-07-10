@@ -61,7 +61,7 @@ public API).
 
 ## [1.0.0] - 2026-06-27
 
-### Changed (BREAKING) — package renamed `icv_waf` → `django_waf`
+### Changed (BREAKING): package renamed `icv_waf` → `django_waf`
 
 The package is now consistently named `django_waf` throughout, matching the
 `django-waf` distribution name. Every public surface that carried the old
@@ -80,11 +80,11 @@ The package is now consistently named `django_waf` throughout, matching the
 - **Templates:** the template namespace is now `django_waf/` (was `icv_waf/`).
 
 A deprecation shim keeps `import icv_waf` (and `from icv_waf.<sub> import ...`)
-working with a `DeprecationWarning` — Python imports only. It does **not** make
+working with a `DeprecationWarning`, Python imports only. It does **not** make
 `"icv_waf"` usable in `INSTALLED_APPS`, and does **not** alias the settings
 prefix or management commands. The shim will be removed in a future major release.
 
-The threat-feed service domain (`threats.icv.dev`) is unchanged — it is the
+The threat-feed service domain (`threats.icv.dev`) is unchanged: it is the
 operated endpoint, not a naming artifact, and remains overridable via
 `DJANGO_WAF_FEED_URL` / `DJANGO_WAF_FEED_REPORT_URL`.
 
@@ -111,7 +111,7 @@ operated endpoint, not a naming artifact, and remains overridable via
    Then mark the new migration applied without re-running it:
    `python manage.py migrate django_waf 0001 --fake`. (Indexes are recreated by
    name under the new prefix; adjust index names too if your tooling is strict.)
-   A fresh install needs none of this — `migrate` creates the new tables
+   A fresh install needs none of this: `migrate` creates the new tables
    directly.
 
 ## [0.12.0] - 2026-05-28
@@ -132,10 +132,10 @@ operated endpoint, not a naming artifact, and remains overridable via
 ### Changed
 
 - **Dropped Django 4.2, 5.0, and 5.1 support.** The supported range is
-  now Django 5.2 (LTS) and 6.0 — the only series with upstream support.
+  now Django 5.2 (LTS) and 6.0, the only series with upstream support.
   Python floor stays at 3.11; Django 6.0 requires Python 3.12+.
 - `FormVerdict` now subclasses `enum.StrEnum` instead of `(str, Enum)`.
-  Behaviour is unchanged — `.value` and string equality are identical.
+  Behaviour is unchanged: `.value` and string equality are identical.
 
 ## [0.11.2] - 2026-05-27
 
@@ -145,7 +145,7 @@ operated endpoint, not a naming artifact, and remains overridable via
   defence chain on every real submission.** Critical bug in v0.11.0
   and v0.11.1. The mixin's `clean()` (`mixin.py:157`) and the
   decorator's POST handler (`decorators.py:114`) both called
-  `dict(self.data)` / `dict(request.POST)` — but Django's `QueryDict`
+  `dict(self.data)` / `dict(request.POST)`, but Django's `QueryDict`
   stores values as lists internally, and `dict(querydict)` iterates
   the underlying storage producing entries like `{"waf_token":
   ["Y29udGFjdHx..."]}`. The defences then crashed (`TypeError: can
@@ -158,15 +158,15 @@ operated endpoint, not a naming artifact, and remains overridable via
   for anyone running v0.11.0 or v0.11.1 with form protection
   enabled.
 
-  Reported by Vendably during the v0.11.1 production rollout —
+  Reported by Vendably during the v0.11.1 production rollout:
   same form, second-consecutive-day breakage. The previous release
   (v0.11.1) had fixed the render-side bug; this one fixes the
   submit-side bug. Both bugs passed every unit test in their
   respective releases because the tests built POST payloads as
   plain Python dicts, never as actual `QueryDict` instances.
 
-  **Fix**: added `icv_waf.forms.protection.scalarise_submitted_data()`
-  — a single seam between the entry points (mixin, decorator,
+  **Fix**: added `icv_waf.forms.protection.scalarise_submitted_data()`,
+  a single seam between the entry points (mixin, decorator,
   replay-store) and the orchestrator that calls
   `QueryDict.dict()` for last-value-per-key string semantics, or
   falls through to `dict(...)` for plain mappings. Wired into all
@@ -174,18 +174,18 @@ operated endpoint, not a naming artifact, and remains overridable via
 
 ### Added
 
-- **`tests/forms/test_querydict_round_trip.py`** — regression suite
+- **`tests/forms/test_querydict_round_trip.py`**: regression suite
   that exercises the mixin and decorator with **real Django
   `QueryDict` instances**, going through `RequestFactory.post()` and
   `Client.post()`. Verified to fail loudly without the fix and pass
   with it. Covers:
 
-    1. `scalarise_submitted_data` contract — `QueryDict` →
+    1. `scalarise_submitted_data` contract: `QueryDict` →
        last-value-per-key strings, plain dicts pass through, `None`
        → `{}`.
-    2. Mixin path — `Form(request.POST, request=request)` where
+    2. Mixin path: `Form(request.POST, request=request)` where
        `request.POST` is a real `QueryDict`.
-    3. Decorator path — `RequestFactory.post()` + Django test
+    3. Decorator path: `RequestFactory.post()` + Django test
        `Client.post()`.
 
   The test suite that would have caught both the v0.11.0 and v0.11.1
@@ -202,14 +202,14 @@ pip install -U django-waf
 
 No settings or migration changes. The operator-side workaround if
 upgrade is blocked is `ICV_WAF_FORM_PROTECTION_ENABLED=False`, but
-that disables protection entirely — the proper fix is to upgrade.
+that disables protection entirely; the proper fix is to upgrade.
 
 ## [0.11.1] - 2026-05-27
 
 ### Fixed
 
 - **`RenderTokenDefence.render_fields` shipped the raw token string
-  instead of a hidden `<input>` tag** — a critical bug in v0.11.0 that
+  instead of a hidden `<input>` tag**: a critical bug in v0.11.0 that
   made every protected form unusable for real users. The orchestrator
   concatenated the raw token into the DOM as visible page text; no
   `<input name="waf_token">` ever rendered, so browsers never
@@ -217,7 +217,7 @@ that disables protection entirely — the proper fix is to upgrade.
   with `render_token:missing`.
 
   The unit tests in v0.11.0 missed this because they constructed POST
-  payloads directly — none ever parsed the rendered HTML and submitted
+  payloads directly; none ever parsed the rendered HTML and submitted
   what a browser would actually submit. The strengthened tests in this
   release (see "Added" below) close that gap.
 
@@ -239,7 +239,7 @@ that disables protection entirely — the proper fix is to upgrade.
 ### Upgrade
 
 Anyone who shipped v0.11.0 with form protection enabled has broken
-forms — upgrade immediately:
+forms; upgrade immediately:
 
 ```bash
 pip install -U django-waf
@@ -260,7 +260,7 @@ No settings or migration changes.
       `time_trap` (too-fast / too-slow / expired), `ua_consistency`
       (UA hash captured at render vs. submit), `js_touch` (sentinel
       cleared by JS to detect headless clients), `credential_throttle`
-      (per-IP + per-account login-failure counters — enumeration-safe),
+      (per-IP + per-account login-failure counters, enumeration-safe),
       `signup_velocity` (per-IP completed-signup throttle), `pow_gate`
       (per-submission proof-of-work, ~50ms desktop / ~200ms mobile).
 
@@ -281,7 +281,7 @@ No settings or migration changes.
       the user through `/waf/challenge/?form_replay=<token>`, and
       automatically re-issue the original POST after the challenge
       passes. Sensitive fields (password / secret / csrf / api_key /
-      token) are stripped before storage — operators see "please
+      token) are stripped before storage, so operators see "please
       re-enter your password" on login replays. Replay token is signed,
       IP-bound, 60s TTL, one-shot.
 
@@ -291,10 +291,10 @@ No settings or migration changes.
       newsletter forms).
 
     - **Four signals**: `form_submission_passed` (opt-in via
-      `ICV_WAF_FORM_EMIT_PASSED_SIGNAL`, off by default — hot path),
+      `ICV_WAF_FORM_EMIT_PASSED_SIGNAL`, off by default, hot path),
       `form_submission_flagged`, `form_submission_blocked`, and
       `credential_attack_observed` (observation-only, never affects
-      user-visible response — operators wire up email-to-owner
+      user-visible response; operators wire up email-to-owner
       handlers here).
 
     - **Structured logging**: one `waf.form_submission` log entry per
@@ -303,7 +303,7 @@ No settings or migration changes.
       FLAGGED + BLOCKED always logged. `X-WAF-Form-Verdict` debug
       header attached in `DEBUG=True` only.
 
-- **`ICV_WAF_SIGNING_KEY`** — package-wide HMAC secret, separate from
+- **`ICV_WAF_SIGNING_KEY`**: package-wide HMAC secret, separate from
   Django's `SECRET_KEY`. Used by every signed artefact the WAF issues
   (currently form render tokens + replay tokens). Defaults to a
   `SECRET_KEY`-derived value with a new `icv_waf.W003` system check
@@ -311,7 +311,7 @@ No settings or migration changes.
   dedicated key in production to rotate WAF signatures independently
   of Django sessions.
 
-- **`icv_waf.W003`** system check — warns when `ICV_WAF_SIGNING_KEY`
+- **`icv_waf.W003`** system check: warns when `ICV_WAF_SIGNING_KEY`
   is unset and the package is falling back to a `SECRET_KEY`-derived
   value.
 
@@ -327,7 +327,7 @@ No settings or migration changes.
 
 - `pow_gate` reuses `_digest_has_leading_zero_bits` from v0.10.5 (the
   page-level challenge's bit-counting helper) rather than maintaining
-  a parallel implementation — no drift risk between the two PoWs.
+  a parallel implementation, so there is no drift risk between the two PoWs.
 
 ### Documentation
 
@@ -360,7 +360,7 @@ No settings or migration changes.
 
 - **Challenge tokens stuck PENDING under per-request urlconf routing.**
   `ChallengeView` rendered the challenge page with `post_url =
-  reverse("icv_waf:verify")` — sibling of the middleware bug fixed in
+  reverse("icv_waf:verify")`, a sibling of the middleware bug fixed in
   v0.10.5, but on the other side of the flow. Under django-hosts (or
   any other per-request urlconf setup) the page rendered fine, the
   browser solved the PoW, but the form POSTed to a path on the wrong
@@ -375,7 +375,7 @@ No settings or migration changes.
 
 - **`BlockRule.hit_count` not incrementing for repeat blocks.** The
   Redis blocked-IP fast-path (step 5 of `evaluate_request`) blocked
-  cached IPs without identifying the matching rule — so subsequent
+  cached IPs without identifying the matching rule, so subsequent
   hits to the same blocked IP never reached
   `_check_block_rules`, which is where `_record_rule_hit` runs. Once
   an IP was in the cache, its rule's hit counter froze at whatever
@@ -414,15 +414,15 @@ No settings or migration changes.
   regression). `verify_challenge_solution` and the JS solver both required
   `difficulty` leading zero **bytes** in the SHA-256 digest, while the
   README and inline comments documented the field as leading zero **bits**.
-  At the default of 4, average work was `256^4 ≈ 4.3 billion` hashes —
+  At the default of 4, average work was `256^4 ≈ 4.3 billion` hashes,
   unsolvable in a browser. Combined with `ICV_WAF_CHALLENGE_ESCALATION_THRESHOLD=10`,
   legitimate users challenged by the WAF were auto-blocked within seconds.
 
   **Fix**: server verifier and JS solver now count leading zero **bits**,
   matching the documented semantics. Difficulty selection is now
   device-aware: desktop UAs get `ICV_WAF_CHALLENGE_DIFFICULTY_DESKTOP`
-  (default 22, ~1–2s on a laptop), mobile UAs get `..._MOBILE` (default 18,
-  ~1–3s on a budget phone). The legacy `ICV_WAF_CHALLENGE_DIFFICULTY`
+  (default 22, ~1 to 2s on a laptop), mobile UAs get `..._MOBILE` (default 18,
+  ~1 to 3s on a budget phone). The legacy `ICV_WAF_CHALLENGE_DIFFICULTY`
   remains as a single-value fallback (default 20). The token's stored
   difficulty drives the solver, so it never drifts from the verifier.
 
@@ -433,7 +433,7 @@ No settings or migration changes.
   first host to trigger a challenge froze its resolved path for every
   subsequent request on every host, until the process restarted.
 
-  **Fix**: the resolved paths are no longer cached — `_get_challenge_paths`
+  **Fix**: the resolved paths are no longer cached: `_get_challenge_paths`
   consults the active urlconf on every call. Two new settings,
   `ICV_WAF_CHALLENGE_URL` and `ICV_WAF_VERIFY_URL`, let operators bypass
   `reverse()` entirely with literal paths when the icv_waf URLs are not
@@ -456,8 +456,8 @@ No settings or migration changes.
 ### Changed
 
 - **Default difficulty raised** from `4` to `20` bits. With the previous
-  byte-counting bug fixed, 4 bits ≈ 16 hashes — effectively no PoW. The
-  new default targets ~1–2s of work, visible as a "verifying" signal
+  byte-counting bug fixed, 4 bits ≈ 16 hashes, effectively no PoW. The
+  new default targets ~1 to 2s of work, visible as a "verifying" signal
   without being painful.
 
 ## [0.10.4] - 2026-05-22
@@ -518,8 +518,8 @@ No settings or migration changes.
 
 - **`BlockRule.MultipleObjectsReturned` in `detect_anomalies`**: if
   duplicate `BlockRule` rows existed for the same
-  `(rule_type, pattern, source, action)` key — created before the
-  anomaly detector existed, or via a race condition —
+  `(rule_type, pattern, source, action)` key (created before the
+  anomaly detector existed, or via a race condition),
   `_get_or_create_auto_rule()` would crash with
   `MultipleObjectsReturned`, causing `detect_anomalies` and all
   downstream anomaly detection tasks to fail silently. The fix catches
@@ -565,18 +565,18 @@ After upgrading to 0.10.1 the package handles this automatically.
 
 ## [0.10.0] - 2026-04-11
 
-### Added — GeoIP database installer
+### Added: GeoIP database installer
 
 - **`manage.py icv_waf_install_geoip`**: downloads, verifies, and
   atomically installs the MaxMind GeoLite2-Country database for the
   middleware's `_lookup_country` helper. Flags:
-  - `--license-key=XXX` — overrides the `ICV_WAF_MAXMIND_LICENSE_KEY`
+  - `--license-key=XXX`: overrides the `ICV_WAF_MAXMIND_LICENSE_KEY`
     setting. Sign up at <https://www.maxmind.com/en/geolite2/signup>.
-  - `--output-path=/path/to/file.mmdb` — overrides `ICV_WAF_GEOIP_PATH`.
+  - `--output-path=/path/to/file.mmdb`: overrides `ICV_WAF_GEOIP_PATH`.
     Defaults to `/var/lib/icv-waf/GeoLite2-Country.mmdb`.
-  - `--if-older-than=DAYS` — skip the download if the existing file
+  - `--if-older-than=DAYS`: skip the download if the existing file
     is younger than N days (cron-friendly).
-  - `--quiet` — suppress progress output.
+  - `--quiet`: suppress progress output.
 
 - **`update_geoip_database` Celery task** (`icv_waf.tasks.update_geoip_database`):
   wraps the service with a 6-day freshness check. Recommended schedule:
@@ -630,14 +630,14 @@ python manage.py icv_waf_install_geoip
   a smoke-test lookup, then `os.replace()`'d into the destination. An
   existing database is never clobbered if the replacement fails
   verification.
-- **Running workers must be restarted to pick up a new database** —
+- **Running workers must be restarted to pick up a new database**:
   the MMDB file is mmap'd, so live processes keep their previous
   handle until restart. The command prints a reminder on success.
 - Licence keys are never logged or echoed back on error.
 
 ## [0.9.0] - 2026-04-11
 
-### Changed — defaults
+### Changed: defaults
 
 - **Expanded default `ICV_WAF_SUSPICIOUS_PATH_PATTERNS`** from 18 to 45
   patterns, driven by production data from the 0.7 → 0.8.1 upgrade. New
@@ -666,14 +666,14 @@ python manage.py icv_waf_install_geoip
 
 - **`RequestLog.matched_rule_type.help_text`**: documents the common
   misreading that `matched_rule_type="block"` means "the request was
-  blocked". It does not — it means the matching rule came from the
+  blocked". It does not: it means the matching rule came from the
   `BlockRule` table. A `BlockRule` with `action="challenge"` produces
   `matched_rule_type="block"` and `verdict="challenged"`. **Always use
   the `verdict` column for enforcement reporting.**
 
 ### Migration
 
-- `0005_alter_requestlog_matched_rule_type` — schema-level no-op (only
+- `0005_alter_requestlog_matched_rule_type`: schema-level no-op (only
   adds `help_text` to the field). Safe to apply on a running system; no
   table rewrite, no downtime. Run `manage.py migrate icv_waf` after
   upgrading.
@@ -714,12 +714,12 @@ issues that are **not package bugs**:
 ### Added
 
 - **HTTP request fingerprinting** (`services/fingerprint.py`): deterministic bot
-  detection via HTTP header analysis — identifies clients claiming to be
+  detection via HTTP header analysis; it identifies clients claiming to be
   browsers but missing expected headers (`Sec-CH-UA`, `Sec-Fetch-*`,
   `Accept-Language`, `Accept`).
-  - `compute_fingerprint()` — SHA-256 hash of the normalised header tuple
-  - `score_fingerprint_mismatch()` — 0.0–5.0 score for UA/header mismatch
-  - `classify_fingerprint()` — `browser` / `bot` / `suspicious` / `unknown`
+  - `compute_fingerprint()`: SHA-256 hash of the normalised header tuple
+  - `score_fingerprint_mismatch()`: 0.0 to 5.0 score for UA/header mismatch
+  - `classify_fingerprint()`: `browser` / `bot` / `suspicious` / `unknown`
 - **Dynamic known-good registry**: `VerifyView` registers fingerprints from
   solved challenges; known fingerprints bypass mismatch scoring; self-updating
   as new browser versions hit production; 30-day Redis TTL.
@@ -736,14 +736,14 @@ issues that are **not package bugs**:
 - `+0.5` Browser UA with `Accept: */*` only
 
 A `Go-http-client` or `python-requests` sending a Chrome UA now scores 5.0 from
-fingerprinting alone — automatically challenged.
+fingerprinting alone, and is automatically challenged.
 
 ## [0.7.0] - 2026-04-08
 
 ### Added
 
 - **Cloud spray detector** (`detect_cloud_spray`): detects coordinated low-and-slow
-  scraping — many distinct IPs with identical UA, no referer, 1–3 requests each.
+  scraping: many distinct IPs with identical UA, no referer, 1 to 3 requests each.
   Groups into `/24` subnets and auto-creates `CHALLENGE` rules. Tunable via
   `ICV_WAF_CLOUD_SPRAY_MIN_IPS` (default 20) and
   `ICV_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP` (default 3).
@@ -796,7 +796,7 @@ fingerprinting alone — automatically challenged.
 
 ### Fixed
 
-- `ChallengeToken.ip_address` NULL constraint violation — `views._get_ip()` now
+- `ChallengeToken.ip_address` NULL constraint violation: `views._get_ip()` now
   falls back to `0.0.0.0`
 
 ## [0.4.1] - 2026-04-08

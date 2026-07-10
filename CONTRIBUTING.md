@@ -55,16 +55,16 @@ ruff format src/ tests/
 
 ## Architecture Conventions
 
-- **Services are functions, not classes** — business logic lives in
+- **Services are functions, not classes**: business logic lives in
   `src/django_waf/services/` as module-level functions
-- **Settings are namespaced** — all settings use the `DJANGO_WAF_*` prefix and
+- **Settings are namespaced**: all settings use the `DJANGO_WAF_*` prefix and
   are defined in `src/django_waf/conf.py` with sensible defaults
-- **Fail-open design** — if Redis is unavailable or an error occurs during
+- **Fail-open design**: if Redis is unavailable or an error occurs during
   evaluation, the request passes through. Never block legitimate traffic
   due to infrastructure failure
-- **Signals for extensibility** — use Django signals for side effects that
+- **Signals for extensibility**: use Django signals for side effects that
   consuming projects might want to hook into
-- **No external package dependencies beyond Django, django-redis, and httpx** —
+- **No external package dependencies beyond Django, django-redis, and httpx**:
   optional features (Celery, GeoIP) use optional dependencies
 
 ## Commit Messages

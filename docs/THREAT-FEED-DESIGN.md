@@ -1,8 +1,8 @@
-# Collective Threat Intelligence Feed — Design Document
+# Collective Threat Intelligence Feed: Design Document
 
 **Package:** django-django-waf
 **Service domain:** threats.icv.dev
-**Status:** Design — not yet implemented
+**Status:** Design, not yet implemented
 **Date:** April 2026
 **Audience:** Developer implementing the central service
 
@@ -169,7 +169,7 @@ with a `"rules"` key. The v1 feed should always use the object envelope:
 | `rules[].match_type` | `cidr`, `exact`, `regex`, `contains`. Matches client `MatchType` enum. |
 | `rules[].pattern` | The value to match: a CIDR, an IP, or a SHA-256 hash for UA rules. |
 | `rules[].action` | `block`, `challenge`, `throttle`. Never `log_only` in the feed. |
-| `rules[].confidence` | Float 0.0–1.0. The central service's computed confidence score. |
+| `rules[].confidence` | Float 0.0 to 1.0. The central service's computed confidence score. |
 | `rules[].reporters` | Count of distinct installations that reported this threat. |
 | `rules[].first_seen` | ISO 8601 date. When the central service first received a report for this pattern. |
 | `rules[].expires` | ISO 8601 datetime. UTC expiry. Clients deactivate rules absent from the feed or past this timestamp. |
@@ -245,7 +245,7 @@ CREATE TABLE installation (
 CREATE INDEX ON installation (install_id);
 CREATE INDEX ON installation (last_seen_at);
 
--- One row per distinct (rule_type, pattern) — the canonical threat record
+-- One row per distinct (rule_type, pattern): the canonical threat record
 CREATE TABLE threat_signal (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     rule_type           TEXT NOT NULL,             -- cidr, ip, ua, composite
@@ -274,7 +274,7 @@ CREATE INDEX ON threat_signal (last_reported_at);
 CREATE INDEX ON threat_signal (expires_at) WHERE is_published = TRUE;
 CREATE INDEX ON threat_signal (rule_type, is_published);
 
--- Raw report rows — one per installation per period per signal
+-- Raw report rows: one per installation per period per signal
 -- Kept for audit and reprocessing. Partitioned by reported_at.
 CREATE TABLE threat_report (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -307,7 +307,7 @@ CREATE TABLE api_key (
     UNIQUE (installation_id)
 );
 
--- Feed snapshots — the generated feed.json files
+-- Feed snapshots: the generated feed.json files
 CREATE TABLE feed_snapshot (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     generated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -347,7 +347,7 @@ The aggregation pipeline runs as a Celery task (`aggregate_threat_signals`) on
 a 15-minute schedule.
 
 ```python
-# Pseudocode — the actual implementation lives in the central service
+# Pseudocode: the actual implementation lives in the central service
 def aggregate_threat_signals():
     """
     For every threat_signal, recompute confidence and decide whether to publish.
@@ -445,10 +445,10 @@ every signal that has not received a new report.
 
 ### 2.7 Infrastructure
 
-**MVP (0–500 installations):**
+**MVP (0 to 500 installations):**
 
 ```
-Single VPS (Hetzner CX22 — 2 vCPU, 4 GB RAM, ~€4/month)
+Single VPS (Hetzner CX22: 2 vCPU, 4 GB RAM, ~€4/month)
 ├── Docker Compose
 │   ├── fastapi (uvicorn, 2 workers)
 │   ├── postgres:16
@@ -458,7 +458,7 @@ Single VPS (Hetzner CX22 — 2 vCPU, 4 GB RAM, ~€4/month)
 └── Hetzner Object Storage (S3-compatible, feed snapshots)
 ```
 
-**Growth tier (500–10,000 installations):**
+**Growth tier (500 to 10,000 installations):**
 
 ```
 Hetzner CX32 (4 vCPU, 8 GB RAM) for API + Celery
@@ -493,7 +493,7 @@ The scoring system must satisfy three properties:
    intervention.
 
 A Bayesian approach with a Beta distribution is appropriate:
-- Prior: Beta(α=1, β=5) — sceptical prior, starts at ~0.17
+- Prior: Beta(α=1, β=5), a sceptical prior, starting at ~0.17
 - Each new reporter from a distinct installation updates α
 - Signal weight varies by signal type (blocked > challenged > throttled)
 
@@ -504,7 +504,7 @@ SIGNAL_WEIGHTS = {
     "blocked":    1.0,
     "challenged": 0.6,
     "throttled":  0.3,
-    "unsolved":   0.8,   # challenged but never solved — strong bot signal
+    "unsolved":   0.8,   # challenged but never solved, a strong bot signal
 }
 
 # Publication thresholds
@@ -627,14 +627,14 @@ The following illustrates expected confidence values at steady state:
 
 | Reporters | Avg signal strength | Age | Approx. confidence | Published? | Action |
 |---|---|---|---|---|---|
-| 1 | High | 1 day | 0.38 | No | — |
-| 2 | High | 1 day | 0.52 | No | — |
-| 3 | High | 1 day | 0.67 | No | — |
+| 1 | High | 1 day | 0.38 | No | n/a |
+| 2 | High | 1 day | 0.52 | No | n/a |
+| 3 | High | 1 day | 0.67 | No | n/a |
 | 5 | High | 1 day | 0.81 | Yes | challenge |
 | 10 | Medium | 3 days | 0.85 | Yes | challenge |
 | 25 | Mixed | 7 days | 0.91 | Yes | block (CIDR) |
 | 50 | Mixed | 14 days | 0.95 | Yes | block |
-| 5 | High | 10 days (no new reports) | 0.62 | No (decayed) | — |
+| 5 | High | 10 days (no new reports) | 0.62 | No (decayed) | n/a |
 
 ### 3.4 Handling Disagreement
 
@@ -643,10 +643,10 @@ When some installations report a CIDR and others do not:
 - Absence of a report is neutral, not evidence of absence. The score is computed
   only from reporting installations; non-reporters do not reduce confidence.
 - If an installation explicitly submits a report with zero hits for a pattern
-  (not currently in the client schema — see Section 6 for the addition needed),
+  (not currently in the client schema; see Section 6 for the addition needed),
   that counts as a weak negative signal (reduces β by 0.5 per such report).
 - If the confidence stays below the publish threshold due to disagreement, the
-  rule is simply not published — existing clients are unaffected.
+  rule is simply not published; existing clients are unaffected.
 
 ---
 
@@ -724,7 +724,7 @@ snapshot with a private key. The public key is pinned in the client package.
 Clients verify the signature before applying any rules.
 
 ```python
-# Feed envelope with signature (v2 design — not MVP)
+# Feed envelope with signature (v2 design, not MVP)
 {
   "schema_version": "2",
   "generated_at": "...",
@@ -735,7 +735,7 @@ Clients verify the signature before applying any rules.
 ```
 
 The public key rotation mechanism (and key pinning update) requires a minor
-version bump in the client package. Design this properly before implementing —
+version bump in the client package. Design this properly before implementing:
 key management mistakes are worse than no signing.
 
 ---
@@ -754,7 +754,7 @@ Base URL: `https://threats.icv.dev`
 | `GET /v1/install/register` | None (returns an API key) |
 | `GET /health` | None |
 
-**API key format:** `waf_live_<base62(24 random bytes)>` — e.g.,
+**API key format:** `waf_live_<base62(24 random bytes)>`, e.g.
 `waf_live_4Xk9mNpQ2rLsT7vYeAzBcDwF`
 
 Key prefix `waf_live_` is stored in `api_key.key_prefix` for display.
@@ -882,7 +882,7 @@ class AnomalyReport(BaseModel):
 
 class TelemetryPayload(BaseModel):
     schema_version: str = "1"
-    install_id: str           # UUID string — validated as UUID
+    install_id: str           # UUID string, validated as UUID
     period: str               # ISO 8601 interval
     summary: dict
     subnets: list[SubnetReport] = []
@@ -970,7 +970,7 @@ Public statistics. No authentication. Cached aggressively (1 hour).
 #### `POST /v1/install/register`
 
 Register a new installation and obtain an API key. Called once by the client
-(not yet implemented on the client side — see Section 6).
+(not yet implemented on the client side; see Section 6).
 
 **Request body:**
 ```json
@@ -1012,7 +1012,7 @@ The existing client code is largely correct. The following changes are needed:
 
 ### 6.2 Required Changes
 
-**`conf.py` — New settings:**
+**`conf.py`: new settings:**
 
 ```python
 # How often to submit telemetry (hours between submissions).
@@ -1042,7 +1042,7 @@ DJANGO_WAF_FEED_CURSOR_CACHE_KEY: str = getattr(
 )
 ```
 
-**`services/threat_feed.py` — `submit_telemetry()` — Add retry with backoff:**
+**`services/threat_feed.py`, `submit_telemetry()`: add retry with backoff:**
 
 ```python
 def submit_telemetry(payload: dict, report_url: str | None = None) -> bool:
@@ -1067,11 +1067,11 @@ def submit_telemetry(payload: dict, report_url: str | None = None) -> bool:
                 logger.info("django-waf: telemetry submitted (attempt %d)", attempt + 1)
                 return True
             if response.status_code == 409:
-                # Already accepted for this period — treat as success
+                # Already accepted for this period, treat as success
                 logger.info("django-waf: telemetry already accepted for this period")
                 return True
             if response.status_code == 422:
-                # Validation error — retrying won't help
+                # Validation error, retrying won't help
                 logger.warning("django-waf: telemetry rejected (422): %s", response.text[:200])
                 return False
             if response.status_code == 429:
@@ -1089,7 +1089,7 @@ def submit_telemetry(payload: dict, report_url: str | None = None) -> bool:
     return False
 ```
 
-**`services/threat_feed.py` — `sync_feed()` — Add delta update support:**
+**`services/threat_feed.py`, `sync_feed()`: add delta update support:**
 
 ```python
 def sync_feed(feed_url=None, min_confidence=None, use_delta=True):
@@ -1116,7 +1116,7 @@ def sync_feed(feed_url=None, min_confidence=None, use_delta=True):
         cache.set(conf.DJANGO_WAF_FEED_CURSOR_CACHE_KEY, feed_data["cursor"], timeout=None)
 ```
 
-**`build_telemetry_payload()` — Add `country_distribution` and `referer_hashes`:**
+**`build_telemetry_payload()`: add `country_distribution` and `referer_hashes`:**
 
 The current implementation does not populate `country_distribution` (even when
 GeoIP is configured) or `referer_hashes`. Both should be added:
@@ -1151,7 +1151,7 @@ referer_hashes = [
 ]
 ```
 
-**`tasks.py` — `report_threat_telemetry` — Respect the reporting interval:**
+**`tasks.py`, `report_threat_telemetry`: respect the reporting interval:**
 
 The task should check the last submission timestamp in cache and skip if the
 configured interval has not elapsed:
@@ -1179,7 +1179,7 @@ def report_threat_telemetry() -> dict:
         cache.set(last_submitted_key, timezone.now(), timeout=60 * 60 * 48)
 ```
 
-**Management command — `django_waf_report_telemetry` (new):**
+**Management command `django_waf_report_telemetry` (new):**
 
 Add a management command mirroring `django_waf_sync_feed` for manual telemetry
 submission and audit (includes `--dry-run` to print the payload without submitting):
@@ -1193,14 +1193,14 @@ python manage.py django_waf_report_telemetry --dry-run
 If the central service is unreachable:
 
 - `submit_telemetry()` never raises (existing behaviour; `BR-TEL-004`).
-- Failed submissions are logged as WARNING. No local queueing of failed payloads —
+- Failed submissions are logged as WARNING. No local queueing of failed payloads:
   the next scheduled run will produce a fresh payload for the new period.
 - `sync_feed()` returns `{"error": "..."}` on network failure. The existing
-  rules remain active. No rules are expired due to a failed sync — expiry only
+  rules remain active. No rules are expired due to a failed sync; expiry only
   occurs when a rule is explicitly absent from a *successful* feed response.
 
 No additional resilience infrastructure is needed for the MVP. The impact of
-missing one daily submission is a ~1-day data gap in the central service —
+missing one daily submission is a ~1-day data gap in the central service, which is
 acceptable.
 
 ### 6.4 Reporting Frequency
@@ -1305,15 +1305,15 @@ The absolute minimum to ship a working collective threat feed:
 |---|---|
 | `POST /v1/report` endpoint | Yes |
 | `GET /v1/feed.json` (static file) | Yes |
-| `GET /v1/feed.json?since=` (delta) | No — v1.1 |
+| `GET /v1/feed.json?since=` (delta) | No, v1.1 |
 | `GET /v1/stats` | Yes (simple counts) |
 | `POST /v1/install/register` | Yes |
 | `GET /health` | Yes |
 | Confidence scoring | Yes (full algorithm) |
 | Aggregation Celery task (15-min) | Yes |
 | Feed snapshot generation | Yes |
-| Feed signing (Ed25519) | No — v2 |
-| Private rules per Enterprise customer | No — v2 |
+| Feed signing (Ed25519) | No, v2 |
+| Private rules per Enterprise customer | No, v2 |
 | Pre-seeded external threat intel | Yes (manual import script) |
 
 **Client package:**
@@ -1324,24 +1324,24 @@ The absolute minimum to ship a working collective threat feed:
 | Retry with backoff in `submit_telemetry()` | Yes |
 | `country_distribution` in payload | Yes (requires GeoIP configured) |
 | `referer_hashes` in payload | Yes |
-| Delta sync (`?since=` with cursor) | No — v1.1 |
+| Delta sync (`?since=` with cursor) | No, v1.1 |
 | `django_waf_report_telemetry` management command | Yes |
-| Auto-registration (`/v1/install/register`) | No — v1.1; manual key copy is acceptable for MVP |
+| Auto-registration (`/v1/install/register`) | No, v1.1; manual key copy is acceptable for MVP |
 
-### 8.2 Data Model — MVP Tables
+### 8.2 Data Model: MVP Tables
 
 For the MVP, the minimum required tables are:
 
-1. `installation` — track reporters
-2. `threat_signal` — canonical signals
-3. `threat_report` — raw inbound data (without partitioning for MVP — add later)
-4. `api_key` — authentication
-5. `published_rule` — denormalised feed output
-6. `feed_snapshot` — audit trail of generated feeds
+1. `installation`: track reporters
+2. `threat_signal`: canonical signals
+3. `threat_report`: raw inbound data (without partitioning for MVP; add later)
+4. `api_key`: authentication
+5. `published_rule`: denormalised feed output
+6. `feed_snapshot`: audit trail of generated feeds
 
 The `feed_snapshot` table is optional for MVP but trivially cheap to add.
 
-### 8.3 Infrastructure — MVP
+### 8.3 Infrastructure: MVP
 
 ```
 Hetzner CX22 VPS (€4/month)

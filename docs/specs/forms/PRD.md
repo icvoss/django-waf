@@ -1,4 +1,4 @@
-# PRD — Form Protection (v0.11.0)
+# PRD: Form Protection (v0.11.0)
 
 **Status:** Draft for review
 **Target release:** django-waf v0.11.0
@@ -12,7 +12,7 @@
 
 django-waf currently protects at the request layer: rate limiting, anomaly
 scoring, challenges, and rule-based blocking. The middleware sees every
-request but has no semantic knowledge of forms — it can't distinguish a
+request but has no semantic knowledge of forms: it can't distinguish a
 contact-form spam attempt from a login brute-force from a paginated GET on
 a list view.
 
@@ -49,7 +49,7 @@ already uses, so a bot that abuses both layers gets blocked sooner.
   defences for an IP do so via the existing WAF exempt-path mechanism
   or by setting `skip_for_authenticated=True` on per-form
   `FormProtection`. There is intentionally no per-IP-allowlist API on
-  the form-protection layer — that lives at the WAF layer.
+  the form-protection layer; that lives at the WAF layer.
 
 ### 1.3 Non-goals (deliberately weaker than they could be)
 
@@ -140,7 +140,7 @@ example of).
 |---|---|---|---|
 | `ProtectedForm` mixin | Standard Django Forms | Cleanest API; runs in `clean()`; no view changes | Requires `forms.Form` subclass |
 | `@waf_protect_post` decorator | Handwritten POST handlers | Works without Form; explicit at the view | Has to manually pull fields from `request.POST` |
-| `{% waf_protect %}` template tag | Handwritten HTML forms | Pairs with the decorator for HTML-only forms | Template-side only — must combine with decorator |
+| `{% waf_protect %}` template tag | Handwritten HTML forms | Pairs with the decorator for HTML-only forms | Template-side only; must combine with decorator |
 
 The template tag *renders* the protected fields (honeypot, token,
 JsTouch); the decorator *validates* them on POST. Used together they
@@ -150,18 +150,18 @@ cover any form, including those bypassing Django's Form layer.
 
 ```
 src/django_waf/forms/
-    __init__.py              — re-exports ProtectedForm, FormProtection,
+    __init__.py              # re-exports ProtectedForm, FormProtection,
                                waf_protect_post
-    protection.py            — FormProtection orchestrator class
-    fields.py                — HoneypotField, RenderTokenField, JsTouchField
-    mixin.py                 — ProtectedForm mixin
-    decorators.py            — waf_protect_post
+    protection.py            # FormProtection orchestrator class
+    fields.py                # HoneypotField, RenderTokenField, JsTouchField
+    mixin.py                 # ProtectedForm mixin
+    decorators.py            # waf_protect_post
     templatetags/
         __init__.py
-        waf_form_tags.py     — {% waf_protect %}
+        waf_form_tags.py     # {% waf_protect %}
     defences/
         __init__.py
-        base.py              — Defence ABC, Outcome dataclass, contexts
+        base.py              # Defence ABC, Outcome dataclass, contexts
         honeypot.py
         time_trap.py
         render_token.py
@@ -171,11 +171,11 @@ src/django_waf/forms/
         signup_velocity.py
         pow_gate.py
     services/
-        tokens.py            — issue/verify signed form tokens (HMAC)
-        markers.py           — Redis one-shot markers for replay protection
-        counters.py          — per-IP / per-account / per-form counters
-        replay.py            — challenge-replay session/store handling
-    signals.py               — form_submission_passed / _flagged / _blocked
+        tokens.py            # issue/verify signed form tokens (HMAC)
+        markers.py           # Redis one-shot markers for replay protection
+        counters.py          # per-IP / per-account / per-form counters
+        replay.py            # challenge-replay session/store handling
+    signals.py               # form_submission_passed / _flagged / _blocked
                                + credential_attack_observed
 ```
 
@@ -218,7 +218,7 @@ class Outcome:
 **Mechanism:** Renders one or more hidden inputs with names drawn from
 `DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES` (default `["url", "website",
 "homepage", "email_confirm"]`). The set rotates per-form by hashing
-`form_id` — same form always gets the same honeypot names (so caching
+`form_id`: the same form always gets the same honeypot names (so caching
 works) but different forms get different names (so bots can't learn
 one set globally).
 
@@ -227,8 +227,8 @@ one set globally).
   `display: none`, which most modern bots detect).
 - `autocomplete="off"` to defeat password manager autofill.
 - `tabindex="-1"` to skip in keyboard navigation.
-- Visible screen-reader-only label: "Leave this field empty — anti-spam".
-- `aria-hidden="false"` (deliberately not hidden from AT — we *want*
+- Visible screen-reader-only label: "Leave this field empty, anti-spam".
+- `aria-hidden="false"` (deliberately not hidden from AT, because we *want*
   screen-reader users to be told to skip, not for the field to be
   invisible to them).
 
@@ -236,7 +236,7 @@ one set globally).
 verdict, score `5.0`, reason `"honeypot:<field_name>"`.
 
 **Settings:**
-- `DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES` — pool of names to draw from.
+- `DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES`: pool of names to draw from.
 
 **False-positive considerations:** Aggressive password managers
 auto-fill these. The accessibility properties above mitigate; if
@@ -281,7 +281,7 @@ isn't penalised. See §4.3.
 
 ### 3.3 RenderTokenDefence
 
-**Threat:** All — this is the foundation defence
+**Threat:** All; this is the foundation defence
 
 **Mechanism:** A signed token in a hidden field carries the form
 identifier, IP, optional user id, render time, and a nonce. A Redis
@@ -319,7 +319,7 @@ dedicated key in production.
 - `DJANGO_WAF_FORM_TOKEN_TTL` (default `3600`)
 - `DJANGO_WAF_SIGNING_KEY` (package-wide; see §7.5)
 
-**HTMX interaction:** See §4.3 — token persists across re-renders;
+**HTMX interaction:** See §4.3; the token persists across re-renders;
 marker only deleted on successful `pass`.
 
 ### 3.4 UaConsistencyDefence
@@ -335,7 +335,7 @@ User-Agent at render time. On submit, compare to the current UA hash.
 - Match → `pass`.
 
 **False-positive considerations:** Browser updates mid-session
-(extremely rare in practice — happens on restart, not mid-form). At
+(extremely rare in practice; happens on restart, not mid-form). At
 `2.0` it cannot block alone; only contributes alongside another flag.
 
 ### 3.5 JsTouchDefence
@@ -363,10 +363,10 @@ values; the `1.5` weight ensures this can't single-handedly block.
 **Threat:** Credential stuffing, brute force
 
 **Mechanism:** Two counters in Redis:
-- `waf:form:cred_fail:account:<sha256(identifier)>` — per-account
+- `waf:form:cred_fail:account:<sha256(identifier)>`: per-account
   failure count, identifier hashed for privacy. Increments on every
   failed login regardless of whether the account exists (see §3.6.1).
-- `waf:form:cred_fail:ip:<ip>` — per-IP failure count across all
+- `waf:form:cred_fail:ip:<ip>`: per-IP failure count across all
   accounts.
 
 Both have window TTL `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW` (default
@@ -446,14 +446,14 @@ attempts). Window TTL
 
 ### 3.8 PowGateDefence
 
-**Threat:** All — adds a constant CPU cost per submission
+**Threat:** All; adds a constant CPU cost per submission
 
 **Mechanism:** Reuses the existing WAF PoW infrastructure rather than
 duplicating it. Specifically:
 
 - **Server verification** calls
-  `django_waf.services.challenge_service._digest_has_leading_zero_bits`
-  — the same helper the page-level challenge uses (introduced in
+  `django_waf.services.challenge_service._digest_has_leading_zero_bits`,
+  the same helper the page-level challenge uses (introduced in
   v0.10.5). One source of bit-counting logic, no risk of drift.
 - **JS solver** is the same `hasLeadingZeroBits` function shipped in
   `templates/django_waf/challenge.html`. The form's protected-fields
@@ -462,7 +462,7 @@ duplicating it. Specifically:
   page-level challenge template and the form partial reference the
   same code (refactor done as part of this work).
 - **Difficulty source:** form-level PoW is *lighter* than the page
-  challenge by default — `DJANGO_WAF_FORM_POW_DIFFICULTY` (default
+  challenge by default: `DJANGO_WAF_FORM_POW_DIFFICULTY` (default
   `12` bits, ~4k hashes, ~50ms on desktop, ~200ms on mobile). The
   page-level challenge defaults are 22 (desktop) / 18 (mobile);
   form-level is intentionally lower because it runs on *every*
@@ -474,7 +474,7 @@ improvements to the PoW (e.g. argon2-based instead of SHA-256) land
 once and benefit both.
 
 **Solver runs on render**, not on submit. Submit reads the nonce
-from the hidden field — submit itself is instant. If operators want
+from the hidden field, so submit itself is instant. If operators want
 a guarantee the PoW is done before submit, they set
 `data-waf-pow-block-submit="true"` on the form element; this disables
 the submit button until the solver writes the nonce.
@@ -514,7 +514,7 @@ redis.setex(f"waf:form:token:{nonce}", token_ttl, "1")
 ```
 
 The token is the hidden field's value. The Redis marker (`"1"`) is
-the one-shot indicator — its presence means "this token has not yet
+the one-shot indicator: its presence means "this token has not yet
 been spent on a successful submission."
 
 ### 4.2 Verification (in `evaluate()`)
@@ -618,9 +618,9 @@ re-POSTed automatically after the challenge passes.
 9. If present, validate the replay token, fetch the data from session,
    re-construct the POST, and dispatch the original view with the
    restored data.
-10. The view sees a normal POST. The form's defences run again — but
+10. The view sees a normal POST. The form's defences run again, but
     this time the user has a valid waf_pass cookie, so the
-    UaConsistencyDefence sees a fresh UA (it does — first submit was
+    UaConsistencyDefence sees a fresh UA (it does: the first submit was
     pre-challenge, second is post-challenge with same UA) and the
     RenderToken has been refreshed... actually this needs care.
 ```
@@ -636,7 +636,7 @@ re-fire. To prevent an infinite loop:
 **Rule:** When the VerifyView replays a POST, it adds a header
 `X-WAF-Challenge-Passed: <signed marker>` and the FormProtection
 orchestrator treats this as "skip behavioural defences this submit"
-(but **not** integrity defences like render_token and honeypot — those
+(but **not** integrity defences like render_token and honeypot; those
 still run, because the data is the same as the original submit and
 those didn't fire then anyway).
 
@@ -706,7 +706,7 @@ def resolve_verdict(outcomes: list[Outcome]) -> FormVerdict:
 
 | Verdict | Form behaviour | Logging | Counter | Signal |
 |---|---|---|---|---|
-| `PASSED` | Form validates normally | Sampled (`DJANGO_WAF_LOG_SAMPLE_RATE`) | — | `form_submission_passed` |
+| `PASSED` | Form validates normally | Sampled (`DJANGO_WAF_LOG_SAMPLE_RATE`) | n/a | `form_submission_passed` |
 | `FLAGGED` | Challenge redirect (or generic error if challenge disabled) | Always logged | Bump `waf:challenged:<ip>` | `form_submission_flagged` |
 | `BLOCKED` | `forms.ValidationError("submission rejected")` | Always logged | Bump `waf:challenged:<ip>` | `form_submission_blocked` |
 
@@ -779,7 +779,7 @@ DJANGO_WAF_SIGNING_KEY = os.environ.get("DJANGO_WAF_SIGNING_KEY", "")
 ```
 
 **New in v0.11.0.** A dedicated signing secret for any HMAC the WAF
-issues — form render tokens, future signed verdicts, and challenge
+issues: form render tokens, future signed verdicts, and challenge
 tokens (which currently derive from `SECRET_KEY`; the v0.11.0 work
 migrates them onto this key so all WAF-issued signatures share one
 rotation lifecycle).
@@ -903,7 +903,7 @@ without grepping logs.
    grep 'waf.form_submission' app.log | jq 'select(.ip == "1.2.3.4")'
    ```
 2. Look at the `defences` array. Each entry has `name`, `verdict`,
-   `score`, and `reason`. The reasons are structured strings —
+   `score`, and `reason`. The reasons are structured strings:
    `time_trap:fast`, `ua_consistency:changed`, etc.
 3. If the user reproduces the block in a dev environment, the
    `X-WAF-Form-Verdict` header surfaces the same info inline.
@@ -917,11 +917,11 @@ without grepping logs.
 ### 10.2 "Bots are still getting through"
 
 1. Check the log for `verdict: passed` entries on the form_id. Look
-   at the defences array — which ones are running, which aren't?
+   at the defences array: which ones are running, which aren't?
 2. If the bot has a valid render token, it's solving the PoW and
    honeypot. Consider enabling PoW (`defences=(..., "pow_gate")`).
 3. Check `total_score` distribution. If passing submissions are
-   scoring 1.0–1.9 (just under the flag threshold), the threshold
+   scoring 1.0 to 1.9 (just under the flag threshold), the threshold
    may need lowering for that form.
 
 ### 10.3 "Challenge-replay flow isn't working"
@@ -967,44 +967,44 @@ standard.
 
 One module per defence under `tests/forms/`:
 
-- `test_honeypot.py` — empty field passes, non-empty blocks, rotating
+- `test_honeypot.py`: empty field passes, non-empty blocks, rotating
   field names per form_id, accessibility attributes rendered.
-- `test_time_trap.py` — fast submission blocks (<0.5s), slow flag
-  band (0.5–min), expiry flag (>max), passes between min and max.
-- `test_render_token.py` — issue, verify, replay protection, IP
+- `test_time_trap.py`: fast submission blocks (<0.5s), slow flag
+  band (0.5 to min), expiry flag (>max), passes between min and max.
+- `test_render_token.py`: issue, verify, replay protection, IP
   binding, UA binding, signature verification, expiry, marker
   lifecycle.
-- `test_ua_consistency.py` — match passes, mismatch flags.
-- `test_js_touch.py` — sentinel unchanged flags, correct value
+- `test_ua_consistency.py`: match passes, mismatch flags.
+- `test_js_touch.py`: sentinel unchanged flags, correct value
   passes, invalid value flags.
-- `test_credential_throttle.py` — per-account counter increments on
+- `test_credential_throttle.py`: per-account counter increments on
   failure, per-IP counter crosses threshold, account enumeration
   safety (same behaviour whether account exists), window expiry.
-- `test_signup_velocity.py` — increments on pass, blocks when
+- `test_signup_velocity.py`: increments on pass, blocks when
   threshold crossed, window expiry.
-- `test_pow_gate.py` — missing nonce blocks, invalid nonce blocks,
+- `test_pow_gate.py`: missing nonce blocks, invalid nonce blocks,
   valid nonce passes, bit-counting parity with verifier.
 
 ### 12.2 Integration tests
 
-- `test_orchestrator.py` — score aggregation, threshold crossing,
+- `test_orchestrator.py`: score aggregation, threshold crossing,
   block precedence over flag.
-- `test_mixin.py` — field injection, clean() flow, signal emission,
+- `test_mixin.py`: field injection, clean() flow, signal emission,
   skip_for_authenticated behaviour.
-- `test_decorator.py` — POST handling, defence chain runs, signal
+- `test_decorator.py`: POST handling, defence chain runs, signal
   emission.
-- `test_template_tag.py` — renders correct fields, integrates with
+- `test_template_tag.py`: renders correct fields, integrates with
   decorator.
-- `test_challenge_replay.py` — full flow: flag → session store →
+- `test_challenge_replay.py`: full flow: flag → session store →
   redirect → challenge pass → replay → form succeeds. Plus failure
   modes (expired token, missing session, file upload).
-- `test_htmx_re_render.py` — same token survives re-render with
+- `test_htmx_re_render.py`: same token survives re-render with
   validation errors, marker not deleted until successful pass.
-- `test_signals.py` — all 4 signals fire on appropriate verdicts.
-- `test_cross_layer_escalation.py` — form flag bumps
+- `test_signals.py`: all 4 signals fire on appropriate verdicts.
+- `test_cross_layer_escalation.py`: form flag bumps
   `waf:challenged:<ip>`, subsequent WAF challenge failure escalates
   to block.
-- `test_enumeration_timing.py` — measure response time for existing
+- `test_enumeration_timing.py`: measure response time for existing
   vs. nonexistent accounts on a protected login form; assert delta
   under threshold.
 
@@ -1026,11 +1026,11 @@ One module per defence under `tests/forms/`:
 | Decorator + template tag | ~120 | ~200 | 0.5 |
 | Challenge-replay flow | ~200 | ~400 | 1.0 |
 | Signals + logging | ~80 | ~150 | 0.5 |
-| Docs (README, CHANGELOG, runbook) | ~500 | — | 0.5 |
+| Docs (README, CHANGELOG, runbook) | ~500 | n/a | 0.5 |
 | **Total** | **~1940** | **~2500** | **~7 days** |
 
 About one focused week. Commits land defence-by-defence within the
-branch — each defence is independently testable and reviewable.
+branch; each defence is independently testable and reviewable.
 
 ---
 
@@ -1039,13 +1039,13 @@ branch — each defence is independently testable and reviewable.
 The six questions originally posed during PRD review, with the
 decisions taken. Resolved 2026-05-27.
 
-1. **Challenge replay scope** — **In v0.11.0 behind a setting.**
+1. **Challenge replay scope**: **In v0.11.0 behind a setting.**
    `DJANGO_WAF_FORM_CHALLENGE_ON_FLAG` defaults to `True`. If it lands
    buggy in production, operators flip it to `False` and flagged
    submissions get a generic rejection. Implementation lands last in
    the branch so the simpler defences are stable first.
 
-2. **Token signing key** — **Separate, package-wide
+2. **Token signing key**: **Separate, package-wide
    `DJANGO_WAF_SIGNING_KEY`.** Coupling WAF signatures to `SECRET_KEY`
    means rotating one forces rotating the other (and logs every user
    out). The new setting is package-wide because future signed-token
@@ -1054,28 +1054,28 @@ decisions taken. Resolved 2026-05-27.
    value with a Django system check (`django_waf.W003`) warning if
    unset, so v0.10 → v0.11 upgrades don't break.
 
-3. **Default `time_trap` min** — **1.5s, with per-form override
+3. **Default `time_trap` min**: **1.5s, with per-form override
    prominently documented.** Newsletter-signup-style short forms set
    `min_fill_seconds=0.8` (or lower) on their `FormProtection`.
-   1.5s is the right default for a typical 3–5 field form.
+   1.5s is the right default for a typical 3 to 5 field form.
 
-4. **PoW default difficulty** — **Reuse the existing PoW
+4. **PoW default difficulty**: **Reuse the existing PoW
    infrastructure** rather than building a parallel implementation.
    Calls the same `_digest_has_leading_zero_bits` helper introduced
    in v0.10.5 server-side and the same `hasLeadingZeroBits` JS
    helper from the page challenge. Form-level default is `12` bits
-   (~50ms desktop, ~200ms mobile) — lighter than the page challenge
+   (~50ms desktop, ~200ms mobile), lighter than the page challenge
    (22/18) because it runs on every submission, not once per session.
    See §3.8.
 
-5. **HTMX documentation** — **Framework-agnostic.** Single "HTMX
+5. **HTMX documentation**: **Framework-agnostic.** Single "HTMX
    integration" subsection in the operator guide describing the
    token-survives-re-render rule (§4.3) and the
    protected-fields-must-be-in-swap constraint. No project-specific
    examples in the package; consumer projects document their own
    patterns.
 
-6. **`form_submission_passed` default** — **Off by default**
+6. **`form_submission_passed` default**: **Off by default**
    (`DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL = False`). Busy sites have 1000×
    more passed submissions than flagged/blocked, so firing the signal
    on every one is a hidden cost in the hot path. The structured log
@@ -1103,13 +1103,13 @@ decisions taken. Resolved 2026-05-27.
 
 ---
 
-## Appendix A — Glossary
+## Appendix A: Glossary
 
 - **Defence**: a single check (honeypot, time_trap, ...) that
   produces one `Outcome`.
-- **Outcome**: a defence's result — verdict (pass/flag/block) plus
+- **Outcome**: a defence's result, a verdict (pass/flag/block) plus
   score and reason.
-- **Verdict**: the orchestrator's aggregate decision — `PASSED`,
+- **Verdict**: the orchestrator's aggregate decision: `PASSED`,
   `FLAGGED`, or `BLOCKED`.
 - **Render token**: HMAC-signed payload embedded in the form at render
   time, verified on submit.
@@ -1120,7 +1120,7 @@ decisions taken. Resolved 2026-05-27.
 
 ---
 
-## Appendix B — Settings cheat sheet
+## Appendix B: Settings cheat sheet
 
 ```python
 # Package-wide
