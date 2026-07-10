@@ -53,6 +53,11 @@ _BOT_RDNS_KEY = "waf:bot_rdns:{ip}"
 _STATS_KEY = "waf:stats:today"
 _CACHE_TTL = 600  # 10 minutes
 
+_REBUILD_LOCK_KEY = "waf:rule_cache:lock"
+_REBUILD_LOCK_TTL = 5  # seconds
+_REBUILD_LOCK_RETRIES = 3
+_REBUILD_LOCK_RETRY_DELAY = 0.1  # seconds
+
 # In-process rule cache — avoids Redis GET + JSON parse + regex compilation
 # on every request when the rule version hasn't changed.
 _process_cache: RuleCache | None = None
@@ -117,7 +122,63 @@ def load_rule_cache(redis_client) -> RuleCache:
 
 
 def _rebuild_rule_cache(redis_client, version: int, cache_key: str) -> RuleCache:
-    """Rebuild the rule cache from the database and store in Redis."""
+    """Rebuild the rule cache from the database and store in Redis.
+
+    Acquires a short-lived Redis lock before rebuilding so that concurrent
+    worker processes racing on a cache miss (e.g. immediately after the rule
+    version bumps) don't all hit the database at once. Retries a few times
+    on lock contention, then proceeds without the lock (fail-open) rather
+    than blocking indefinitely — a duplicate rebuild is wasted work, not a
+    correctness problem.
+    """
+    lock_acquired = _acquire_rebuild_lock(redis_client)
+    try:
+        return _rebuild_rule_cache_from_db(redis_client, version, cache_key)
+    finally:
+        if lock_acquired:
+            _release_rebuild_lock(redis_client)
+
+
+def _acquire_rebuild_lock(redis_client) -> bool:
+    """Try to acquire the rule-cache rebuild lock, retrying briefly on contention.
+
+    Returns:
+        True if the lock was acquired (caller must release it). False if the
+        lock could not be acquired after retrying — the caller proceeds
+        without it (fail-open).
+    """
+    import time
+
+    for attempt in range(_REBUILD_LOCK_RETRIES + 1):
+        try:
+            acquired = redis_client.set(_REBUILD_LOCK_KEY, "1", nx=True, ex=_REBUILD_LOCK_TTL)
+        except Exception:
+            logger.warning("django-waf: rule cache lock acquisition failed; proceeding without lock")
+            return False
+
+        if acquired:
+            return True
+
+        if attempt < _REBUILD_LOCK_RETRIES:
+            time.sleep(_REBUILD_LOCK_RETRY_DELAY)
+
+    logger.warning(
+        "django-waf: rule cache lock unavailable after %d retries; proceeding fail-open",
+        _REBUILD_LOCK_RETRIES,
+    )
+    return False
+
+
+def _release_rebuild_lock(redis_client) -> None:
+    """Delete the rule-cache rebuild lock."""
+    try:
+        redis_client.delete(_REBUILD_LOCK_KEY)
+    except Exception:
+        logger.warning("django-waf: failed to release rule cache lock")
+
+
+def _rebuild_rule_cache_from_db(redis_client, version: int, cache_key: str) -> RuleCache:
+    """Read active rules from the database and store the JSON cache in Redis."""
     from django_waf.models import AllowRule, BlockRule
 
     block_qs = BlockRule.objects.active().values(

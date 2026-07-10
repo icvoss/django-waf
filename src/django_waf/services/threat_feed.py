@@ -8,7 +8,6 @@ telemetry reporting. Per BR-FEED-001 through BR-TEL-004.
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import logging
 import uuid
 from datetime import timedelta
@@ -160,7 +159,8 @@ def build_telemetry_payload(period_start, period_end) -> dict:
     """Build the anonymised telemetry payload for the reporting period.
 
     Per BR-TEL-002: no full IPs, no paths, no user identifiers. UA strings are
-    SHA-256 hashed. IPs are truncated to /24 subnets.
+    SHA-256 hashed. IPs are truncated to /24 subnets (IPv4) or /48 subnets
+    (IPv6) — a full IPv6 address must never appear in the payload.
 
     Args:
         period_start: datetime of the reporting period start.
@@ -173,6 +173,7 @@ def build_telemetry_payload(period_start, period_end) -> dict:
 
     from django_waf.enums import RuleSource
     from django_waf.models import BlockRule, RequestLog
+    from django_waf.services.anomaly_detector import _get_subnet_prefix
 
     install_id = get_or_create_install_id()
 
@@ -202,7 +203,7 @@ def build_telemetry_payload(period_start, period_end) -> dict:
     subnet_counts: dict[str, dict] = {}
     for log in logs_in_period.values("ip_address", "verdict"):
         try:
-            subnet = str(ipaddress.ip_network(f"{log['ip_address']}/24", strict=False))
+            subnet = _get_subnet_prefix(log["ip_address"])
         except ValueError:
             continue
         if subnet not in subnet_counts:
