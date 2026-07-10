@@ -5,7 +5,14 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-07-10
+
+Minor rather than patch because two changes are consumer-visible behaviour:
+IPv6 sources now produce /48 rule patterns and telemetry keys (previously
+an IPv4-style /24 of IPv6 space), so anything consuming auto-created rule
+patterns or telemetry payloads will see new shapes; and
+`run_all_detectors()` gained an optional `window_minutes` parameter (new
+public API).
 
 ### Fixed
 
