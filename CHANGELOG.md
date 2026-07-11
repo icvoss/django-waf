@@ -5,7 +5,13 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-07-11
+
+Minor because the feed URL defaults change consumer-visible behaviour: a
+site that never set `DJANGO_WAF_FEED_URL` now pulls from
+`threats.drystane.com` rather than the (never-resolving) `threats.icv.dev`
+placeholder. Telemetry stays opt-in, so nothing is transmitted without
+`DJANGO_WAF_FEED_REPORT = True`.
 
 ### Changed
 
