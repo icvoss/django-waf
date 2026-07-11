@@ -210,17 +210,27 @@ DJANGO_WAF_REDIS_ALIAS: str = getattr(settings, "DJANGO_WAF_REDIS_ALIAS", "defau
 # Enable syncing rules from the collective threat feed.
 DJANGO_WAF_FEED_ENABLED: bool = getattr(settings, "DJANGO_WAF_FEED_ENABLED", True)
 
-# URL of the collective threat feed JSON endpoint.
-DJANGO_WAF_FEED_URL: str = getattr(settings, "DJANGO_WAF_FEED_URL", "https://threats.icv.dev/v1/feed.json")
+# URL of the collective threat feed JSON endpoint. Points at the operated
+# feed server (threats.drystane.com); override for a self-hosted or
+# third-party compatible server.
+DJANGO_WAF_FEED_URL: str = getattr(settings, "DJANGO_WAF_FEED_URL", "https://threats.drystane.com/v1/feed.json")
 
 # Minimum confidence score (0.0–1.0) required to import a feed entry as a rule.
 DJANGO_WAF_FEED_MIN_CONFIDENCE: float = getattr(settings, "DJANGO_WAF_FEED_MIN_CONFIDENCE", 0.8)
 
-# Enable reporting local detections back to the collective feed.
+# Enable reporting local detections back to the collective feed. Opt-in by
+# design (ADR-021 point 4): telemetry is never sent unless an operator sets
+# this to True, regardless of whether DJANGO_WAF_FEED_REPORT_URL is
+# configured. Setting this to True is the only step a site needs to start
+# reporting.
 DJANGO_WAF_FEED_REPORT: bool = getattr(settings, "DJANGO_WAF_FEED_REPORT", False)
 
-# URL for reporting detections to the collective feed.
-DJANGO_WAF_FEED_REPORT_URL: str = getattr(settings, "DJANGO_WAF_FEED_REPORT_URL", "https://threats.icv.dev/v1/report")
+# URL for reporting detections to the collective feed. Points at the
+# operated feed server (threats.drystane.com); override for a self-hosted
+# or third-party compatible server.
+DJANGO_WAF_FEED_REPORT_URL: str = getattr(
+    settings, "DJANGO_WAF_FEED_REPORT_URL", "https://threats.drystane.com/v1/report"
+)
 
 # API key for authenticating with the collective threat feed.
 DJANGO_WAF_FEED_API_KEY: str = getattr(settings, "DJANGO_WAF_FEED_API_KEY", "")
