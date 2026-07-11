@@ -5,6 +5,28 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-07-11
+
+Minor because the feed URL defaults change consumer-visible behaviour: a
+site that never set `DJANGO_WAF_FEED_URL` now pulls from
+`threats.drystane.com` rather than the (never-resolving) `threats.icv.dev`
+placeholder. Telemetry stays opt-in, so nothing is transmitted without
+`DJANGO_WAF_FEED_REPORT = True`.
+
+### Changed
+
+- Feed URL defaults now point at `threats.drystane.com` (the operated feed
+  server) instead of the retired `threats.icv.dev` placeholder. Telemetry
+  remains opt-in (`DJANGO_WAF_FEED_REPORT` defaults `False`), so setting
+  `DJANGO_WAF_FEED_REPORT = True` is now the only setting a site needs to
+  start reporting.
+
+### Fixed
+
+- Challenge and verify interstitials now send `X-Robots-Tag: noindex,
+  nofollow, noarchive` and carry a robots meta tag, so search engines do not
+  index the security-check pages or follow their `next` URLs.
+
 ## [1.1.0] - 2026-07-10
 
 Minor rather than patch because two changes are consumer-visible behaviour:

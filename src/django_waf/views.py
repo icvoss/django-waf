@@ -32,10 +32,32 @@ from django.views.generic import TemplateView
 
 logger = logging.getLogger("django_waf.views")
 
+# Applied to every WAF-served interstitial response (challenge and verify).
+# These pages carry ?next= URLs that leak site structure, and a crawler
+# indexing a "Security Check" page pollutes search results. Belt and braces
+# with the <meta name="robots"> tag in challenge.html: some crawlers honour
+# only the header, some only the meta tag.
+_NOINDEX_ROBOTS_HEADER = "noindex, nofollow, noarchive"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+class NoIndexResponseMixin:
+    """Attach X-Robots-Tag: noindex, nofollow, noarchive to every response.
+
+    Applies to any view whose responses must never be indexed or followed by
+    crawlers: the WAF challenge and verify interstitials are the only
+    consumers today. Covers every return path (render, redirect, JSON error)
+    by wrapping ``dispatch`` rather than a single response constructor.
+    """
+
+    def dispatch(self, request: HttpRequest, *args, **kwargs) -> HttpResponse:
+        response = super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
+        response["X-Robots-Tag"] = _NOINDEX_ROBOTS_HEADER
+        return response
 
 
 def _get_ip(request: HttpRequest) -> str:
@@ -103,12 +125,15 @@ def _is_superuser(request: HttpRequest) -> bool:
 # ---------------------------------------------------------------------------
 
 
-class ChallengeView(TemplateView):
+class ChallengeView(NoIndexResponseMixin, TemplateView):
     """
     GET /waf/challenge/?next=<path>
 
     Presents the JS proof-of-work challenge page.
     Access: AllowAny — middleware has already decided a challenge is needed.
+    Every response carries X-Robots-Tag: noindex, nofollow, noarchive
+    (NoIndexResponseMixin) — this page must never be indexed or have its
+    ?next= URL followed by a crawler.
     """
 
     template_name = "django_waf/challenge.html"
@@ -164,13 +189,15 @@ challenge_view = ChallengeView.as_view()
 
 
 @method_decorator(csrf_exempt, name="dispatch")
-class VerifyView(View):
+class VerifyView(NoIndexResponseMixin, View):
     """
     POST /waf/verify/
 
     Accepts a proof-of-work solution (JSON or form-encoded).
     CSRF-exempt because the challenge may be presented before a session exists.
     Access: AllowAny.
+    Every response path (redirect on success, JSON 400 on failure) carries
+    X-Robots-Tag: noindex, nofollow, noarchive (NoIndexResponseMixin).
     """
 
     def post(self, request: HttpRequest) -> HttpResponse:

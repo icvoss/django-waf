@@ -210,6 +210,41 @@ class TestChallengeView:
 
         assert response.get("Cache-Control") == "no-store"
 
+    def test_response_has_noindex_robots_header(self, settings):
+        """Challenge page must never be indexed or have its ?next= followed."""
+        settings.DJANGO_WAF_ENABLED = True
+
+        client = Client()
+
+        with (
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_issue.return_value = _mock_challenge_token("tok")
+
+            response = client.get("/waf/challenge/")
+
+        assert response.get("X-Robots-Tag") == "noindex, nofollow, noarchive"
+
+    def test_rendered_template_has_meta_robots_tag(self, settings):
+        """Belt and braces: the rendered HTML also carries a robots meta tag."""
+        settings.DJANGO_WAF_ENABLED = True
+
+        client = Client()
+
+        with (
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_issue.return_value = _mock_challenge_token("tok")
+
+            response = client.get("/waf/challenge/")
+
+        content = response.content.decode()
+        assert '<meta name="robots" content="noindex, nofollow">' in content
+
 
 # ---------------------------------------------------------------------------
 # VerifyView
@@ -374,6 +409,65 @@ class TestVerifyView:
             )
 
         assert response.status_code == 400
+
+    def test_success_redirect_has_noindex_robots_header(self, settings):
+        """The success (redirect) response path must also be noindex."""
+        settings.DJANGO_WAF_ENABLED = True
+
+        client = Client()
+
+        with (
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
+            patch("django_waf.services.challenge_service.issue_pass_cookie"),
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_verify.return_value = True
+
+            response = client.post(
+                "/waf/verify/",
+                data={"token": "tok", "nonce": "nonce99", "next": "/target/"},
+            )
+
+        assert response.status_code == 302
+        assert response.get("X-Robots-Tag") == "noindex, nofollow, noarchive"
+
+    def test_missing_token_error_response_has_noindex_robots_header(self):
+        """A 400 JSON error response path must also be noindex."""
+        client = Client()
+
+        with patch("django_waf.views._get_redis_client") as mock_redis_fn:
+            mock_redis_fn.return_value = _mock_redis()
+
+            response = client.post("/waf/verify/", data={"nonce": "12345"})
+
+        assert response.status_code == 400
+        assert response.get("X-Robots-Tag") == "noindex, nofollow, noarchive"
+
+    def test_invalid_solution_error_response_has_noindex_robots_header(self, settings):
+        """The 400 JSON response with a new_token must also be noindex."""
+        from django_waf.services.challenge_service import ChallengeInvalidError
+
+        settings.DJANGO_WAF_ENABLED = True
+
+        client = Client()
+
+        with (
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_verify.side_effect = ChallengeInvalidError("bad nonce")
+            mock_issue.return_value = _mock_challenge_token("newtoken456")
+
+            response = client.post(
+                "/waf/verify/",
+                data={"token": "tok", "nonce": "wrongnonce"},
+            )
+
+        assert response.status_code == 400
+        assert response.get("X-Robots-Tag") == "noindex, nofollow, noarchive"
 
 
 # ---------------------------------------------------------------------------

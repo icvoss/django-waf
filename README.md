@@ -201,10 +201,10 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `DJANGO_WAF_FEED_ENABLED` | `True` | Enable collective threat feed sync |
-| `DJANGO_WAF_FEED_URL` | `"https://threats.icv.dev/v1/feed.json"` | Threat feed JSON endpoint |
+| `DJANGO_WAF_FEED_URL` | `"https://threats.drystane.com/v1/feed.json"` | Threat feed JSON endpoint |
 | `DJANGO_WAF_FEED_MIN_CONFIDENCE` | `0.8` | Minimum confidence (0.0 to 1.0) to import a feed entry as a rule |
-| `DJANGO_WAF_FEED_REPORT` | `False` | Report local detections back to the feed (opt-in) |
-| `DJANGO_WAF_FEED_REPORT_URL` | `"https://threats.icv.dev/v1/report"` | Telemetry reporting endpoint |
+| `DJANGO_WAF_FEED_REPORT` | `False` | Report local detections back to the feed (opt-in). Setting this to `True` is the only setting a site needs to start reporting |
+| `DJANGO_WAF_FEED_REPORT_URL` | `"https://threats.drystane.com/v1/report"` | Telemetry reporting endpoint |
 | `DJANGO_WAF_FEED_API_KEY` | `""` | API key for feed authentication |
 
 ### Form protection (v0.11.0)
