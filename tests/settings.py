@@ -11,6 +11,10 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    # Registered so the browsable API and DRF's own app config work when the
+    # dev extra (which pulls in djangorestframework) is installed. The
+    # package itself never requires this — see django_waf/api/__init__.py.
+    "rest_framework",
     "django_waf",
 ]
 
@@ -83,3 +87,9 @@ DJANGO_WAF_ENABLED = True
 DJANGO_WAF_FEED_ENABLED = False  # Never hit the real feed in tests
 DJANGO_WAF_FEED_REPORT = False  # Never report to the feed in tests
 DJANGO_WAF_LOG_SAMPLE_RATE = 1.0  # Log everything in tests
+
+# Enabled at urlconf-import time so waf/api/ routes exist for tests/test_api.py.
+# Individual tests exercise the disabled (503) path by patching
+# django_waf.conf.DJANGO_WAF_API_ENABLED directly, which api/viewsets.py reads
+# live on every request via WafApiEnabledMixin.initial().
+DJANGO_WAF_API_ENABLED = True
