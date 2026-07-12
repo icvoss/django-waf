@@ -56,6 +56,4 @@ class Command(BaseCommand):
         except Exception as exc:
             raise CommandError(f"Challenge token pruning failed: {exc}") from exc
 
-        self.stdout.write(
-            self.style.SUCCESS(f"Deleted {deleted_count} challenge token(s) older than {hours} hour(s).")
-        )
+        self.stdout.write(self.style.SUCCESS(f"Deleted {deleted_count} challenge token(s) older than {hours} hour(s)."))
