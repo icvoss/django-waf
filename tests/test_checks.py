@@ -10,11 +10,19 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from django.test import override_settings
+
 
 def _run_checks():
     from django_waf.checks import check_challenge_difficulty
 
     return check_challenge_difficulty(app_configs=None)
+
+
+def _run_middleware_ordering_check():
+    from django_waf.checks import check_middleware_ordering
+
+    return check_middleware_ordering(app_configs=None)
 
 
 def _run_signing_key_check():
@@ -171,3 +179,60 @@ class TestFeedUrlSchemeCheck:
             patch.object(conf_mod, "DJANGO_WAF_FEED_URL", "http://threats.drystane.com/v1/feed.json"),
         ):
             assert _run_feed_url_scheme_check() == []
+
+
+class TestMiddlewareOrderingCheck:
+    """W004 — warns when WafMiddleware runs before AuthenticationMiddleware.
+
+    request.user is not available until AuthenticationMiddleware has run,
+    so a WAF that evaluates the request first can never see the staff
+    bypass, silently blocking/challenging staff and superuser accounts.
+    """
+
+    def test_warns_when_waf_runs_before_auth(self):
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django_waf.middleware.WafMiddleware",
+            "django.contrib.sessions.middleware.SessionMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+        ]
+
+        with override_settings(MIDDLEWARE=middleware):
+            messages = _run_middleware_ordering_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W004"
+        assert "AuthenticationMiddleware" in messages[0].hint
+
+    def test_passes_when_waf_runs_after_auth(self):
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django.contrib.sessions.middleware.SessionMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+            "django_waf.middleware.WafMiddleware",
+        ]
+
+        with override_settings(MIDDLEWARE=middleware):
+            assert _run_middleware_ordering_check() == []
+
+    def test_passes_when_waf_middleware_absent(self):
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django.contrib.sessions.middleware.SessionMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+        ]
+
+        with override_settings(MIDDLEWARE=middleware):
+            assert _run_middleware_ordering_check() == []
+
+    def test_warns_when_auth_middleware_missing_entirely(self):
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django_waf.middleware.WafMiddleware",
+        ]
+
+        with override_settings(MIDDLEWARE=middleware):
+            messages = _run_middleware_ordering_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W004"

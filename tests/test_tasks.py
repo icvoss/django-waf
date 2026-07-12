@@ -18,6 +18,7 @@ from django.utils import timezone
 from django_waf.enums import Verdict
 from django_waf.testing.factories import (
     BlockRuleFactory,
+    ChallengeTokenFactory,
     IPReputationFactory,
     RequestLogFactory,
 )
@@ -323,6 +324,61 @@ class TestPruneRequestLogs:
         from django_waf.models import RequestLog
 
         assert not RequestLog.objects.filter(pk=log.pk).exists()
+
+
+# ---------------------------------------------------------------------------
+# prune_challenge_tokens
+# ---------------------------------------------------------------------------
+
+
+class TestPruneChallengeTokens:
+    @pytest.mark.django_db
+    def test_deletes_expired_pending_and_failed_tokens(self):
+        """PENDING and FAILED tokens whose expiry is older than the threshold are deleted."""
+        from django_waf.enums import ChallengeStatus
+
+        old_pending = ChallengeTokenFactory(
+            status=ChallengeStatus.PENDING,
+            expires_at=timezone.now() - timedelta(hours=25),
+        )
+        old_failed = ChallengeTokenFactory(
+            status=ChallengeStatus.FAILED,
+            expires_at=timezone.now() - timedelta(hours=48),
+        )
+
+        from django_waf.tasks import prune_challenge_tokens
+
+        result = prune_challenge_tokens(hours=24)
+
+        from django_waf.models import ChallengeToken
+
+        assert result["deleted_count"] == 2
+        assert not ChallengeToken.objects.filter(pk=old_pending.pk).exists()
+        assert not ChallengeToken.objects.filter(pk=old_failed.pk).exists()
+
+    @pytest.mark.django_db
+    def test_leaves_solved_and_non_expired_tokens(self):
+        """SOLVED tokens and tokens within the age threshold survive pruning."""
+        from django_waf.enums import ChallengeStatus
+
+        solved_old = ChallengeTokenFactory(
+            status=ChallengeStatus.SOLVED,
+            expires_at=timezone.now() - timedelta(hours=48),
+        )
+        recent_pending = ChallengeTokenFactory(
+            status=ChallengeStatus.PENDING,
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+
+        from django_waf.tasks import prune_challenge_tokens
+
+        result = prune_challenge_tokens(hours=24)
+
+        from django_waf.models import ChallengeToken
+
+        assert result["deleted_count"] == 0
+        assert ChallengeToken.objects.filter(pk=solved_old.pk).exists()
+        assert ChallengeToken.objects.filter(pk=recent_pending.pk).exists()
 
 
 # ---------------------------------------------------------------------------

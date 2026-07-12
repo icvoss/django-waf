@@ -50,6 +50,7 @@ dev = [
     "pytest-django>=4.8",
     "pytest-cov>=5.0",
     "factory-boy>=3.3",
+    "fakeredis>=2.20",
     "ruff>=0.5.0",
     "mypy>=1.10",
     "django-stubs>=5.0",
@@ -79,6 +80,10 @@ ignore = ["S101", "S104", "S105", "S106", "S107", "S110", "S112", "S311", "S603"
 # frequently exceed the 120-char line limit. Migrations are not
 # hand-edited, so lint rules for them are relaxed.
 "src/django_waf/migrations/*.py" = ["E501"]
+# Pytest fixtures imported from django_waf.testing.fixtures are used as
+# test-function parameters of the same name — the standard pytest fixture
+# pattern, which ruff's F811 misreads as shadowing/redefinition.
+"tests/test_testing_fixtures.py" = ["F811"]
 
 [tool.mypy]
 python_version = "3.11"

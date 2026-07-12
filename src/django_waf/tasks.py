@@ -10,6 +10,7 @@ Scheduled tasks (Celery Beat):
   - detect_anomalies        — every 15 minutes (BR-ANOM-005)
   - parse_access_log        — every 10 minutes
   - prune_request_logs      — daily 04:00 (BR-LOG-003)
+  - prune_challenge_tokens  — daily 04:15
   - expire_rules            — every 30 minutes (BR-LIFE-002)
   - update_ip_reputation    — every 6 hours
   - sync_threat_feed        — daily 04:30
@@ -178,6 +179,34 @@ def prune_request_logs(days: int | None = None) -> dict:
     cutoff = timezone.now() - timedelta(days=retention_days)
     deleted, _ = RequestLog.objects.filter(timestamp__lt=cutoff).delete()
     logger.info("django-waf: pruned %d RequestLog records older than %d days", deleted, retention_days)
+    return {"deleted_count": deleted}
+
+
+@shared_task
+def prune_challenge_tokens(hours: int = 24) -> dict:
+    """Delete expired or failed ChallengeToken records older than N hours.
+
+    Only PENDING and FAILED tokens are pruned — SOLVED tokens are kept for
+    reputation aggregation (see update_ip_reputation) and EXPIRED tokens are
+    handled separately by the challenge-verification flow, not this task.
+
+    Args:
+        hours: Age threshold in hours, measured against expires_at. Defaults to 24.
+
+    Returns:
+        Dict with keys: deleted_count.
+
+    Scheduled: daily at 04:15.
+    """
+    from django_waf.enums import ChallengeStatus
+    from django_waf.models import ChallengeToken
+
+    cutoff = timezone.now() - timedelta(hours=hours)
+    deleted, _ = ChallengeToken.objects.filter(
+        status__in=[ChallengeStatus.PENDING, ChallengeStatus.FAILED],
+        expires_at__lt=cutoff,
+    ).delete()
+    logger.info("django-waf: pruned %d ChallengeToken records older than %d hours", deleted, hours)
     return {"deleted_count": deleted}
 
 

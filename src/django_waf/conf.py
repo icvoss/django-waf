@@ -8,6 +8,11 @@ at call time to respect pytest settings overrides.
 
 from django.conf import settings
 
+try:
+    from celery.schedules import crontab
+except ImportError:
+    crontab = None  # type: ignore[assignment]
+
 # Enable or disable the WAF middleware entirely.
 DJANGO_WAF_ENABLED: bool = getattr(settings, "DJANGO_WAF_ENABLED", True)
 
@@ -371,3 +376,89 @@ DJANGO_WAF_ESCALATION_BLOCK_TTL: int = getattr(settings, "DJANGO_WAF_ESCALATION_
 # Cloud spray detection: many distinct IPs with identical behaviour.
 DJANGO_WAF_CLOUD_SPRAY_MIN_IPS: int = getattr(settings, "DJANGO_WAF_CLOUD_SPRAY_MIN_IPS", 20)
 DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP: int = getattr(settings, "DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP", 3)
+
+# ---------------------------------------------------------------------------
+# Celery Beat schedule helper
+# ---------------------------------------------------------------------------
+# Ready-made CELERY_BEAT_SCHEDULE entries for every periodic django-waf task.
+# Consuming projects merge this into their own schedule rather than
+# hand-transcribing task names and cadences::
+#
+#     CELERY_BEAT_SCHEDULE = {
+#         **DJANGO_WAF_CELERY_BEAT_SCHEDULE,
+#         "my-other-task": {...},
+#     }
+#
+# Building this dict never imports celery at settings-module-import time in a
+# way that can fail: the ``crontab`` import above is guarded, so entries that
+# need a wall-clock time (``crontab(hour=.., minute=..)``) are only included
+# when celery is installed. The ``*/N minute`` entries use a plain integer
+# number of seconds, which Celery Beat accepts without importing
+# ``crontab`` at all, so they are always present regardless of whether
+# celery is installed. This module must remain importable even when celery
+# is entirely absent from the environment (e.g. projects that don't use
+# Celery at all still import django_waf.conf indirectly via checks/admin).
+_CELERY_BEAT_INTERVAL_ENTRIES: dict = {
+    "django-waf-generate-blocklist": {
+        "task": "django_waf.tasks.generate_blocklist",
+        "schedule": 300.0,  # every 5 minutes
+    },
+    "django-waf-flush-rule-hit-counts": {
+        "task": "django_waf.tasks.flush_rule_hit_counts",
+        "schedule": 300.0,  # every 5 minutes
+    },
+    "django-waf-detect-anomalies": {
+        "task": "django_waf.tasks.detect_anomalies",
+        "schedule": 900.0,  # every 15 minutes
+    },
+    "django-waf-parse-access-log": {
+        "task": "django_waf.tasks.parse_access_log",
+        "schedule": 600.0,  # every 10 minutes
+    },
+    "django-waf-expire-rules": {
+        "task": "django_waf.tasks.expire_rules",
+        "schedule": 1800.0,  # every 30 minutes
+    },
+    "django-waf-update-ip-reputation": {
+        "task": "django_waf.tasks.update_ip_reputation",
+        "schedule": 21600.0,  # every 6 hours
+    },
+}
+
+if crontab is not None:
+    _CELERY_BEAT_CRON_ENTRIES: dict = {
+        "django-waf-prune-request-logs": {
+            "task": "django_waf.tasks.prune_request_logs",
+            "schedule": crontab(hour=4, minute=0),
+        },
+        "django-waf-prune-challenge-tokens": {
+            "task": "django_waf.tasks.prune_challenge_tokens",
+            "schedule": crontab(hour=4, minute=15),
+        },
+        "django-waf-sync-threat-feed": {
+            "task": "django_waf.tasks.sync_threat_feed",
+            "schedule": crontab(hour=4, minute=30),
+        },
+        "django-waf-report-threat-telemetry": {
+            "task": "django_waf.tasks.report_threat_telemetry",
+            "schedule": crontab(hour=5, minute=0),
+        },
+        "django-waf-update-geoip-database": {
+            "task": "django_waf.tasks.update_geoip_database",
+            "schedule": crontab(day_of_week=0, hour=3, minute=0),  # weekly, Sunday 03:00 UTC
+        },
+    }
+else:
+    # celery is not installed — the cron-time entries above need
+    # crontab() to build a schedule, so they are omitted rather than
+    # guessed at with a plain interval. The */N minute entries above still
+    # work fine as they don't touch crontab at all.
+    _CELERY_BEAT_CRON_ENTRIES = {}
+
+# Ready-made CELERY_BEAT_SCHEDULE fragment covering every periodic
+# django-waf task. See the module docstring above this block for usage.
+DJANGO_WAF_CELERY_BEAT_SCHEDULE: dict = getattr(
+    settings,
+    "DJANGO_WAF_CELERY_BEAT_SCHEDULE",
+    {**_CELERY_BEAT_INTERVAL_ENTRIES, **_CELERY_BEAT_CRON_ENTRIES},
+)

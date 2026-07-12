@@ -315,52 +315,91 @@ waf = FormProtection(
 )
 ```
 
-## Celery Beat Schedule
+## Structured Logging
 
-If using Celery, configure the beat schedule for automated tasks:
+`django_waf.logging.WafStructuredFormatter` renders each log record as one
+JSON object per line, ready for a log aggregator (ELK, Loki, CloudWatch
+Logs, etc.). It always includes `timestamp`, `level`, `logger`, and
+`message`; it additionally includes `ip`, `verdict`, `rule_id`,
+`anomaly_score`, `latency_ms`, `path`, `method`, and `user_agent` (truncated
+to 200 characters) whenever those attributes are present on the log record
+— fields that are absent are omitted entirely rather than emitted as
+`null`.
+
+Wire it into the `django_waf` logger via `LOGGING`:
 
 ```python
-from celery.schedules import crontab
-
-CELERY_BEAT_SCHEDULE = {
-    "django-waf-flush-rule-hit-counts": {
-        "task": "django_waf.tasks.flush_rule_hit_counts",
-        "schedule": crontab(minute="*/5"),
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "waf_json": {
+            "()": "django_waf.logging.WafStructuredFormatter",
+        },
     },
-    "django-waf-generate-blocklist": {
-        "task": "django_waf.tasks.generate_blocklist",
-        "schedule": crontab(minute="*/5"),
+    "handlers": {
+        "waf_json": {
+            "class": "logging.StreamHandler",
+            "formatter": "waf_json",
+        },
     },
-    "django-waf-detect-anomalies": {
-        "task": "django_waf.tasks.detect_anomalies",
-        "schedule": crontab(minute="*/15"),
-    },
-    "django-waf-parse-access-log": {
-        "task": "django_waf.tasks.parse_access_log",
-        "schedule": crontab(minute="*/10"),
-    },
-    "django-waf-expire-rules": {
-        "task": "django_waf.tasks.expire_rules",
-        "schedule": crontab(minute="*/30"),
-    },
-    "django-waf-update-ip-reputation": {
-        "task": "django_waf.tasks.update_ip_reputation",
-        "schedule": crontab(hour="*/6", minute=0),
-    },
-    "django-waf-prune-request-logs": {
-        "task": "django_waf.tasks.prune_request_logs",
-        "schedule": crontab(hour=4, minute=0),
-    },
-    "django-waf-sync-threat-feed": {
-        "task": "django_waf.tasks.sync_threat_feed",
-        "schedule": crontab(hour=4, minute=30),
-    },
-    "django-waf-report-threat-telemetry": {
-        "task": "django_waf.tasks.report_threat_telemetry",
-        "schedule": crontab(hour=5, minute=0),
+    "loggers": {
+        "django_waf": {
+            "handlers": ["waf_json"],
+            "level": "INFO",
+            "propagate": False,
+        },
     },
 }
 ```
+
+## Celery Beat Schedule
+
+If using Celery, `django_waf.conf.DJANGO_WAF_CELERY_BEAT_SCHEDULE` provides a
+ready-made schedule fragment covering every periodic django-waf task. Merge
+it into your project's `CELERY_BEAT_SCHEDULE` rather than hand-transcribing
+task names and cadences:
+
+```python
+from django_waf.conf import DJANGO_WAF_CELERY_BEAT_SCHEDULE
+
+CELERY_BEAT_SCHEDULE = {
+    **DJANGO_WAF_CELERY_BEAT_SCHEDULE,
+    # ... your project's own periodic tasks
+}
+```
+
+The `*/N minute` tasks (`generate_blocklist`, `flush_rule_hit_counts`,
+`detect_anomalies`, `parse_access_log`, `expire_rules`,
+`update_ip_reputation`) are expressed as plain second-interval schedules, so
+they are always present regardless of whether `celery` is installed.
+
+The wall-clock tasks (`prune_request_logs`, `prune_challenge_tokens`,
+`sync_threat_feed`, `report_threat_telemetry`, `update_geoip_database`) need
+`celery.schedules.crontab` to build their schedule. Because `django_waf.conf`
+must stay importable even when `celery` is entirely absent from the
+environment, the `crontab` import is guarded: if `celery` is not installed,
+these five entries are simply omitted from the dict rather than
+approximated. Install the `celery` extra (`pip install django-waf[celery]`)
+to get the full schedule:
+
+| Task | Cadence |
+|------|---------|
+| `generate_blocklist` | every 5 minutes |
+| `flush_rule_hit_counts` | every 5 minutes |
+| `detect_anomalies` | every 15 minutes |
+| `parse_access_log` | every 10 minutes |
+| `expire_rules` | every 30 minutes |
+| `update_ip_reputation` | every 6 hours |
+| `prune_request_logs` | daily 04:00 |
+| `prune_challenge_tokens` | daily 04:15 |
+| `sync_threat_feed` | daily 04:30 |
+| `report_threat_telemetry` | daily 05:00 |
+| `update_geoip_database` | weekly, Sunday 03:00 UTC |
+
+You may of course still hand-write `CELERY_BEAT_SCHEDULE` entries yourself
+(or override `DJANGO_WAF_CELERY_BEAT_SCHEDULE` via the setting of the same
+name) if you need different cadences.
 
 ## Management Commands
 
@@ -369,6 +408,7 @@ CELERY_BEAT_SCHEDULE = {
 | `django_waf_generate_blocklist` | Generate the nginx blocklist file (`--dry-run` to preview) |
 | `django_waf_detect_anomalies` | Run anomaly detectors and auto-create block rules (`--dry-run`) |
 | `django_waf_prune_logs` | Delete `RequestLog` entries older than the retention period (`--dry-run`) |
+| `django_waf_prune_challenges` | Delete pending/failed `ChallengeToken` entries older than N hours (`--hours`, `--dry-run`) |
 | `django_waf_sync_feed` | Fetch and import rules from the collective threat feed (`--dry-run`) |
 
 ## Dashboard
