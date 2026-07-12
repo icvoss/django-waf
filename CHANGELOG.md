@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Dashboard time-range selector: `DashboardStatsPanel` and
+  `DashboardTopBlockedPanel` accept `?range=today|7d|30d` (default
+  `today`). The stats panel aggregates `RequestLog` verdict counts directly
+  from the database for `7d`/`30d` (the Redis snapshot only covers "today");
+  the top-blocked panel filters `IPReputation` by `last_seen_at`. The
+  selector lives inside `stats_panel.html` so its active state survives each
+  HTMX swap; the dashboard shell's 30 s auto-refresh always requests the
+  default `today` range.
+- Rule-effectiveness dashboard panel (`/waf/dashboard/rule-effectiveness/`,
+  `DashboardRuleEffectivenessPanel`): lists the top 10 active `BlockRule`
+  records by `hit_count` and flags active rules with `hit_count=0` as
+  removal candidates.
 - System check `django_waf.W005`: warns when `DJANGO_WAF_FEED_ENABLED` is
   true but `DJANGO_WAF_FEED_URL` is not `https://`. Feed responses become
   `BlockRule` records, so a plaintext feed is a rule-injection vector. The

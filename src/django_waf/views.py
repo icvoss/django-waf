@@ -10,6 +10,7 @@ Staff dashboard (staff/superuser only):
     GET  /waf/dashboard/stats/             — DashboardStatsPanel
     GET  /waf/dashboard/top-blocked/       — DashboardTopBlockedPanel
     GET  /waf/dashboard/anomalies/         — DashboardAnomalyPanel
+    GET  /waf/dashboard/rule-effectiveness/ — DashboardRuleEffectivenessPanel
     POST /waf/dashboard/anomalies/<id>/confirm/  — DashboardAnomalyConfirmView
     POST /waf/dashboard/anomalies/<id>/reject/   — DashboardAnomalyRejectView
 """
@@ -118,6 +119,32 @@ def _is_staff(request: HttpRequest) -> bool:
 
 def _is_superuser(request: HttpRequest) -> bool:
     return request.user.is_authenticated and request.user.is_superuser  # type: ignore[union-attr]
+
+
+# Time-range options for the dashboard's stats and top-blocked panels.
+_DASHBOARD_RANGES = {"today", "7d", "30d"}
+
+
+def _clean_range_param(request: HttpRequest) -> str:
+    """Return a validated ?range= value, defaulting to 'today' on anything unrecognised."""
+    range_param = request.GET.get("range", "today")
+    if range_param not in _DASHBOARD_RANGES:
+        return "today"
+    return range_param
+
+
+def _range_since(range_param: str):
+    """Return the datetime a given range param starts from."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    now = timezone.now()
+    if range_param == "7d":
+        return now - timedelta(days=7)
+    if range_param == "30d":
+        return now - timedelta(days=30)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +336,7 @@ class DashboardView(StaffRequiredMixin, TemplateView):
         ctx["stats_url"] = reverse("django_waf:dashboard-stats")
         ctx["top_blocked_url"] = reverse("django_waf:dashboard-top-blocked")
         ctx["anomalies_url"] = reverse("django_waf:dashboard-anomalies")
+        ctx["rule_effectiveness_url"] = reverse("django_waf:dashboard-rule-effectiveness")
         return ctx
 
 
@@ -317,10 +345,12 @@ dashboard_view = DashboardView.as_view()
 
 class DashboardStatsPanel(StaffRequiredMixin, TemplateView):
     """
-    GET /waf/dashboard/stats/
+    GET /waf/dashboard/stats/?range=today|7d|30d
 
-    HTMX fragment: real-time counters from Redis or RequestLog fallback.
-    Auto-refreshed every 30 s by the dashboard shell.
+    HTMX fragment: real-time counters from Redis (range="today" only) or a
+    RequestLog DB aggregate. Auto-refreshed every 30 s by the dashboard shell
+    (always at the default "today" range — see the range selector inside
+    stats_panel.html for the user-driven 7d/30d views).
     Access: Staff only.
     """
 
@@ -328,11 +358,22 @@ class DashboardStatsPanel(StaffRequiredMixin, TemplateView):
 
     def get_context_data(self, **kwargs) -> dict:
         ctx = super().get_context_data(**kwargs)
-        ctx.update(self._fetch_stats())
+        range_param = _clean_range_param(self.request)
+        ctx["range_param"] = range_param
+        ctx["stats_url"] = reverse("django_waf:dashboard-stats")
+        ctx.update(self._fetch_stats(range_param))
         return ctx
 
-    def _fetch_stats(self) -> dict:
-        """Return today's counter dict, preferring Redis over DB aggregate."""
+    def _fetch_stats(self, range_param: str) -> dict:
+        """Return the counter dict for the given range.
+
+        "today" prefers the Redis live snapshot, falling back to a DB
+        aggregate from midnight. "7d"/"30d" have no Redis snapshot, so they
+        go straight to the DB aggregate over the wider window.
+        """
+        if range_param != "today":
+            return self._db_stats(_range_since(range_param))
+
         try:
             redis_client = _get_redis_client()
             raw: dict = {}
@@ -356,7 +397,7 @@ class DashboardStatsPanel(StaffRequiredMixin, TemplateView):
 
         except Exception:
             logger.warning("django-waf: could not fetch stats from Redis; falling back to DB")
-            raw = self._db_stats_today()
+            return self._db_stats(_range_since("today"))
 
         return {
             "total": int(raw.get("total", 0)),
@@ -368,15 +409,14 @@ class DashboardStatsPanel(StaffRequiredMixin, TemplateView):
         }
 
     @staticmethod
-    def _db_stats_today() -> dict:
+    def _db_stats(since) -> dict:
+        """Aggregate RequestLog verdict counts for timestamp >= since."""
         from django.db.models import Count
-        from django.utils import timezone
 
         from django_waf.enums import Verdict
         from django_waf.models import RequestLog
 
-        today = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        rows = RequestLog.objects.filter(timestamp__gte=today).values("verdict").annotate(n=Count("id"))
+        rows = RequestLog.objects.filter(timestamp__gte=since).values("verdict").annotate(n=Count("id"))
         mapping = {row["verdict"]: row["n"] for row in rows}
         total = sum(mapping.values())
         return {
@@ -388,15 +428,27 @@ class DashboardStatsPanel(StaffRequiredMixin, TemplateView):
             "passed": mapping.get(Verdict.PASSED, 0),
         }
 
+    @classmethod
+    def _db_stats_today(cls) -> dict:
+        """Retained for backwards compatibility with any external callers."""
+        return cls._db_stats(_range_since("today"))
+
 
 dashboard_stats_panel = DashboardStatsPanel.as_view()
 
 
 class DashboardTopBlockedPanel(StaffRequiredMixin, TemplateView):
     """
-    GET /waf/dashboard/top-blocked/
+    GET /waf/dashboard/top-blocked/?range=today|7d|30d
 
     HTMX fragment: top 10 IPs by blocked_requests from IPReputation.
+
+    IPReputation is a rolling, per-IP aggregate maintained by the scoring
+    service (one row per IP, continuously updated) rather than a per-request
+    log — there is no "requests in the last 7 days" figure to sum. The range
+    filter is applied to ``last_seen_at`` instead: it narrows the IP list to
+    addresses seen within the window, which is the closest honest reading of
+    "top blocked IPs in this range" the model supports.
     Access: Staff only.
     """
 
@@ -404,10 +456,13 @@ class DashboardTopBlockedPanel(StaffRequiredMixin, TemplateView):
 
     def get_context_data(self, **kwargs) -> dict:
         ctx = super().get_context_data(**kwargs)
+        range_param = _clean_range_param(self.request)
+        ctx["range_param"] = range_param
         try:
             from django_waf.models import IPReputation
 
-            ctx["ips"] = IPReputation.objects.order_by("-blocked_requests")[:10]
+            since = _range_since(range_param)
+            ctx["ips"] = IPReputation.objects.filter(last_seen_at__gte=since).order_by("-blocked_requests")[:10]
         except Exception:
             logger.warning("django-waf: could not fetch top-blocked IPs; degrading to empty panel")
             ctx["ips"] = []
@@ -415,6 +470,35 @@ class DashboardTopBlockedPanel(StaffRequiredMixin, TemplateView):
 
 
 dashboard_top_blocked_panel = DashboardTopBlockedPanel.as_view()
+
+
+class DashboardRuleEffectivenessPanel(StaffRequiredMixin, TemplateView):
+    """
+    GET /waf/dashboard/rule-effectiveness/
+
+    HTMX fragment: which active BlockRules are pulling weight and which
+    are dead. Surfaces the top 10 active rules by hit_count, and lists
+    active rules with hit_count=0 as removal candidates.
+    Access: Staff only.
+    """
+
+    template_name = "django_waf/partials/rule_effectiveness_panel.html"
+
+    def get_context_data(self, **kwargs) -> dict:
+        ctx = super().get_context_data(**kwargs)
+        try:
+            from django_waf.models import BlockRule
+
+            ctx["top_rules"] = BlockRule.objects.filter(is_active=True, hit_count__gt=0).order_by("-hit_count")[:10]
+            ctx["unused_rules"] = BlockRule.objects.filter(is_active=True, hit_count=0)[:20]
+        except Exception:
+            logger.warning("django-waf: could not fetch rule effectiveness data; degrading to empty panel")
+            ctx["top_rules"] = []
+            ctx["unused_rules"] = []
+        return ctx
+
+
+dashboard_rule_effectiveness_panel = DashboardRuleEffectivenessPanel.as_view()
 
 
 class DashboardAnomalyPanel(StaffRequiredMixin, TemplateView):

@@ -27,6 +27,11 @@ urlpatterns = [
     path("dashboard/stats/", views.dashboard_stats_panel, name="dashboard-stats"),
     path("dashboard/top-blocked/", views.dashboard_top_blocked_panel, name="dashboard-top-blocked"),
     path("dashboard/anomalies/", views.dashboard_anomalies_panel, name="dashboard-anomalies"),
+    path(
+        "dashboard/rule-effectiveness/",
+        views.dashboard_rule_effectiveness_panel,
+        name="dashboard-rule-effectiveness",
+    ),
     # Superuser-only anomaly actions
     path(
         "dashboard/anomalies/<uuid:rule_id>/confirm/",
