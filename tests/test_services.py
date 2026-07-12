@@ -339,6 +339,105 @@ class TestCheckRateLimit:
 
 
 # ---------------------------------------------------------------------------
+# check_rate_limit — per-path limits (DJANGO_WAF_RATE_LIMIT_PATHS)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckRateLimitPerPath:
+    """Tests for the per-path rate limiting layer of check_rate_limit."""
+
+    def test_path_limit_breach_returns_exceeded_window_path(self):
+        """A path matching a configured prefix that exceeds its limit is throttled."""
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(11)  # over the limit of 10
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": (10, 60)}):
+            result = check_rate_limit("1.2.3.4", redis, path="/api/widgets/")
+
+        assert result.exceeded is True
+        assert result.window == "path"
+        assert result.retry_after is not None
+        assert result.retry_after >= 1
+
+    def test_unmatched_path_falls_through_to_global_windows(self):
+        """A path with no matching configured prefix only checks the global windows."""
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(1)  # within all limits
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": (10, 60)}),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 10),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 120),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 600),
+        ):
+            result = check_rate_limit("1.2.3.4", redis, path="/blog/post/")
+
+        assert result.exceeded is False
+        # Only the global window keys were touched — no "path" key.
+        zadd_calls = redis.pipeline.return_value.zadd.call_args_list
+        used_keys = {c.args[0] for c in zadd_calls}
+        assert not any(":path:" in key for key in used_keys)
+
+    def test_global_limit_still_applies_when_under_path_limit(self):
+        """When the path limit is not breached, the global windows still run and can throttle."""
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+
+        call_count = 0
+
+        def pipeline_side_effect():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _make_pipeline_mock(1)  # path window — within limit
+            return _make_pipeline_mock(6)  # global 1s window — exceeded
+
+        redis.pipeline.side_effect = pipeline_side_effect
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": (100, 60)}),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 5),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 120),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 600),
+        ):
+            result = check_rate_limit("1.2.3.4", redis, path="/api/widgets/")
+
+        assert result.exceeded is True
+        assert result.window == "1s"
+
+    def test_longest_prefix_wins_when_multiple_match(self):
+        """When several configured prefixes match, the most specific one is enforced."""
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(3)  # over the login limit of 2
+
+        rate_limit_paths = {
+            "/api/": (1000, 60),
+            "/api/login/": (2, 60),
+        }
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", rate_limit_paths):
+            result = check_rate_limit("1.2.3.4", redis, path="/api/login/")
+
+        assert result.exceeded is True
+        assert result.window == "path"
+
+        # Confirm the key used was derived from the longer, more specific prefix.
+        import hashlib
+
+        expected_hash = hashlib.sha1(b"/api/login/").hexdigest()[:12]
+        zadd_calls = redis.pipeline.return_value.zadd.call_args_list
+        used_keys = {c.args[0] for c in zadd_calls}
+        assert f"waf:rate:1.2.3.4:path:{expected_hash}" in used_keys
+
+
+# ---------------------------------------------------------------------------
 # load_rule_cache
 # ---------------------------------------------------------------------------
 

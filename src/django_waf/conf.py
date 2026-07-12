@@ -377,6 +377,15 @@ DJANGO_WAF_ESCALATION_BLOCK_TTL: int = getattr(settings, "DJANGO_WAF_ESCALATION_
 DJANGO_WAF_CLOUD_SPRAY_MIN_IPS: int = getattr(settings, "DJANGO_WAF_CLOUD_SPRAY_MIN_IPS", 20)
 DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP: int = getattr(settings, "DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP", 3)
 
+# Per-path rate limits: {path_prefix: (max_requests, window_seconds)}.
+# Longest-prefix match wins; checked before the global IP windows.
+DJANGO_WAF_RATE_LIMIT_PATHS: dict = getattr(settings, "DJANGO_WAF_RATE_LIMIT_PATHS", {})
+
+# ISO 3166-1 alpha-2 country codes to block outright (e.g. ["CN", "RU"]).
+# Empty disables country blocking. Requires a GeoIP database (see
+# django_waf_install_geoip); fails open when lookup is unavailable.
+DJANGO_WAF_BLOCKED_COUNTRIES: list = getattr(settings, "DJANGO_WAF_BLOCKED_COUNTRIES", [])
+
 # ---------------------------------------------------------------------------
 # Celery Beat schedule helper
 # ---------------------------------------------------------------------------
