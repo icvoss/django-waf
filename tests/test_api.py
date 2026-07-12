@@ -2,14 +2,29 @@
 
 Requires djangorestframework, which is guaranteed present here via the [dev]
 extra (see pyproject.toml). tests/settings.py sets DJANGO_WAF_API_ENABLED =
-True so the waf/api/ routes exist at urlconf-import time (mounting is
-conditional on that flag when django_waf.urls is first imported); individual
-tests exercise the disabled (503) path by patching
-django_waf.conf.DJANGO_WAF_API_ENABLED directly, which
+True so the waf/api/ routes exist at urlconf-import time; django_waf.urls
+reads the flag straight off django.conf.settings when its module body first
+runs, which happens lazily on the first URL dispatch in the whole test
+session rather than at tests.settings import time (see the docstring in
+django_waf/urls.py). Individual tests exercise the disabled (503) path by
+patching django_waf.conf.DJANGO_WAF_API_ENABLED directly, which
 WafApiEnabledMixin.initial() reads live on every request.
 
 ROOT_URLCONF is tests.urls, which includes django_waf.urls under "waf/", so
 the API lives at /waf/api/.
+
+Every request here goes through the real MIDDLEWARE stack, including
+WafMiddleware, because these tests use APIClient rather than a direct view
+call. DJANGO_WAF_ENABLED is turned off for the module (see the
+_disable_waf_middleware fixture below) so requests skip WAF evaluation
+entirely: these tests assert DRF permission/CRUD behaviour, not WAF
+middleware behaviour (that's test_middleware.py's job), and letting requests
+through the real evaluator means every non-staff-bypassed request tries a
+Redis-only cache write (redis_client.setex) against the LocMemCache backend
+configured in tests/settings.py, which doesn't support it. WafMiddleware
+fails open on that error so it doesn't affect these assertions, but it is a
+real exception logged on every request; skipping WAF evaluation here avoids
+the noise without weakening what these tests check.
 """
 
 from __future__ import annotations
@@ -32,6 +47,31 @@ from django_waf.testing.factories import (
 User = get_user_model()
 
 pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture(autouse=True)
+def _disable_waf_middleware(settings):
+    """Skip WafMiddleware evaluation for every request in this module.
+
+    These tests exercise the DRF API layer (permissions, serializers,
+    viewsets), not WAF request evaluation, so there's no need to route
+    through the real evaluator (and its Redis-only cache writes) at all.
+
+    django_waf.conf.DJANGO_WAF_ENABLED is a module-level constant read once
+    at conf.py's first import, so flipping settings.DJANGO_WAF_ENABLED alone
+    doesn't reach WafMiddleware (which reads conf.DJANGO_WAF_ENABLED, not
+    django.conf.settings directly). Reload conf to pick up the override, and
+    reload again on teardown to restore it for other test modules — same
+    pattern used throughout test_middleware.py.
+    """
+    import importlib
+
+    import django_waf.conf as conf_mod
+
+    settings.DJANGO_WAF_ENABLED = False
+    importlib.reload(conf_mod)
+    yield
+    importlib.reload(conf_mod)
 
 
 # ---------------------------------------------------------------------------
