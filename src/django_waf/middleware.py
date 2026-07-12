@@ -84,6 +84,12 @@ class WafMiddleware:
             return self.get_response(request)
         user_agent = request.META.get("HTTP_USER_AGENT", "")
 
+        # Country blocking — fail-open on any GeoIP error or missing database.
+        if conf.DJANGO_WAF_BLOCKED_COUNTRIES:
+            blocked_response = self._check_country_block(request, ip_address, user_agent, path)
+            if blocked_response is not None:
+                return blocked_response
+
         # BR-RATE-003: staff/superuser bypass — skip WAF entirely
         if _is_staff_user(request):
             return self.get_response(request)
@@ -144,6 +150,61 @@ class WafMiddleware:
         )
 
         return response
+
+    def _check_country_block(self, request, ip_address, user_agent, path):
+        """Return a 403 response if the request's country is blocked, else None.
+
+        Fails open: any error resolving the country (missing database,
+        geoip2 not installed, lookup exception) falls through to normal
+        evaluation rather than blocking. Logging the block is best-effort —
+        a logging failure never prevents the 403 from being returned.
+        """
+        from django_waf import conf
+
+        try:
+            from django_waf.services.geoip import lookup_country
+
+            country = lookup_country(ip_address)
+            if not country:
+                # No database / lookup failure — fail open.
+                return None
+
+            blocked_countries = {c.upper() for c in conf.DJANGO_WAF_BLOCKED_COUNTRIES}
+            if country.upper() not in blocked_countries:
+                return None
+
+            self._log_country_block(request, ip_address, user_agent, path, country)
+            return HttpResponseForbidden("Access denied.")
+        except Exception:
+            logger.exception("django-waf: error during country-block check — failing open")
+            return None
+
+    def _log_country_block(self, request, ip_address, user_agent, path, country):
+        """Best-effort RequestLog entry for a country-blocked request."""
+        try:
+            from django.utils import timezone
+
+            from django_waf.enums import Verdict
+            from django_waf.models import RequestLog
+
+            RequestLog.objects.create(
+                timestamp=timezone.now(),
+                ip_address=ip_address,
+                user_agent=user_agent[:1024],
+                path=path[:2048],
+                method=request.method,
+                verdict=Verdict.BLOCKED,
+                matched_rule_id=None,
+                matched_rule_type="",
+                anomaly_score=None,
+                response_code=403,
+                referer=request.META.get("HTTP_REFERER", "")[:2048],
+                http_fingerprint=_compute_fingerprint(request),
+                fingerprint_verdict=_classify_fingerprint(request),
+                country_code=country,
+            )
+        except Exception:
+            logger.exception("django-waf: error creating RequestLog record for country block")
 
     def _handle_verdict(self, request, result, ip_address, user_agent, path, redis_client):
         from django_waf.enums import Verdict

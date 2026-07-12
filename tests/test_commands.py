@@ -18,7 +18,12 @@ from django.core.management.base import CommandError
 from django.utils import timezone
 
 from django_waf.services.anomaly_detector import run_all_detectors
-from django_waf.testing.factories import BlockRuleFactory, ChallengeTokenFactory, RequestLogFactory
+from django_waf.testing.factories import (
+    AllowRuleFactory,
+    BlockRuleFactory,
+    ChallengeTokenFactory,
+    RequestLogFactory,
+)
 
 # ---------------------------------------------------------------------------
 # django_waf_generate_blocklist
@@ -860,3 +865,185 @@ class TestInstallGeoipCommand:
             pytest.raises(CommandError, match="Download failed: MaxMind"),
         ):
             call_command("django_waf_install_geoip")
+
+
+# ---------------------------------------------------------------------------
+# django_waf_export_rules / django_waf_import_rules
+# ---------------------------------------------------------------------------
+
+
+class TestExportRulesCommand:
+    """Tests for the ``django_waf_export_rules`` management command."""
+
+    @pytest.mark.django_db
+    def test_export_emits_valid_json_with_envelope(self):
+        """Output is valid JSON with the version/exported_at envelope."""
+        import json
+
+        BlockRuleFactory()
+        AllowRuleFactory()
+
+        out = StringIO()
+        call_command("django_waf_export_rules", stdout=out)
+
+        payload = json.loads(out.getvalue())
+        assert payload["version"] == 1
+        assert "exported_at" in payload
+        assert len(payload["block_rules"]) == 1
+        assert len(payload["allow_rules"]) == 1
+        # id / created_at / updated_at must not leak into the export.
+        assert "id" not in payload["block_rules"][0]
+        assert "created_at" not in payload["block_rules"][0]
+        assert "updated_at" not in payload["block_rules"][0]
+
+    @pytest.mark.django_db
+    def test_export_filters_by_source(self):
+        """--source restricts BlockRule export to the matching source."""
+        import json
+
+        BlockRuleFactory(source="admin")
+        BlockRuleFactory(source="feed")
+
+        out = StringIO()
+        call_command("django_waf_export_rules", "--source=feed", stdout=out)
+
+        payload = json.loads(out.getvalue())
+        assert len(payload["block_rules"]) == 1
+        assert payload["block_rules"][0]["source"] == "feed"
+
+    @pytest.mark.django_db
+    def test_export_rule_type_block_only(self):
+        """--rule-type=block excludes allow rules from the export."""
+        import json
+
+        BlockRuleFactory()
+        AllowRuleFactory()
+
+        out = StringIO()
+        call_command("django_waf_export_rules", "--rule-type=block", stdout=out)
+
+        payload = json.loads(out.getvalue())
+        assert len(payload["block_rules"]) == 1
+        assert payload["allow_rules"] == []
+
+
+class TestImportRulesCommand:
+    """Tests for the ``django_waf_import_rules`` management command."""
+
+    def _write_export(self, tmp_path, block_rules=None, allow_rules=None):
+        import json
+
+        payload = {
+            "version": 1,
+            "exported_at": "2026-01-01T00:00:00+00:00",
+            "block_rules": block_rules or [],
+            "allow_rules": allow_rules or [],
+        }
+        path = tmp_path / "export.json"
+        path.write_text(json.dumps(payload))
+        return str(path)
+
+    def _block_rule_entry(self, **overrides) -> dict:
+        entry = {
+            "name": "imported-block",
+            "rule_type": "ip",
+            "match_type": "exact",
+            "pattern": "203.0.113.5",
+            "action": "block",
+            "priority": 100,
+            "is_active": True,
+            "source": "feed",
+            "expires_at": None,
+            "confidence": "1.00",
+            "feed_first_seen": None,
+            "feed_reporters": 0,
+            "notes": "",
+        }
+        entry.update(overrides)
+        return entry
+
+    @pytest.mark.django_db
+    def test_import_creates_rules(self, tmp_path):
+        """A fresh import creates the block and allow rules from the file."""
+        from django_waf.enums import RuleSource
+        from django_waf.models import AllowRule, BlockRule
+
+        allow_entry = {
+            "name": "imported-allow",
+            "rule_type": "ip",
+            "match_type": "exact",
+            "pattern": "198.51.100.5",
+            "verify_rdns": False,
+            "rdns_pattern": "",
+            "is_active": True,
+            "notes": "",
+        }
+        path = self._write_export(
+            tmp_path,
+            block_rules=[self._block_rule_entry()],
+            allow_rules=[allow_entry],
+        )
+
+        out = StringIO()
+        call_command("django_waf_import_rules", path, stdout=out)
+
+        assert BlockRule.objects.filter(pattern="203.0.113.5").exists()
+        assert AllowRule.objects.filter(pattern="198.51.100.5").exists()
+        # Imported rules are always tagged admin, even though the export
+        # said source=feed.
+        assert BlockRule.objects.get(pattern="203.0.113.5").source == RuleSource.ADMIN
+        assert "Created: 2" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_merge_skips_existing_rule(self, tmp_path):
+        """--merge (the default) skips a rule whose (rule_type, match_type, pattern) already exists."""
+        from django_waf.models import BlockRule
+
+        BlockRuleFactory(rule_type="ip", match_type="exact", pattern="203.0.113.5")
+        path = self._write_export(tmp_path, block_rules=[self._block_rule_entry()])
+
+        out = StringIO()
+        call_command("django_waf_import_rules", path, "--merge", stdout=out)
+
+        assert BlockRule.objects.filter(pattern="203.0.113.5").count() == 1
+        assert "Skipped (already exists): 1" in out.getvalue()
+        assert "Created: 0" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_replace_deletes_existing_admin_rules_first(self, tmp_path):
+        """--replace deletes existing source=admin rules before importing."""
+        from django_waf.models import BlockRule
+
+        BlockRuleFactory(source="admin", pattern="10.0.0.1")
+        BlockRuleFactory(source="feed", pattern="10.0.0.2")
+        path = self._write_export(tmp_path, block_rules=[self._block_rule_entry()])
+
+        out = StringIO()
+        call_command("django_waf_import_rules", path, "--replace", stdout=out)
+
+        # The pre-existing admin rule is gone; the feed rule is untouched
+        # (--replace only clears admin-sourced rules); the imported rule exists.
+        assert not BlockRule.objects.filter(pattern="10.0.0.1").exists()
+        assert BlockRule.objects.filter(pattern="10.0.0.2").exists()
+        assert BlockRule.objects.filter(pattern="203.0.113.5").exists()
+        assert "Replaced (deleted admin rules): 1" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_dry_run_makes_no_db_changes(self, tmp_path):
+        """--dry-run reports counts without writing anything."""
+        from django_waf.models import BlockRule
+
+        path = self._write_export(tmp_path, block_rules=[self._block_rule_entry()])
+
+        out = StringIO()
+        call_command("django_waf_import_rules", path, "--dry-run", stdout=out)
+
+        assert BlockRule.objects.count() == 0
+        assert "[dry-run] Created: 1" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_merge_and_replace_are_mutually_exclusive(self, tmp_path):
+        path = self._write_export(tmp_path)
+
+        with pytest.raises(CommandError, match="mutually exclusive"):
+            call_command("django_waf_import_rules", path, "--merge", "--replace")

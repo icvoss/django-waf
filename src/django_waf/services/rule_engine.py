@@ -352,7 +352,7 @@ def evaluate_request(
         )
 
     # Step 7: Rate limits
-    rate_result = check_rate_limit(ip_address, redis_client)
+    rate_result = check_rate_limit(ip_address, redis_client, path=path)
     if rate_result.exceeded:
         return EvaluationResult(
             verdict=Verdict.THROTTLED,

@@ -805,6 +805,99 @@ class TestRequestLogging:
 
 
 # ---------------------------------------------------------------------------
+# Country blocking
+# ---------------------------------------------------------------------------
+
+
+class TestCountryBlocking:
+    """DJANGO_WAF_BLOCKED_COUNTRIES rejects requests from listed countries (fail-open)."""
+
+    @pytest.mark.django_db
+    @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_BLOCKED_COUNTRIES=["CN", "RU"])
+    def test_request_from_blocked_country_returns_403(self):
+        import importlib
+
+        import django_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        request = factory.get("/page/")
+        request.user = MagicMock(is_authenticated=False)
+        get_response = MagicMock(return_value=HttpResponse("ok"))
+        middleware = _make_middleware(get_response)
+
+        with patch("django_waf.services.geoip.lookup_country", return_value="CN"):
+            response = middleware(request)
+
+        assert response.status_code == 403
+        get_response.assert_not_called()
+
+    @pytest.mark.django_db
+    @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_BLOCKED_COUNTRIES=["CN", "RU"])
+    def test_request_from_unlisted_country_passes_through_to_normal_evaluation(self):
+        import importlib
+
+        import django_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        request = factory.get("/page/")
+        request.user = MagicMock(is_authenticated=False)
+        request.COOKIES = {}
+        get_response = MagicMock(return_value=HttpResponse("ok"))
+        middleware = _make_middleware(get_response)
+
+        with (
+            patch("django_waf.services.geoip.lookup_country", return_value="GB"),
+            patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+            patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_validate.return_value = False
+            mock_eval.return_value = _make_result("allowed")
+
+            response = middleware(request)
+
+        assert response.status_code == 200
+        get_response.assert_called_once_with(request)
+
+    @pytest.mark.django_db
+    @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_BLOCKED_COUNTRIES=["CN", "RU"])
+    def test_empty_geoip_result_fails_open(self):
+        """No GeoIP database / lookup failure returns '' — the request is not blocked."""
+        import importlib
+
+        import django_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        request = factory.get("/page/")
+        request.user = MagicMock(is_authenticated=False)
+        request.COOKIES = {}
+        get_response = MagicMock(return_value=HttpResponse("ok"))
+        middleware = _make_middleware(get_response)
+
+        with (
+            patch("django_waf.services.geoip.lookup_country", return_value=""),
+            patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+            patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_validate.return_value = False
+            mock_eval.return_value = _make_result("allowed")
+
+            response = middleware(request)
+
+        assert response.status_code == 200
+        get_response.assert_called_once_with(request)
+
+
+# ---------------------------------------------------------------------------
 # Middleware helper functions
 # ---------------------------------------------------------------------------
 

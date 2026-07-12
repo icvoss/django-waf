@@ -43,6 +43,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   level, logger, message, and (when present on the record) ip, verdict,
   rule_id, anomaly_score, latency_ms, path, method, and user_agent
   (truncated to 200 characters).
+- `DJANGO_WAF_RATE_LIMIT_PATHS`: per-path rate limiting. A dict of
+  `{path_prefix: (max_requests, window_seconds)}` checked before the global
+  IP rate-limit windows; the longest matching prefix wins. Lets a site set a
+  tight limit on `/api/login/` without touching the general request budget.
+- `DJANGO_WAF_BLOCKED_COUNTRIES`: country blocking. A list of ISO 3166-1
+  alpha-2 codes (e.g. `["CN", "RU"]`) rejected outright with a 403, checked
+  after IP extraction and before the staff bypass. Requires a GeoIP database
+  (`django_waf_install_geoip`); fails open when the lookup is unavailable so
+  a missing/broken database never blocks traffic.
+- Management commands `django_waf_export_rules` and `django_waf_import_rules`:
+  serialise `BlockRule`/`AllowRule` records to JSON and load them back on
+  another site. Import supports `--merge` (default, skips rules that already
+  exist by `rule_type`/`match_type`/`pattern`) and `--replace` (deletes
+  existing `source=admin` rules first), plus `--dry-run`. Imported rules are
+  always tagged `source=admin`, never re-tagged as feed/auto.
 
 ## [1.2.0] - 2026-07-11
 

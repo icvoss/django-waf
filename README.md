@@ -147,6 +147,7 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | `DJANGO_WAF_RATE_LIMIT_BURST` | `10` | Max requests per IP per second |
 | `DJANGO_WAF_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per IP per minute |
 | `DJANGO_WAF_RATE_LIMIT_PER_5MIN` | `600` | Max requests per IP per 5 minutes |
+| `DJANGO_WAF_RATE_LIMIT_PATHS` | `{}` | Per-path rate limits: `{path_prefix: (max_requests, window_seconds)}`. Checked before the global windows; the longest matching prefix wins |
 
 ### Challenges
 
@@ -187,6 +188,7 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `DJANGO_WAF_GEOIP_PATH` | `None` | Filesystem path to a MaxMind GeoLite2-Country `.mmdb` database. `None` disables GeoIP. |
+| `DJANGO_WAF_BLOCKED_COUNTRIES` | `[]` | ISO 3166-1 alpha-2 country codes to block outright (e.g. `["CN", "RU"]`). Empty disables country blocking. Requires `DJANGO_WAF_GEOIP_PATH`; fails open when the lookup is unavailable. |
 
 ### nginx Integration
 
@@ -410,6 +412,8 @@ name) if you need different cadences.
 | `django_waf_prune_logs` | Delete `RequestLog` entries older than the retention period (`--dry-run`) |
 | `django_waf_prune_challenges` | Delete pending/failed `ChallengeToken` entries older than N hours (`--hours`, `--dry-run`) |
 | `django_waf_sync_feed` | Fetch and import rules from the collective threat feed (`--dry-run`) |
+| `django_waf_export_rules` | Export `BlockRule`/`AllowRule` records to JSON (`--output`, `--source`, `--rule-type`) |
+| `django_waf_import_rules` | Import `BlockRule`/`AllowRule` records from JSON produced by `django_waf_export_rules` (`--merge`, `--replace`, `--dry-run`) |
 
 ## Dashboard
 
