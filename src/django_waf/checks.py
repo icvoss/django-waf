@@ -16,6 +16,12 @@ The signing-key check (``django_waf.W003``) was added in v0.11.0 alongside
 the form-protection subsystem. It surfaces when the package is falling
 back to a ``SECRET_KEY``-derived signing key — fine for development but
 worth a deliberate decision in production.
+
+The feed-URL scheme check (``django_waf.W005``) warns when the threat feed
+is enabled but its URL is not ``https://``. The feed drives BlockRule
+creation; fetching it over plaintext lets a network attacker inject or
+suppress rules in transit. Scheme validation only — the check never issues
+a live HTTP request.
 """
 
 from __future__ import annotations
@@ -107,3 +113,37 @@ def check_signing_key(app_configs, **kwargs):
             )
         ]
     return []
+
+
+@register()
+def check_feed_url_scheme(app_configs, **kwargs):
+    """Warn (``django_waf.W005``) when the threat feed is enabled but
+    ``DJANGO_WAF_FEED_URL`` is not served over HTTPS.
+
+    The feed response is turned directly into ``BlockRule`` records, so an
+    on-path attacker who can tamper with a plaintext feed can inject rules
+    that block legitimate traffic or suppress rules that would block theirs.
+    Only the URL scheme is inspected; no request is made.
+    """
+    from django_waf import conf
+
+    if not conf.DJANGO_WAF_FEED_ENABLED:
+        return []
+
+    url = conf.DJANGO_WAF_FEED_URL or ""
+    if url.startswith("https://"):
+        return []
+
+    return [
+        Warning(
+            f"DJANGO_WAF_FEED_URL is not HTTPS ({url!r}) while "
+            "DJANGO_WAF_FEED_ENABLED is True — feed rules would be fetched "
+            "over an untrusted channel.",
+            hint=(
+                "Use an https:// feed URL so an on-path attacker cannot "
+                "inject or suppress BlockRules in transit, or set "
+                "DJANGO_WAF_FEED_ENABLED = False to disable feed syncing."
+            ),
+            id="django_waf.W005",
+        )
+    ]

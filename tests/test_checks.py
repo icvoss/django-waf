@@ -23,6 +23,12 @@ def _run_signing_key_check():
     return check_signing_key(app_configs=None)
 
 
+def _run_feed_url_scheme_check():
+    from django_waf.checks import check_feed_url_scheme
+
+    return check_feed_url_scheme(app_configs=None)
+
+
 class TestChallengeDifficultyCheck:
     def test_recommended_defaults_produce_no_messages(self):
         import django_waf.conf as conf_mod
@@ -122,3 +128,46 @@ class TestSigningKeyCheck:
         # part of the message so future edits don't lose the remediation.
         assert "secrets.token_urlsafe" in messages[0].hint
         assert "DJANGO_WAF_SIGNING_KEY" in messages[0].hint
+
+
+class TestFeedUrlSchemeCheck:
+    """W005 — warns when the threat feed is enabled but not served over HTTPS.
+
+    Feed responses become BlockRules, so a plaintext feed lets an on-path
+    attacker inject or suppress rules. The check inspects only the URL
+    scheme; it never issues a live request.
+    """
+
+    def test_https_feed_produces_no_messages(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_FEED_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_FEED_URL", "https://threats.drystane.com/v1/feed.json"),
+        ):
+            assert _run_feed_url_scheme_check() == []
+
+    def test_non_https_feed_emits_w005_warning(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_FEED_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_FEED_URL", "http://threats.drystane.com/v1/feed.json"),
+        ):
+            messages = _run_feed_url_scheme_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W005"
+        # The hint must offer both remediations — switch to https or disable.
+        assert "https://" in messages[0].hint
+        assert "DJANGO_WAF_FEED_ENABLED" in messages[0].hint
+
+    def test_disabled_feed_skips_scheme_check(self):
+        """A non-HTTPS URL is harmless when the feed is off — no warning."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_FEED_ENABLED", False),
+            patch.object(conf_mod, "DJANGO_WAF_FEED_URL", "http://threats.drystane.com/v1/feed.json"),
+        ):
+            assert _run_feed_url_scheme_check() == []
