@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DashboardRuleEffectivenessPanel`): lists the top 10 active `BlockRule`
   records by `hit_count` and flags active rules with `hit_count=0` as
   removal candidates.
+- Optional DRF API under `waf/api/`: `BlockRuleViewSet` and `AllowRuleViewSet`
+  (full CRUD, restricted to superusers or staff with `django_waf.change_blockrule`
+  via the new `IsWafAdmin` permission), and read-only `RequestLogViewSet`
+  (`?verdict=`, `?ip_address=`, `?from_ts=` filters) and `IPReputationViewSet`
+  (`?min_threat_score=` filter), both restricted to Django admin users. Off by
+  default — set `DJANGO_WAF_API_ENABLED = True` to mount the routes, and every
+  endpoint returns `503` while disabled. Requires the new `django-waf[api]`
+  extra (`djangorestframework>=3.14`); `djangorestframework` stays fully
+  optional otherwise — the package imports and every existing test passes
+  with it absent from the environment.
 - System check `django_waf.W005`: warns when `DJANGO_WAF_FEED_ENABLED` is
   true but `DJANGO_WAF_FEED_URL` is not `https://`. Feed responses become
   `BlockRule` records, so a plaintext feed is a rule-injection vector. The

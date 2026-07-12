@@ -386,6 +386,9 @@ DJANGO_WAF_RATE_LIMIT_PATHS: dict = getattr(settings, "DJANGO_WAF_RATE_LIMIT_PAT
 # django_waf_install_geoip); fails open when lookup is unavailable.
 DJANGO_WAF_BLOCKED_COUNTRIES: list = getattr(settings, "DJANGO_WAF_BLOCKED_COUNTRIES", [])
 
+# Enable the optional DRF API under waf/api/ (requires the [api] extra).
+DJANGO_WAF_API_ENABLED: bool = getattr(settings, "DJANGO_WAF_API_ENABLED", False)
+
 # ---------------------------------------------------------------------------
 # Celery Beat schedule helper
 # ---------------------------------------------------------------------------
