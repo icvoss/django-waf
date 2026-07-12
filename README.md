@@ -422,8 +422,11 @@ name) if you need different cadences.
 The staff dashboard is available at `/waf/dashboard/` for authenticated staff
 users. It provides:
 
-- Real-time traffic counters (allowed, blocked, challenged, throttled)
-- Top 10 blocked IPs
+- Real-time traffic counters (allowed, blocked, challenged, throttled), with a
+  Today / 7d / 30d time-range selector
+- Top 10 blocked IPs, filterable by the same time-range selector
+- Rule effectiveness: the top 10 active block rules by hit count, plus a list
+  of active rules with zero hits (removal candidates)
 - Auto-detected anomalies awaiting review
 
 Superusers can **confirm** auto-generated rules (promoting them to permanent) or

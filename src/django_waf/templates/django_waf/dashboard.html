@@ -175,6 +175,33 @@
         }
 
         .htmx-request .btn { opacity: 0.5; pointer-events: none; }
+
+        .range-selector {
+            display: flex;
+            gap: 0.4rem;
+            margin-bottom: 1rem;
+        }
+
+        .range-btn {
+            padding: 0.25rem 0.65rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 4px;
+            background: #fff;
+            color: #6b7280;
+            cursor: pointer;
+            font-size: 0.75rem;
+            font-weight: 600;
+            line-height: 1.4;
+            transition: opacity 0.15s;
+        }
+
+        .range-btn:hover { opacity: 0.82; }
+
+        .range-btn.active {
+            background: #1d4ed8;
+            border-color: #1d4ed8;
+            color: #fff;
+        }
     </style>
 </head>
 <body>
@@ -215,6 +242,17 @@
             <h2>{% trans "Anomaly Alerts" %}</h2>
             <div id="waf-anomalies-panel"
                  hx-get="{{ anomalies_url }}"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+                <div class="loading">{% trans "Loading…" %}</div>
+            </div>
+        </div>
+
+        {# Rule effectiveness — full width #}
+        <div class="panel panel-full">
+            <h2>{% trans "Rule Effectiveness" %}</h2>
+            <div id="waf-rule-effectiveness-panel"
+                 hx-get="{{ rule_effectiveness_url }}"
                  hx-trigger="load"
                  hx-swap="innerHTML">
                 <div class="loading">{% trans "Loading…" %}</div>

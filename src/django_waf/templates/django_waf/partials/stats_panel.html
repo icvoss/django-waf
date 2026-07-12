@@ -1,4 +1,27 @@
 {% load i18n %}
+<div class="range-selector" role="group" aria-label="{% trans "Time range" %}">
+    <button type="button"
+            class="range-btn{% if range_param == "today" %} active{% endif %}"
+            hx-get="{{ stats_url }}?range=today"
+            hx-target="#waf-stats-panel"
+            hx-swap="innerHTML">
+        {% trans "Today" %}
+    </button>
+    <button type="button"
+            class="range-btn{% if range_param == "7d" %} active{% endif %}"
+            hx-get="{{ stats_url }}?range=7d"
+            hx-target="#waf-stats-panel"
+            hx-swap="innerHTML">
+        {% trans "7d" %}
+    </button>
+    <button type="button"
+            class="range-btn{% if range_param == "30d" %} active{% endif %}"
+            hx-get="{{ stats_url }}?range=30d"
+            hx-target="#waf-stats-panel"
+            hx-swap="innerHTML">
+        {% trans "30d" %}
+    </button>
+</div>
 <div class="stat-grid">
     <div class="stat">
         <div class="stat-value">{{ total|default:"0" }}</div>

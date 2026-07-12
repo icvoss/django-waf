@@ -1,0 +1,73 @@
+{% load i18n %}
+{% if top_rules %}
+<table>
+    <thead>
+        <tr>
+            <th>{% trans "Name" %}</th>
+            <th>{% trans "Type" %}</th>
+            <th>{% trans "Action" %}</th>
+            <th>{% trans "Hits" %}</th>
+            <th>{% trans "Last hit" %}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for rule in top_rules %}
+        <tr>
+            <td title="{{ rule.pattern }}">{{ rule.name }}</td>
+            <td>{{ rule.get_rule_type_display }}</td>
+            <td>
+                {% if rule.action == "block" %}
+                    <span class="badge badge-block">{% trans "Block" %}</span>
+                {% elif rule.action == "challenge" %}
+                    <span class="badge badge-challenge">{% trans "Challenge" %}</span>
+                {% elif rule.action == "throttle" %}
+                    <span class="badge badge-throttle">{% trans "Throttle" %}</span>
+                {% else %}
+                    <span class="badge badge-log">{{ rule.get_action_display }}</span>
+                {% endif %}
+            </td>
+            <td>{{ rule.hit_count }}</td>
+            <td>
+                {% if rule.last_hit_at %}
+                    {{ rule.last_hit_at|date:"d M Y H:i" }}
+                {% else %}
+                    &mdash;
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p style="color:#9ca3af;font-size:0.875rem;text-align:center;padding:1rem 0;">
+    {% trans "No active rules with recorded hits yet." %}
+</p>
+{% endif %}
+
+<h3 style="font-size:0.8rem;font-weight:600;margin:1.25rem 0 0.6rem;color:#374151;">
+    {% trans "Unused active rules (removal candidates)" %}
+</h3>
+{% if unused_rules %}
+<table>
+    <thead>
+        <tr>
+            <th>{% trans "Name" %}</th>
+            <th>{% trans "Type" %}</th>
+            <th>{% trans "Pattern" %}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for rule in unused_rules %}
+        <tr>
+            <td>{{ rule.name }}</td>
+            <td>{{ rule.get_rule_type_display }}</td>
+            <td><code title="{{ rule.pattern }}">{{ rule.pattern|truncatechars:40 }}</code></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p style="color:#9ca3af;font-size:0.875rem;text-align:center;padding:1rem 0;">
+    {% trans "No unused active rules." %}
+</p>
+{% endif %}

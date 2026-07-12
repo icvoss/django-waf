@@ -564,6 +564,46 @@ class TestDashboardStatsPanelView:
         assert response.status_code == 200
         assert "django_waf/partials/stats_panel.html" in [t.name for t in response.templates]
 
+    def test_range_7d_returns_200_and_aggregates_wider_window(self):
+        """?range=7d skips the Redis snapshot and aggregates RequestLog over 7 days,
+        picking up rows older than "today" that the default range would miss."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from django_waf.enums import Verdict
+        from django_waf.testing.factories import RequestLogFactory
+
+        client = Client()
+        user = _make_staff_user(username="staffrange7d", email="staffrange7d@example.com")
+        client.force_login(user)
+
+        # One request today, one three days ago — only the 7d range should see both.
+        RequestLogFactory(verdict=Verdict.BLOCKED, timestamp=timezone.now())
+        RequestLogFactory(verdict=Verdict.BLOCKED, timestamp=timezone.now() - timedelta(days=3))
+
+        response_today = client.get(
+            "/waf/dashboard/stats/",
+            {"range": "today"},
+        )
+        response_7d = client.get("/waf/dashboard/stats/", {"range": "7d"})
+
+        assert response_today.status_code == 200
+        assert response_7d.status_code == 200
+        assert response_7d.context["range_param"] == "7d"
+        assert response_7d.context["blocked"] >= response_today.context["blocked"]
+        assert response_7d.context["blocked"] == 2
+
+    def test_invalid_range_falls_back_to_today(self):
+        client = Client()
+        user = _make_staff_user(username="staffrangebogus", email="staffrangebogus@example.com")
+        client.force_login(user)
+
+        response = client.get("/waf/dashboard/stats/", {"range": "bogus"})
+
+        assert response.status_code == 200
+        assert response.context["range_param"] == "today"
+
 
 class TestDashboardTopBlockedPanelView:
     """GET /dashboard/top-blocked/ returns the top-blocked IP partial."""
@@ -611,13 +651,85 @@ class TestDashboardTopBlockedPanelView:
         client.force_login(user)
 
         with patch(
-            "django_waf.models.IPReputation.objects.order_by",
+            "django_waf.models.IPReputation.objects.filter",
             side_effect=Exception("db unavailable"),
         ):
             response = client.get("/waf/dashboard/top-blocked/")
 
         assert response.status_code == 200
         assert response.context["ips"] == []
+
+
+class TestDashboardRuleEffectivenessPanelView:
+    """GET /dashboard/rule-effectiveness/ lists top and unused active BlockRules."""
+
+    def test_anonymous_redirects(self):
+        client = Client()
+
+        response = client.get("/waf/dashboard/rule-effectiveness/")
+
+        assert response.status_code == 302
+
+    def test_non_staff_authenticated_user_gets_403(self):
+        client = Client()
+        user = User.objects.create_user(
+            username="ruleeffnonstaff",
+            email="ruleeffnonstaff@example.com",
+            password="password",
+            is_staff=False,
+        )
+        client.force_login(user)
+
+        response = client.get("/waf/dashboard/rule-effectiveness/")
+
+        assert response.status_code == 403
+
+    def test_staff_gets_200(self):
+        client = Client()
+        user = _make_staff_user(username="staffruleeff", email="staffruleeff@example.com")
+        client.force_login(user)
+
+        response = client.get("/waf/dashboard/rule-effectiveness/")
+
+        assert response.status_code == 200
+        assert "django_waf/partials/rule_effectiveness_panel.html" in [t.name for t in response.templates]
+
+    def test_lists_high_hit_rule_and_flags_zero_hit_rule(self):
+        from django_waf.testing.factories import BlockRuleFactory
+
+        high_hit_rule = BlockRuleFactory(name="frequent-offender", hit_count=42, is_active=True)
+        unused_rule = BlockRuleFactory(name="never-fired", hit_count=0, is_active=True)
+
+        client = Client()
+        user = _make_staff_user(username="staffruleeffdata", email="staffruleeffdata@example.com")
+        client.force_login(user)
+
+        response = client.get("/waf/dashboard/rule-effectiveness/")
+
+        assert response.status_code == 200
+        top_rule_ids = [r.id for r in response.context["top_rules"]]
+        unused_rule_ids = [r.id for r in response.context["unused_rules"]]
+        assert high_hit_rule.id in top_rule_ids
+        assert unused_rule.id in unused_rule_ids
+        assert high_hit_rule.id not in unused_rule_ids
+        assert unused_rule.id not in top_rule_ids
+
+    def test_db_error_degrades_to_empty_context(self):
+        """A DB error while fetching rule effectiveness data degrades to an empty
+        panel instead of raising (matches the other panels' fallback pattern)."""
+        client = Client()
+        user = _make_staff_user(username="staffruleefferr", email="staffruleefferr@example.com")
+        client.force_login(user)
+
+        with patch(
+            "django_waf.models.BlockRule.objects.filter",
+            side_effect=Exception("db unavailable"),
+        ):
+            response = client.get("/waf/dashboard/rule-effectiveness/")
+
+        assert response.status_code == 200
+        assert response.context["top_rules"] == []
+        assert response.context["unused_rules"] == []
 
 
 class TestDashboardAnomalyPanelView:
