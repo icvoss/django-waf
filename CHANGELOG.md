@@ -14,6 +14,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BlockRule` records, so a plaintext feed is a rule-injection vector. The
   check inspects the URL scheme only and issues no request; fix by using an
   HTTPS feed URL or setting `DJANGO_WAF_FEED_ENABLED = False`.
+- Celery task `prune_challenge_tokens` and management command
+  `django_waf_prune_challenges`: delete pending/failed `ChallengeToken`
+  records older than a configurable age (default 24 hours). Scheduled
+  daily at 04:15 alongside the existing `prune_request_logs` task.
+- `django_waf.conf.DJANGO_WAF_CELERY_BEAT_SCHEDULE`: a ready-made
+  `CELERY_BEAT_SCHEDULE` fragment covering every periodic django-waf task,
+  merged into a project's own schedule with `{**DJANGO_WAF_CELERY_BEAT_SCHEDULE, ...}`
+  instead of hand-transcribing task names and cadences. Stays importable
+  even when `celery` is not installed: the interval-based entries
+  (`*/N minute` tasks) are always present, and the wall-clock entries that
+  need `celery.schedules.crontab` are omitted rather than approximated.
+- System check `django_waf.W004`: warns when `WafMiddleware` is placed
+  before `AuthenticationMiddleware` in `MIDDLEWARE` (or when
+  `AuthenticationMiddleware` is missing). `request.user` is not available
+  yet in that ordering, so the staff/superuser bypass silently fails and
+  staff accounts get blocked/challenged like anonymous traffic.
+- `django_waf.testing.fixtures`: pytest fixtures for consuming-project test
+  suites — `disable_waf`, `waf_redis_mock` (requires `fakeredis`),
+  `block_rule`, `allow_rule`, `challenge_token`. Re-exported from
+  `django_waf.testing`.
+- `django_waf.testing.helpers`: `create_blocked_request()` and
+  `create_challenged_request()` test helpers that create the matching
+  `BlockRule` and issue a request through the Django test client.
+  Re-exported from `django_waf.testing`.
+- `django_waf.logging.WafStructuredFormatter`: a JSON logging formatter for
+  the `django_waf` logger hierarchy — one object per line with timestamp,
+  level, logger, message, and (when present on the record) ip, verdict,
+  rule_id, anomaly_score, latency_ms, path, method, and user_agent
+  (truncated to 200 characters).
 
 ## [1.2.0] - 2026-07-11
 

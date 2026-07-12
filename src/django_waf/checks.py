@@ -22,6 +22,13 @@ is enabled but its URL is not ``https://``. The feed drives BlockRule
 creation; fetching it over plaintext lets a network attacker inject or
 suppress rules in transit. Scheme validation only — the check never issues
 a live HTTP request.
+
+The middleware-ordering check (``django_waf.W004``) warns when
+``WafMiddleware`` is placed before ``AuthenticationMiddleware`` in
+``MIDDLEWARE``, or when ``AuthenticationMiddleware`` is missing entirely.
+``request.user`` is not available at that point, so the staff bypass
+silently fails and staff/superuser accounts can be blocked or challenged
+like anonymous traffic.
 """
 
 from __future__ import annotations
@@ -147,3 +154,47 @@ def check_feed_url_scheme(app_configs, **kwargs):
             id="django_waf.W005",
         )
     ]
+
+
+@register()
+def check_middleware_ordering(app_configs, **kwargs):
+    """Warn (``django_waf.W004``) when ``WafMiddleware`` runs before
+    Django's ``AuthenticationMiddleware``.
+
+    The staff dashboard bypass and any authenticated-user logic in the WAF
+    middleware reads ``request.user``, which ``AuthenticationMiddleware``
+    attaches. If the WAF runs first, ``request.user`` is not yet available
+    (or not yet resolved), so the staff bypass silently fails and staff
+    users can be blocked/challenged like anyone else.
+    """
+    from django.conf import settings
+
+    middleware = list(getattr(settings, "MIDDLEWARE", []))
+    waf_name = "django_waf.middleware.WafMiddleware"
+    auth_name = "django.contrib.auth.middleware.AuthenticationMiddleware"
+
+    if waf_name not in middleware:
+        return []
+
+    waf_index = middleware.index(waf_name)
+    auth_index = middleware.index(auth_name) if auth_name in middleware else None
+
+    if auth_index is None or auth_index > waf_index:
+        return [
+            Warning(
+                "django_waf.middleware.WafMiddleware runs before "
+                "django.contrib.auth.middleware.AuthenticationMiddleware "
+                "(or AuthenticationMiddleware is missing) — request.user is "
+                "not available when the WAF evaluates the request, so the "
+                "staff bypass silently fails and staff/superuser accounts "
+                "can be blocked or challenged like anonymous traffic.",
+                hint=(
+                    "Place django_waf.middleware.WafMiddleware after "
+                    "django.contrib.auth.middleware.AuthenticationMiddleware "
+                    "in MIDDLEWARE."
+                ),
+                id="django_waf.W004",
+            )
+        ]
+
+    return []

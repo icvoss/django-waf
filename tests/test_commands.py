@@ -18,7 +18,7 @@ from django.core.management.base import CommandError
 from django.utils import timezone
 
 from django_waf.services.anomaly_detector import run_all_detectors
-from django_waf.testing.factories import BlockRuleFactory, RequestLogFactory
+from django_waf.testing.factories import BlockRuleFactory, ChallengeTokenFactory, RequestLogFactory
 
 # ---------------------------------------------------------------------------
 # django_waf_generate_blocklist
@@ -323,6 +323,74 @@ class TestPruneLogsCommand:
 
         call_command("django_waf_prune_logs")
         assert RequestLog.objects.count() == 0
+
+
+# ---------------------------------------------------------------------------
+# django_waf_prune_challenges
+# ---------------------------------------------------------------------------
+
+
+class TestPruneChallengesCommand:
+    """Tests for the ``django_waf_prune_challenges`` management command."""
+
+    @pytest.mark.django_db
+    def test_dry_run_counts_without_deleting(self):
+        """Dry-run reports the stale token count and does not delete anything."""
+        from django_waf.enums import ChallengeStatus
+
+        old_cutoff = timezone.now() - timezone.timedelta(hours=25)
+        for _ in range(2):
+            ChallengeTokenFactory(status=ChallengeStatus.PENDING, expires_at=old_cutoff)
+        ChallengeTokenFactory(status=ChallengeStatus.SOLVED, expires_at=old_cutoff)  # not pruned — solved
+
+        out = StringIO()
+        call_command("django_waf_prune_challenges", "--dry-run", "--hours=24", stdout=out)
+
+        from django_waf.models import ChallengeToken
+
+        assert ChallengeToken.objects.count() == 3
+        output = out.getvalue()
+        assert "dry-run" in output
+        assert "2 challenge token(s)" in output
+
+    @pytest.mark.django_db
+    def test_normal_run_deletes_expired_pending_and_failed_tokens(self):
+        """Normal run deletes PENDING/FAILED tokens older than the threshold."""
+        from django_waf.enums import ChallengeStatus
+
+        old_cutoff = timezone.now() - timezone.timedelta(hours=25)
+        ChallengeTokenFactory(status=ChallengeStatus.PENDING, expires_at=old_cutoff)
+        ChallengeTokenFactory(status=ChallengeStatus.FAILED, expires_at=old_cutoff)
+        survivor = ChallengeTokenFactory(
+            status=ChallengeStatus.PENDING, expires_at=timezone.now() + timezone.timedelta(hours=1)
+        )
+
+        from django_waf.models import ChallengeToken
+
+        out = StringIO()
+        call_command("django_waf_prune_challenges", "--hours=24", stdout=out)
+
+        assert ChallengeToken.objects.count() == 1
+        assert ChallengeToken.objects.filter(pk=survivor.pk).exists()
+        assert "Deleted 2 challenge token(s)" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_zero_hours_raises_command_error(self):
+        """--hours=0 is rejected with a CommandError."""
+        with pytest.raises(CommandError, match="positive integer"):
+            call_command("django_waf_prune_challenges", "--hours=0")
+
+    @pytest.mark.django_db
+    def test_no_stale_tokens_reports_zero_deleted(self):
+        """When no tokens are stale the command reports zero deletions."""
+        from django_waf.enums import ChallengeStatus
+
+        ChallengeTokenFactory(status=ChallengeStatus.PENDING, expires_at=timezone.now() + timezone.timedelta(hours=1))
+
+        out = StringIO()
+        call_command("django_waf_prune_challenges", "--hours=24", stdout=out)
+
+        assert "Deleted 0 challenge token(s)" in out.getvalue()
 
 
 # ---------------------------------------------------------------------------

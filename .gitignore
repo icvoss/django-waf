@@ -14,5 +14,11 @@ htmlcov/
 .idea/
 uv.lock
 
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
 # Agent working areas
 .claude/
