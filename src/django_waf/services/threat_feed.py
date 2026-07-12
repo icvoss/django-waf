@@ -53,6 +53,12 @@ def sync_feed(
     url = feed_url or conf.DJANGO_WAF_FEED_URL
     threshold = min_confidence if min_confidence is not None else conf.DJANGO_WAF_FEED_MIN_CONFIDENCE
 
+    # No Authorization header, by design. The feed is a public read: the
+    # collective threat intel is servable to every install without a key, so
+    # a bearer token is neither required nor sent even when
+    # DJANGO_WAF_FEED_API_KEY is set. Telemetry (submit_telemetry) is the
+    # authenticated write; see 06-threat-feed-api.md section 4 for the
+    # documented asymmetry. Do not add auth here without a contract change.
     try:
         response = httpx.get(url, timeout=30)
         response.raise_for_status()

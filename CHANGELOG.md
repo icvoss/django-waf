@@ -5,6 +5,16 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- System check `django_waf.W005`: warns when `DJANGO_WAF_FEED_ENABLED` is
+  true but `DJANGO_WAF_FEED_URL` is not `https://`. Feed responses become
+  `BlockRule` records, so a plaintext feed is a rule-injection vector. The
+  check inspects the URL scheme only and issues no request; fix by using an
+  HTTPS feed URL or setting `DJANGO_WAF_FEED_ENABLED = False`.
+
 ## [1.2.0] - 2026-07-11
 
 Minor because the feed URL defaults change consumer-visible behaviour: a
