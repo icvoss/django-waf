@@ -43,6 +43,7 @@ Changelog = "https://github.com/icvoss/django-waf/blob/main/CHANGELOG.md"
 "Source Code" = "https://github.com/icvoss/django-waf"
 
 [project.optional-dependencies]
+api = ["djangorestframework>=3.14"]
 celery = ["celery>=5.3", "django-celery-beat>=2.6"]
 geoip = ["geoip2>=4.8"]
 dev = [
@@ -54,6 +55,7 @@ dev = [
     "ruff>=0.5.0",
     "mypy>=1.10",
     "django-stubs>=5.0",
+    "djangorestframework>=3.14",
 ]
 
 [tool.setuptools.packages.find]

@@ -57,6 +57,7 @@ all configurable without a reverse-proxy vendor.
 - `httpx >= 0.27` (for threat feed sync)
 - Optional: `celery >= 5.3` (for scheduled tasks)
 - Optional: `maxminddb >= 2.4` (for GeoIP lookups)
+- Optional: `djangorestframework >= 3.14` (for the REST API — see [REST API (optional)](#rest-api-optional))
 
 ## Installation
 
@@ -69,6 +70,7 @@ With optional extras:
 ```bash
 pip install django-waf[geoip]    # adds maxminddb for GeoIP support
 pip install django-waf[celery]   # adds celery for scheduled tasks
+pip install django-waf[api]      # adds djangorestframework for the REST API
 ```
 
 Add to `INSTALLED_APPS`:
@@ -426,6 +428,51 @@ users. It provides:
 
 Superusers can **confirm** auto-generated rules (promoting them to permanent) or
 **reject** them (deactivating) directly from the anomalies panel.
+
+## REST API (optional)
+
+An optional DRF API is available under `waf/api/` for integrating django-waf
+with external tooling (a hosted console, a CLI, a second site's dashboard).
+It is off by default.
+
+**Enable it:**
+
+```bash
+pip install django-waf[api]
+```
+
+```python
+DJANGO_WAF_API_ENABLED = True
+```
+
+The routes are mounted automatically by `django_waf.urls` when the setting is
+true and `djangorestframework` is importable — no extra `include()` needed
+beyond the existing `path("waf/", include("django_waf.urls", namespace="django_waf"))`.
+If the setting is true but `djangorestframework` is not installed, the
+routes are skipped and a warning is logged at import time; every endpoint
+also returns `503 Service Unavailable` while the setting is false.
+
+**Endpoints** (all under `waf/api/`, registered with a DRF `DefaultRouter`):
+
+| Endpoint | Viewset | Access |
+|----------|---------|--------|
+| `block-rules/` | `BlockRuleViewSet` — full CRUD | `IsWafAdmin` |
+| `allow-rules/` | `AllowRuleViewSet` — full CRUD | `IsWafAdmin` |
+| `request-logs/` | `RequestLogViewSet` — read-only, `?verdict=`, `?ip_address=`, `?from_ts=` (ISO 8601) filters | `IsAdminUser` |
+| `ip-reputation/` | `IPReputationViewSet` — read-only, `?min_threat_score=` filter | `IsAdminUser` |
+
+**Permission model:**
+
+- `IsWafAdmin` — grants access to superusers, and to staff users holding the
+  `django_waf.change_blockrule` permission. Used on the two writable
+  endpoints (`block-rules/`, `allow-rules/`).
+- `IsAdminUser` (DRF's built-in) — grants access to `is_staff` users. Used on
+  the two read-only audit endpoints (`request-logs/`, `ip-reputation/`),
+  which carry no write actions to restrict further.
+
+`hit_count`, `last_hit_at`, and `source` on `BlockRuleViewSet` are read-only:
+they are maintained by the rule engine and the threat-feed sync task, not by
+API clients.
 
 ## Architecture
 
