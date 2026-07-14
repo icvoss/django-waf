@@ -121,9 +121,7 @@ def _solver_script(token_nonce: str, difficulty: int) -> str:
         '<script type="text/javascript">'
         "(function(){"
         f"var token={token_nonce!r};"
-        f"var difficulty={difficulty};"
-        + _SHA256_JS
-        + "function leadingZeroBits(bytes,bits){"
+        f"var difficulty={difficulty};" + _SHA256_JS + "function leadingZeroBits(bytes,bits){"
         "  var full=bits>>>3, rem=bits&7;"
         "  for(var i=0;i<full;i++){ if(bytes[i]!==0) return false; }"
         "  if(rem===0) return true;"
