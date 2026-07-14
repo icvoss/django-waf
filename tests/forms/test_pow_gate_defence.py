@@ -58,7 +58,11 @@ class TestRenderFields:
 
         assert f'name="{NONCE_FIELD}"' in html
         assert "<script" in html
-        assert "crypto.subtle.digest" in html
+        # Synchronous SHA-256 batch loop, not crypto.subtle (v0.10.6+):
+        # awaiting crypto.subtle.digest() once per nonce capped throughput
+        # at tens of thousands of hashes/sec.
+        assert "crypto.subtle" not in html
+        assert "function sha256" in html
 
     def test_solver_script_includes_difficulty(self):
         """The JS solver uses the difficulty value — pin so a future

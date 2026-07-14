@@ -81,6 +81,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing `source=admin` rules first), plus `--dry-run`. Imported rules are
   always tagged `source=admin`, never re-tagged as feed/auto.
 
+### Fixed
+
+- Challenge/pow_gate solvers now use a synchronous SHA-256 batch loop
+  instead of awaiting `crypto.subtle.digest` once per nonce, raising client
+  hash throughput by orders of magnitude so challenges resolve in the
+  expected time.
+- `DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP` / `_MOBILE` now default to
+  `None`, so setting the single `DJANGO_WAF_CHALLENGE_DIFFICULTY` value
+  takes effect as documented instead of being silently overridden by the
+  per-band defaults. Single-value default lowered from `20` to `16`.
+- Both solvers now bound their attempt count at 64x the expected mean and
+  fail visibly rather than grinding indefinitely if difficulty is
+  misconfigured.
+
 ## [1.2.0] - 2026-07-11
 
 Minor because the feed URL defaults change consumer-visible behaviour: a

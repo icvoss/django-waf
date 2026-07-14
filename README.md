@@ -155,9 +155,9 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `DJANGO_WAF_CHALLENGE_DIFFICULTY` | `20` | Fallback proof-of-work leading zero **bits** when the desktop/mobile overrides are not set. Average work is `2 ** bits` SHA-256 hashes |
-| `DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP` | `22` | PoW difficulty (bits) for non-mobile User-Agents. ~4M hashes, ~1 to 2s on a laptop |
-| `DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE` | `18` | PoW difficulty (bits) for mobile User-Agents. ~260k hashes, ~1 to 3s on a budget phone |
+| `DJANGO_WAF_CHALLENGE_DIFFICULTY` | `16` | Proof-of-work leading zero **bits**. Authoritative unless a desktop/mobile override below is explicitly set. Average work is `2 ** bits` SHA-256 hashes |
+| `DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP` | `None` | PoW difficulty (bits) for non-mobile User-Agents. `None` falls back to `DJANGO_WAF_CHALLENGE_DIFFICULTY`; set explicitly to give desktop clients a different cost |
+| `DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE` | `None` | PoW difficulty (bits) for mobile User-Agents. `None` falls back to `DJANGO_WAF_CHALLENGE_DIFFICULTY`; set explicitly to give budget devices a lower cost |
 | `DJANGO_WAF_CHALLENGE_URL` | `""` | Optional literal path to the challenge view. Set this in projects using per-request urlconf routing (django-hosts and similar) where `reverse("django_waf:challenge")` cannot resolve. Empty = use `reverse()` |
 | `DJANGO_WAF_VERIFY_URL` | `""` | Optional literal path to the verify view. Empty = use `reverse()` |
 | `DJANGO_WAF_CHALLENGE_COOKIE_TTL` | `86400` | Seconds a solved-challenge cookie remains valid |
