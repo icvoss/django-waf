@@ -133,19 +133,19 @@ DJANGO_WAF_FORM_DEFENCE_WEIGHTS: dict[str, float] = getattr(
 
 # Proof-of-work challenge difficulty — number of leading zero **bits** the
 # SHA-256(token + nonce) digest must contain. Average solve cost is
-# ``2 ** difficulty`` hashes. Acts as the single-value fallback when the
-# desktop/mobile overrides below are unset.
-DJANGO_WAF_CHALLENGE_DIFFICULTY: int = getattr(settings, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 20)
+# ``2 ** difficulty`` hashes. This single value is the default and is
+# authoritative unless an operator explicitly overrides a device band below.
+DJANGO_WAF_CHALLENGE_DIFFICULTY: int = getattr(settings, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 16)
 
-# Desktop-class clients (default 22 bits ≈ 4M hashes, ~1–2s on a laptop).
-# Slightly stronger than mobile because desktops have more CPU headroom.
-# Set to ``None`` to fall back to ``DJANGO_WAF_CHALLENGE_DIFFICULTY``.
-DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP: int | None = getattr(settings, "DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22)
+# Desktop-class clients. Defaults to ``None``, which falls back to
+# ``DJANGO_WAF_CHALLENGE_DIFFICULTY``. Set an explicit value only to give
+# desktop clients a different (typically higher) cost than mobile.
+DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP: int | None = getattr(settings, "DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP", None)
 
-# Mobile-class clients (default 18 bits ≈ 260k hashes, ~1–3s on a phone).
-# Set lower than desktop so budget devices don't time out.
-# Set to ``None`` to fall back to ``DJANGO_WAF_CHALLENGE_DIFFICULTY``.
-DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE: int | None = getattr(settings, "DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18)
+# Mobile-class clients. Defaults to ``None``, which falls back to
+# ``DJANGO_WAF_CHALLENGE_DIFFICULTY``. Set an explicit value only to give
+# budget devices a lower cost than desktop.
+DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE: int | None = getattr(settings, "DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE", None)
 
 # Optional literal-path overrides for the WAF's own challenge/verify URLs.
 # When set, the middleware uses these strings directly instead of calling
