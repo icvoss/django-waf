@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-18
+
+### Fixed
+
+- **Site password gate 500 on password submit.** The gate stored its verified
+  flag in `request.session`, but `WafMiddleware` runs before `SessionMiddleware`
+  (the WAF gates early), so `request.session` did not exist when the gate ran and
+  a correct password raised `AttributeError`. The gate now stores its flag in its
+  own signed cookie (`django.core.signing.TimestampSigner`, the package's own
+  signing key), independent of Django's session, so the WAF keeps running early.
+  The cookie is `httponly`, `secure` (when the request is), `samesite=Lax`, TTL
+  enforced live; it inherits `SESSION_COOKIE_DOMAIN` (or the new
+  `DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN`) for subdomain coverage. A regression
+  test reproduces the exact shipped condition (no SessionMiddleware in the stack).
+
+
 ## [1.5.0] - 2026-07-18
 
 ### Added
