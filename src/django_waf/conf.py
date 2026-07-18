@@ -399,6 +399,48 @@ DJANGO_WAF_BLOCKED_COUNTRIES: list = getattr(settings, "DJANGO_WAF_BLOCKED_COUNT
 DJANGO_WAF_API_ENABLED: bool = getattr(settings, "DJANGO_WAF_API_ENABLED", False)
 
 # ---------------------------------------------------------------------------
+# Site password gate (BR-SP series)
+# ---------------------------------------------------------------------------
+# A middleware-level shared-password wall gating the whole site (and every
+# subdomain it serves) before any application view. See
+# docs/specs/site-password/PRD.md.
+
+# The shared password. Unset/empty means the gate is off (BR-SP-001).
+# Never rendered, never logged (BR-SP-005). Load from environment in
+# production.
+DJANGO_WAF_SITE_PASSWORD: str = getattr(settings, "DJANGO_WAF_SITE_PASSWORD", "")
+
+# Explicit on/off switch. Defaults to whether a password is set. Enabling
+# this with an empty password fails closed rather than opening the gate
+# (BR-SP-002) -- every gated request is denied and a system check warns at
+# boot (django_waf.checks.check_site_password_configured).
+DJANGO_WAF_SITE_PASSWORD_ENABLED: bool = getattr(
+    settings, "DJANGO_WAF_SITE_PASSWORD_ENABLED", bool(DJANGO_WAF_SITE_PASSWORD)
+)
+
+# Verified-session lifetime in seconds. Default 12 hours (BR-SP-004).
+DJANGO_WAF_SITE_PASSWORD_TTL: int = getattr(settings, "DJANGO_WAF_SITE_PASSWORD_TTL", 43200)
+
+# Path prefixes that bypass the gate even when locked (BR-SP-003): health
+# checks, ACME/well-known probes, robots.txt, and the WAF's own
+# challenge/verify interstitials (so the WAF's existing defences keep
+# working and the site-password gate never traps its own prompt-and-verify
+# round trip in a loop).
+DJANGO_WAF_SITE_PASSWORD_EXEMPT_PATHS: list[str] = getattr(
+    settings,
+    "DJANGO_WAF_SITE_PASSWORD_EXEMPT_PATHS",
+    ["/health/", "/.well-known/", "/robots.txt", "/waf/challenge/", "/waf/verify/"],
+)
+
+# Path the prompt form posts to. The middleware intercepts POSTs to this
+# path directly (before URL resolution), so it works even on hosts that
+# don't mount django_waf.urls -- but the same path is also routed in
+# urls.py so reverse() and direct access resolve to a real view.
+DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH: str = getattr(
+    settings, "DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH", "/waf/site-password/"
+)
+
+# ---------------------------------------------------------------------------
 # Celery Beat schedule helper
 # ---------------------------------------------------------------------------
 # Ready-made CELERY_BEAT_SCHEDULE entries for every periodic django-waf task.

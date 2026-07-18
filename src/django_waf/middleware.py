@@ -14,8 +14,16 @@ import random
 
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
 from django.urls import reverse
+from django.utils.translation import gettext_lazy as _
 
 logger = logging.getLogger("django_waf.middleware")
+
+# Applied to every site-password prompt/verify response -- these pages must
+# never be indexed (BR-SP-006). Mirrors django_waf.views._NOINDEX_ROBOTS_HEADER.
+_SITE_PASSWORD_NOINDEX_HEADER = "noindex, nofollow, noarchive"
+
+_SITE_PASSWORD_INCORRECT_ERROR = _("Incorrect password. Please try again.")
+_SITE_PASSWORD_MISCONFIGURED_ERROR = _("This site is temporarily unavailable.")
 
 
 class WafMiddleware:
@@ -70,6 +78,15 @@ class WafMiddleware:
         # BR-EVAL-001: exempt hosts — exact or subdomain match
         if conf.DJANGO_WAF_EXEMPT_HOSTS and _is_exempt_host(request, conf.DJANGO_WAF_EXEMPT_HOSTS):
             return self.get_response(request)
+
+        # BR-SP-008: site password gate — after the enabled/exempt/health
+        # short-circuits above, before country-block/threat evaluation
+        # below. A locked site prompts for the password before spending any
+        # WAF evaluation effort; the prompt and verify paths must themselves
+        # stay reachable, which is why this runs ahead of everything else.
+        gate_response = self._check_site_password(request, path)
+        if gate_response is not None:
+            return gate_response
 
         # HTTP method filtering — 405 for disallowed methods
         allowed = conf.DJANGO_WAF_ALLOWED_METHODS
@@ -178,6 +195,106 @@ class WafMiddleware:
         except Exception:
             logger.exception("django-waf: error during country-block check — failing open")
             return None
+
+    def _check_site_password(self, request, path):
+        """Return a response to short-circuit the site-password gate, or
+        None to continue evaluation.
+
+        Per PRD docs/specs/site-password/PRD.md section 2.1 / BR-SP series:
+
+        1. Gate off (DJANGO_WAF_SITE_PASSWORD_ENABLED falsy) → None,
+           zero-cost (BR-SP-001).
+        2. Exempt path → None (BR-SP-003).
+        3. Fail-closed misconfiguration (enabled, empty password) → always
+           deny, never fall through to "no gate" (BR-SP-002).
+        4. Valid, unexpired session flag → None (BR-SP-004).
+        5. POST to the verify path → check the password and either set the
+           flag + redirect, or re-prompt with an error and a throttle hit.
+        6. Otherwise → render the noindex 401 prompt.
+        """
+        from django_waf import conf
+        from django_waf.services import site_password_service as sp
+
+        if not sp.is_gate_enabled():
+            return None
+
+        if sp.is_exempt_path(path):
+            return None
+
+        if sp.is_misconfigured():
+            logger.error(
+                "django-waf: DJANGO_WAF_SITE_PASSWORD_ENABLED is True but "
+                "DJANGO_WAF_SITE_PASSWORD is empty — failing closed (BR-SP-002)."
+            )
+            return self._render_site_password_prompt(request, error=_SITE_PASSWORD_MISCONFIGURED_ERROR)
+
+        if sp.has_valid_session_flag(request):
+            return None
+
+        verify_path = conf.DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH
+        if request.method == "POST" and path == verify_path:
+            return self._handle_site_password_verify(request)
+
+        return self._render_site_password_prompt(request)
+
+    def _handle_site_password_verify(self, request):
+        """Handle a POST to the site-password verify path.
+
+        On success: set the session flag and redirect to a validated
+        ``next`` (BR-SP-004). On failure: re-render the prompt with an
+        error and record a throttle hit against the WAF's existing
+        rate-limit surface (BR-SP-007).
+        """
+        from django.utils.http import url_has_allowed_host_and_scheme
+
+        from django_waf.services import site_password_service as sp
+
+        submitted = request.POST.get("password", "")
+        next_param = request.POST.get("next", "")
+
+        if sp.check_password(submitted):
+            sp.mark_session_verified(request)
+            safe_next = "/"
+            if next_param and url_has_allowed_host_and_scheme(
+                url=next_param,
+                allowed_hosts={request.get_host()},
+                require_https=request.is_secure(),
+            ):
+                safe_next = next_param
+            return HttpResponseRedirect(safe_next)
+
+        ip_address = _extract_ip(request) or "0.0.0.0"
+        redis_client = _get_redis_client()
+        throttled = sp.record_guess_throttle_hit(ip_address, redis_client)
+        if throttled:
+            response = HttpResponse("Too many attempts. Please retry later.", status=429)
+            response["Retry-After"] = "60"
+            response["X-Robots-Tag"] = _SITE_PASSWORD_NOINDEX_HEADER
+            return response
+
+        return self._render_site_password_prompt(request, error=_SITE_PASSWORD_INCORRECT_ERROR, next_url=next_param)
+
+    def _render_site_password_prompt(self, request, error=None, next_url=None):
+        """Render the noindex 401 site-password prompt (BR-SP-006)."""
+        from django.shortcuts import render
+
+        from django_waf import conf
+
+        if next_url is None:
+            next_url = request.get_full_path()
+
+        response = render(
+            request,
+            "django_waf/site_password.html",
+            {
+                "error": error,
+                "next_url": next_url,
+                "verify_path": conf.DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH,
+            },
+            status=401,
+        )
+        response["X-Robots-Tag"] = _SITE_PASSWORD_NOINDEX_HEADER
+        return response
 
     def _log_country_block(self, request, ip_address, user_agent, path, country):
         """Best-effort RequestLog entry for a country-blocked request."""

@@ -22,7 +22,7 @@ import logging
 
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.http import HttpRequest, HttpResponse, JsonResponse
-from django.shortcuts import get_object_or_404, redirect
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils.decorators import method_decorator
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -296,6 +296,73 @@ class VerifyView(NoIndexResponseMixin, View):
 
 
 verify_view = VerifyView.as_view()
+
+
+# ---------------------------------------------------------------------------
+# Site password gate
+# ---------------------------------------------------------------------------
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class SitePasswordVerifyView(NoIndexResponseMixin, View):
+    """
+    POST /waf/site-password/ (path configurable via
+    DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH)
+
+    Routed fallback for the site-password verify path. In normal operation
+    WafMiddleware intercepts POSTs to this path directly, before URL
+    resolution runs, and this view is never reached -- see
+    WafMiddleware._handle_site_password_verify, which shares the same
+    django_waf.services.site_password_service logic this view would use.
+    This route exists so reverse("django_waf:site-password-verify")
+    resolves and so a request reaching here (e.g. WafMiddleware not
+    installed, or DJANGO_WAF_SITE_PASSWORD_ENABLED False) gets a sane
+    response rather than a stray 404.
+    CSRF-exempt to mirror VerifyView: the gate may be presented before a
+    session/CSRF token exists for hosts that mount this urlconf directly.
+    """
+
+    def post(self, request: HttpRequest) -> HttpResponse:
+        from django_waf.services import site_password_service as sp
+
+        if not sp.is_gate_enabled() or sp.is_misconfigured():
+            return HttpResponse(_("This site is temporarily unavailable."), status=503)
+
+        submitted = request.POST.get("password", "")
+        next_param = request.POST.get("next", "")
+
+        if sp.check_password(submitted):
+            sp.mark_session_verified(request)
+            safe_next = "/"
+            if next_param and url_has_allowed_host_and_scheme(
+                url=next_param,
+                allowed_hosts={request.get_host()},
+                require_https=request.is_secure(),
+            ):
+                safe_next = next_param
+            return redirect(safe_next)
+
+        ip = _get_ip(request)
+        redis_client = _get_redis_client()
+        throttled = sp.record_guess_throttle_hit(ip, redis_client)
+        if throttled:
+            response = HttpResponse(_("Too many attempts. Please retry later."), status=429)
+            response["Retry-After"] = "60"
+            return response
+
+        return render(
+            request,
+            "django_waf/site_password.html",
+            {
+                "error": _("Incorrect password. Please try again."),
+                "next_url": _validate_next_url(request, next_param),
+                "verify_path": request.path,
+            },
+            status=401,
+        )
+
+
+site_password_verify_view = SitePasswordVerifyView.as_view()
 
 
 # ---------------------------------------------------------------------------

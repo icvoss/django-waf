@@ -29,6 +29,13 @@ The middleware-ordering check (``django_waf.W004``) warns when
 ``request.user`` is not available at that point, so the staff bypass
 silently fails and staff/superuser accounts can be blocked or challenged
 like anonymous traffic.
+
+The site-password check (``django_waf.E003``) errors when
+``DJANGO_WAF_SITE_PASSWORD_ENABLED`` is truthy but
+``DJANGO_WAF_SITE_PASSWORD`` is empty. Per BR-SP-002 the gate fails closed
+at runtime in this state (every request is denied), so this is an Error
+rather than a Warning -- it flags an operator's site as permanently locked
+rather than a soft misconfiguration.
 """
 
 from __future__ import annotations
@@ -198,3 +205,36 @@ def check_middleware_ordering(app_configs, **kwargs):
         ]
 
     return []
+
+
+@register()
+def check_site_password_configured(app_configs, **kwargs):
+    """Error (``django_waf.E003``) when the site-password gate is enabled
+    with an empty password.
+
+    Per BR-SP-002, this configuration fails closed at runtime -- every
+    gated request is denied, effectively taking the whole site offline.
+    Surfaced as an Error (not a Warning) because it blocks the site rather
+    than merely weakening a defence.
+    """
+    from django_waf import conf
+
+    if not conf.DJANGO_WAF_SITE_PASSWORD_ENABLED:
+        return []
+
+    if conf.DJANGO_WAF_SITE_PASSWORD:
+        return []
+
+    return [
+        Error(
+            "DJANGO_WAF_SITE_PASSWORD_ENABLED is True but "
+            "DJANGO_WAF_SITE_PASSWORD is empty — the site-password gate "
+            "will fail closed and deny every non-exempt request.",
+            hint=(
+                "Set DJANGO_WAF_SITE_PASSWORD to a non-empty value (load it "
+                "from environment in production), or set "
+                "DJANGO_WAF_SITE_PASSWORD_ENABLED = False to disable the gate."
+            ),
+            id="django_waf.E003",
+        )
+    ]
