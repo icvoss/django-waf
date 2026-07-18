@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-18
+
+### Added
+
+- Verified-crawler allowlist (ADR-035). `DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS`
+  (default `True`) seeds rDNS-gated `AllowRule` rows for Googlebot and Bingbot
+  on migrate, so a verified search crawler is never served the `noindex`
+  proof-of-work challenge that a non-JavaScript client cannot solve. Each seed
+  requires reverse-DNS verification, so a spoofed `Googlebot` user-agent from an
+  unverified IP is still scored and challenged (not a user-agent bypass). Set
+  the setting to `False`, or deactivate the seeded rows, to opt out. See the
+  README "Search engine crawlers" section.
+- Threat-feed contract extension (06-threat-feed-api.md section 2.8): a feed
+  entry may carry `kind: "allow"` with `verify_rdns` / `rdns_pattern`, so an
+  operated feed can deliver curated `AllowRule` rows (for example an
+  always-current crawler allowlist) alongside block rules. `AllowRule` gains a
+  `source` field for feed attribution and lifecycle. Fully backward compatible:
+  a feed with no `kind` field imports as block-only exactly as before.
+
+### Fixed
+
+- Verified search crawlers are no longer challenged out of the box. Previously
+  the package recognised crawler user-agents for analytics only and never
+  exempted them, so a real Googlebot scored into the challenge band, could not
+  solve the JavaScript proof-of-work, and was served an `X-Robots-Tag: noindex`
+  interstitial on every path, silently de-indexing sites that put a public
+  marketing surface behind the WAF. This closes a spec-vs-code gap:
+  BR-CHAL-001's guarantee ("search engine crawlers are never challenged") now
+  holds by default rather than only when an operator hand-seeded an `AllowRule`.
+
 ## [1.3.0] - 2026-07-14
 
 ### Added

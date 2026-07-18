@@ -200,6 +200,10 @@ class AllowRuleManager(models.Manager):
         """Return active rules that require reverse-DNS verification."""
         return self.active().filter(verify_rdns=True)
 
+    def feed_sourced(self) -> models.QuerySet:
+        """Return active rules sourced from the collective threat feed."""
+        return self.active().filter(source=RuleSource.FEED)
+
 
 class AllowRule(BaseModel):
     """
@@ -245,6 +249,36 @@ class AllowRule(BaseModel):
         db_index=True,
         verbose_name=_("active"),
     )
+    source = models.CharField(
+        max_length=20,
+        choices=RuleSource.choices,
+        default=RuleSource.ADMIN,
+        verbose_name=_("source"),
+    )
+    expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        verbose_name=_("expires at"),
+        help_text=_("Leave blank for rules that never expire."),
+    )
+    confidence = models.DecimalField(
+        max_digits=3,
+        decimal_places=2,
+        default=Decimal("1.00"),
+        verbose_name=_("confidence"),
+        help_text=_("Confidence score from 0.00 to 1.00 (feed-sourced rules only)."),
+    )
+    feed_first_seen = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name=_("feed first seen"),
+    )
+    feed_reporters = models.PositiveIntegerField(
+        default=0,
+        verbose_name=_("feed reporters"),
+        help_text=_("Number of sites that reported this allowlist entry to the collective feed."),
+    )
     notes = models.TextField(
         blank=True,
         verbose_name=_("notes"),
@@ -260,6 +294,7 @@ class AllowRule(BaseModel):
         indexes = [
             models.Index(fields=["rule_type", "is_active"], name="django_waf_ar_type_active_idx"),
             models.Index(fields=["is_active"], name="django_waf_ar_active_idx"),
+            models.Index(fields=["source", "is_active"], name="django_waf_ar_src_active_idx"),
         ]
 
     def __str__(self) -> str:

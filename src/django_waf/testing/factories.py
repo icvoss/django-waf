@@ -59,6 +59,11 @@ class AllowRuleFactory(factory.django.DjangoModelFactory):
     verify_rdns = False
     rdns_pattern = ""
     is_active = True
+    source = RuleSource.ADMIN
+    expires_at = None
+    confidence = Decimal("1.00")
+    feed_first_seen = None
+    feed_reporters = 0
     notes = ""
 
     class Meta:

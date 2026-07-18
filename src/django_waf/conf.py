@@ -206,6 +206,15 @@ DJANGO_WAF_EXEMPT_HOSTS: list[str] = getattr(
     [],
 )
 
+# Guarantee active, rDNS-gated AllowRules for the major verified search
+# crawlers (Googlebot, Bingbot), seeded by migration 0003 (ADR-035,
+# BR-CHAL-001). Without this, a crawler's UA scores into the challenge band
+# (it sends none of the Sec-CH-UA / Sec-Fetch-* headers a real browser
+# sends), never solves the JS proof-of-work challenge, and is silently
+# deindexed. Default True fixes that footgun out of the box. Set to False to
+# opt out, or deactivate the seeded AllowRule rows directly.
+DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS: bool = getattr(settings, "DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS", True)
+
 # Trust the X-Forwarded-For header when extracting the real client IP.
 DJANGO_WAF_TRUST_X_FORWARDED_FOR: bool = getattr(settings, "DJANGO_WAF_TRUST_X_FORWARDED_FOR", False)
 

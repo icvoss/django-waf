@@ -139,8 +139,9 @@ class AllowRuleAdmin(admin.ModelAdmin):
         "pattern",
         "is_active",
         "verify_rdns",
+        "source",
     ]
-    list_filter = ["rule_type", "is_active", "verify_rdns"]
+    list_filter = ["rule_type", "is_active", "verify_rdns", "source"]
     search_fields = ["name", "pattern", "rdns_pattern", "notes"]
     ordering = ["name"]
     readonly_fields = ["created_at", "updated_at"]
@@ -155,6 +156,7 @@ class AllowRuleAdmin(admin.ModelAdmin):
                     "match_type",
                     "pattern",
                     "is_active",
+                    "source",
                     "notes",
                 ]
             },
@@ -163,6 +165,20 @@ class AllowRuleAdmin(admin.ModelAdmin):
             _("Reverse DNS verification"),
             {
                 "fields": ["verify_rdns", "rdns_pattern"],
+                "classes": ["collapse"],
+            },
+        ),
+        (
+            _("Expiry"),
+            {
+                "fields": ["expires_at"],
+                "classes": ["collapse"],
+            },
+        ),
+        (
+            _("Feed metadata"),
+            {
+                "fields": ["confidence", "feed_first_seen", "feed_reporters"],
                 "classes": ["collapse"],
             },
         ),

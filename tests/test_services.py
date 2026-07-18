@@ -2122,6 +2122,444 @@ class TestSyncFeed:
         assert len(received) == 1
         assert "created" in received[0]
 
+    def test_allow_rule_entry_with_rdns_creates_allow_rule_ac_feed_004(self, db):
+        """kind='allow' entry with verify_rdns + rdns_pattern creates AllowRule, no BlockRule.
+
+        AC-FEED-004: Given a feed entry with kind="allow", rule_type="ua",
+        pattern="Googlebot", verify_rdns=true, rdns_pattern set, and confidence
+        above threshold, when sync_feed processes it, then a feed-sourced
+        AllowRule must be created with those fields, and no BlockRule must be
+        created for that entry.
+        """
+        from django_waf.models import AllowRule, BlockRule
+        from django_waf.services.threat_feed import sync_feed
+
+        feed_payload = [
+            {
+                "kind": "allow",
+                "rule_type": "ua",
+                "pattern": "Googlebot",
+                "match_type": "regex",
+                "verify_rdns": True,
+                "rdns_pattern": r"\.googlebot\.com$|\.google\.com$",
+                "confidence": 0.9,
+                "reporters": 3,
+            }
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result["created"] == 1
+        assert result["updated"] == 0
+        allow_rule = AllowRule.objects.filter(pattern="Googlebot").first()
+        assert allow_rule is not None
+        assert allow_rule.verify_rdns is True
+        assert allow_rule.rdns_pattern == r"\.googlebot\.com$|\.google\.com$"
+        assert allow_rule.feed_reporters == 3
+        assert BlockRule.objects.filter(pattern="Googlebot").count() == 0
+
+    def test_feed_no_kind_field_imports_as_block_rule_ac_feed_005(self, db):
+        """Feed with no kind field on any entry imports as BlockRule (backward compat).
+
+        AC-FEED-005: Given a feed with no kind field on any entry, when
+        sync_feed processes it, then every entry must import as BlockRule
+        exactly as before the allow-rule extension (backward compatibility),
+        and no AllowRule must be created.
+        """
+        from django_waf.models import AllowRule, BlockRule
+        from django_waf.services.threat_feed import sync_feed
+
+        feed_payload = [
+            {
+                "rule_type": "ua",
+                "pattern": "scraperbot",
+                "action": "block",
+                "match_type": "contains",
+                "confidence": 0.85,
+            },
+            {
+                "rule_type": "ip",
+                "pattern": "192.0.2.1",
+                "action": "challenge",
+                "match_type": "exact",
+                "confidence": 0.9,
+            },
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result["created"] == 2
+        assert BlockRule.objects.filter(pattern="scraperbot").count() == 1
+        assert BlockRule.objects.filter(pattern="192.0.2.1").count() == 1
+        assert AllowRule.objects.count() == 0
+
+    def test_allow_rule_absent_from_feed_deactivates_ac_feed_006(self, db):
+        """Feed-sourced AllowRule absent in later sync is deactivated.
+
+        AC-FEED-006: Given a feed-sourced AllowRule created by a prior sync,
+        when a later sync_feed runs whose response no longer contains that
+        entry, then the AllowRule must be deactivated (is_active=False),
+        mirroring the block-rule absence rule.
+        """
+        from django_waf.enums import RuleSource
+        from django_waf.services.threat_feed import sync_feed
+
+        stale_allow = AllowRuleFactory(
+            source=RuleSource.FEED,
+            rule_type="ua",
+            match_type="regex",
+            pattern="OldBot",
+            verify_rdns=True,
+            rdns_pattern=r"\.oldbot\.com$",
+            is_active=True,
+        )
+
+        # Feed returns entries but not the stale_allow entry
+        feed_payload = [
+            {
+                "kind": "allow",
+                "rule_type": "ua",
+                "pattern": "NewBot",
+                "match_type": "regex",
+                "verify_rdns": True,
+                "rdns_pattern": r"\.newbot\.com$",
+                "confidence": 0.9,
+            }
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result["expired"] == 1
+        stale_allow.refresh_from_db()
+        assert stale_allow.is_active is False
+
+    def test_allow_entry_below_confidence_threshold_skipped(self, db):
+        """Allow entry with confidence below threshold is skipped, no AllowRule.
+
+        Covers the confidence threshold gate for allow-kind entries.
+        """
+        from django_waf.models import AllowRule
+        from django_waf.services.threat_feed import sync_feed
+
+        feed_payload = [
+            {
+                "kind": "allow",
+                "rule_type": "ua",
+                "pattern": "LowConfidenceBot",
+                "match_type": "contains",
+                "verify_rdns": False,
+                "confidence": 0.2,  # below 0.5 threshold
+            }
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result["skipped"] == 1
+        assert result["created"] == 0
+        assert AllowRule.objects.filter(pattern="LowConfidenceBot").count() == 0
+
+    def test_sync_feed_allow_rule_idempotent(self, db):
+        """Re-syncing identical allow feed is idempotent: AllowRule count stable.
+
+        Verifies the update_or_create keying on (source, rule_type, pattern).
+        """
+        from django_waf.services.threat_feed import sync_feed
+
+        feed_payload = [
+            {
+                "kind": "allow",
+                "rule_type": "ua",
+                "pattern": "IdempotentBot",
+                "match_type": "contains",
+                "verify_rdns": False,
+                "confidence": 0.95,
+            }
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result1 = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+            result2 = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result1["created"] == 1
+        assert result1["updated"] == 0
+        assert result2["created"] == 0
+        assert result2["updated"] == 1
+
+    def test_block_and_allow_same_pattern_do_not_interfere(self, db):
+        """Block and allow entries with same (rule_type, pattern) coexist.
+
+        Verifies separate tracking in seen_block_keys and seen_allow_keys.
+        """
+        from django_waf.models import AllowRule, BlockRule
+        from django_waf.services.threat_feed import sync_feed
+
+        feed_payload = [
+            {
+                "kind": "block",
+                "rule_type": "ua",
+                "pattern": "DualBot",
+                "action": "block",
+                "match_type": "contains",
+                "confidence": 0.9,
+            },
+            {
+                "kind": "allow",
+                "rule_type": "ua",
+                "pattern": "DualBot",
+                "match_type": "contains",
+                "verify_rdns": False,
+                "confidence": 0.9,
+            },
+        ]
+
+        with patch("httpx.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = feed_payload
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = sync_feed(feed_url="https://feed.example.com", min_confidence=0.5)
+
+        assert result["created"] == 2
+        assert BlockRule.objects.filter(pattern="DualBot").count() == 1
+        assert AllowRule.objects.filter(pattern="DualBot").count() == 1
+
+
+# ---------------------------------------------------------------------------
+# Seed migration and rDNS verification
+# ---------------------------------------------------------------------------
+
+
+class TestSeedVerifiedCrawlers:
+    """Test the seed_verified_crawlers migration function (AC-CHAL-001a/d)."""
+
+    def test_seed_creates_two_rows_with_default_setting(self, db):
+        """With DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS=True, seed creates 2 rows.
+
+        AC-CHAL-001a: Given a fresh database migrated with
+        DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS at its default (True), when
+        migrations have run, then active rDNS-gated AllowRule rows must exist
+        for Googlebot and Bingbot.
+        """
+        from importlib import import_module
+
+        from django.apps import apps
+
+        from django_waf.models import AllowRule
+
+        # Import the migration module to get the seed function
+        migration = import_module("django_waf.migrations.0003_seed_verified_crawlers")
+        seed_verified_crawlers = migration.seed_verified_crawlers
+
+        # Clear any existing rows
+        AllowRule.objects.all().delete()
+
+        # Call seed_verified_crawlers directly
+        seed_verified_crawlers(apps, None)
+
+        # Verify exactly 2 rows created with correct patterns
+        assert AllowRule.objects.count() == 2
+        googlebot = AllowRule.objects.get(pattern="Googlebot")
+        bingbot = AllowRule.objects.get(pattern="bingbot")
+
+        assert googlebot.verify_rdns is True
+        assert googlebot.rdns_pattern == r"\.googlebot\.com$|\.google\.com$"
+        assert googlebot.is_active is True
+        assert googlebot.rule_type == "ua"
+        assert googlebot.match_type == "regex"
+
+        assert bingbot.verify_rdns is True
+        assert bingbot.rdns_pattern == r"\.search\.msn\.com$"
+        assert bingbot.is_active is True
+        assert bingbot.rule_type == "ua"
+        assert bingbot.match_type == "regex"
+
+    def test_seed_is_idempotent(self, db):
+        """Re-running seed_verified_crawlers keeps AllowRule count at 2.
+
+        Tests the update_or_create keying.
+        """
+        from importlib import import_module
+
+        from django.apps import apps
+
+        from django_waf.models import AllowRule
+
+        migration = import_module("django_waf.migrations.0003_seed_verified_crawlers")
+        seed_verified_crawlers = migration.seed_verified_crawlers
+
+        AllowRule.objects.all().delete()
+
+        seed_verified_crawlers(apps, None)
+        count_first = AllowRule.objects.count()
+
+        seed_verified_crawlers(apps, None)
+        count_second = AllowRule.objects.count()
+
+        assert count_first == 2
+        assert count_second == 2
+
+    def test_unseed_removes_crawler_rows(self, db):
+        """Unseed removes exactly the two seeded crawler rows.
+
+        Tests the rollback path.
+        """
+        from importlib import import_module
+
+        from django.apps import apps
+
+        from django_waf.models import AllowRule
+
+        migration = import_module("django_waf.migrations.0003_seed_verified_crawlers")
+        seed_verified_crawlers = migration.seed_verified_crawlers
+        unseed_verified_crawlers = migration.unseed_verified_crawlers
+
+        AllowRule.objects.all().delete()
+
+        seed_verified_crawlers(apps, None)
+        assert AllowRule.objects.count() == 2
+
+        unseed_verified_crawlers(apps, None)
+        assert AllowRule.objects.count() == 0
+
+    def test_seed_respects_allow_verified_crawlers_setting_false(self, db):
+        """With DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS=False, seed creates 0 rows.
+
+        AC-CHAL-001d: Given DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS=False at
+        migrate time, when migrations run on a fresh database, then the
+        crawler seed rows must not be created.
+        """
+        from importlib import import_module
+
+        from django.apps import apps
+        from django.test import override_settings
+
+        from django_waf.models import AllowRule
+
+        migration = import_module("django_waf.migrations.0003_seed_verified_crawlers")
+        seed_verified_crawlers = migration.seed_verified_crawlers
+
+        AllowRule.objects.all().delete()
+
+        with override_settings(DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS=False):
+            seed_verified_crawlers(apps, None)
+
+        assert AllowRule.objects.count() == 0
+
+
+class TestRdnsGatingInRuleEngine:
+    """Test rDNS verification in rule evaluation (AC-CHAL-001b/c).
+
+    These test the service layer, mocking rDNS resolution to avoid
+    real socket calls. Tests verify that the allow-rule matching path
+    respects verify_rdns gating.
+    """
+
+    def test_allow_rule_with_rdns_passes_matching_ptr(self, db):
+        """AllowRule with verify_rdns=True passes when PTR matches rdns_pattern.
+
+        AC-CHAL-001b: Given an active seeded-equivalent Googlebot AllowRule
+        with verify_rdns=True, when the request arrives from an IP whose PTR
+        record ends in .googlebot.com, then evaluate_request must return
+        PASSED via the allow rule.
+        """
+        from django_waf.enums import Verdict
+        from django_waf.services.rule_engine import evaluate_request
+
+        # Create an AllowRule matching Googlebot with rDNS gating
+        AllowRuleFactory(
+            rule_type="ua",
+            match_type="regex",
+            pattern="Googlebot",
+            verify_rdns=True,
+            rdns_pattern=r"\.googlebot\.com$|\.google\.com$",
+            is_active=True,
+        )
+
+        redis_client = _make_redis()
+
+        # Mock _verify_rdns to return True (PTR matches)
+        with patch("django_waf.services.rule_engine._verify_rdns", return_value=True):
+            result = evaluate_request(
+                ip_address="1.2.3.4",
+                user_agent="Googlebot/2.1 (+http://www.google.com/bot.html)",
+                path="/",
+                method="GET",
+                redis_client=redis_client,
+            )
+
+        assert result.verdict == Verdict.PASSED
+        assert result.matched_rule_id is not None
+
+    def test_allow_rule_with_rdns_fails_non_matching_ptr(self, db):
+        """AllowRule with verify_rdns=True fails when PTR does not match.
+
+        AC-CHAL-001c: Given a spoofed Googlebot UA from an IP whose PTR
+        record does not resolve under .googlebot.com/.google.com, when
+        evaluate_request runs, then the seeded AllowRule must not match
+        (rDNS check fails) and the request must fall through to normal
+        scoring.
+        """
+        from django_waf.services.rule_engine import evaluate_request
+
+        # Create an AllowRule for Googlebot with rDNS gating
+        AllowRuleFactory(
+            rule_type="ua",
+            match_type="regex",
+            pattern="Googlebot",
+            verify_rdns=True,
+            rdns_pattern=r"\.googlebot\.com$|\.google\.com$",
+            is_active=True,
+        )
+
+        redis_client = _make_redis()
+        # Set up the pipeline for rate limit checks (execute returns [zadd, zrem, zcard, expire])
+        # zcard returns 1 (within limits)
+        redis_client.pipeline.return_value = _make_pipeline_mock(1)
+
+        # Mock _verify_rdns to return False (PTR does not match)
+        with patch("django_waf.services.rule_engine._verify_rdns", return_value=False):
+            result = evaluate_request(
+                ip_address="203.0.113.1",  # spoofed IP without valid PTR
+                user_agent="Googlebot/2.1 (+http://www.google.com/bot.html)",
+                path="/",
+                method="GET",
+                redis_client=redis_client,
+            )
+
+        # Without the allow rule match, the request falls through to normal scoring
+        # and is unlikely to pass (Googlebot UA alone without allow rule doesn't grant pass)
+        assert result.matched_rule_type != "allow"
+
 
 # ---------------------------------------------------------------------------
 # build_telemetry_payload
