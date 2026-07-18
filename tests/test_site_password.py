@@ -4,13 +4,17 @@ WafMiddleware._check_site_password, and SitePasswordVerifyView).
 See docs/specs/site-password/PRD.md for the BR-SP rules and acceptance
 criteria this file covers.
 
-Uses Django's test Client (real sessions, real DB) for the integration-level
-gate behaviour -- a signed session flag is core to the feature under test,
-and RequestFactory does not attach a session. Unit-level checks on the
-service module use direct calls with patched conf attributes, mirroring
-tests/test_services.py's TestCheckRateLimit pattern (django_waf.conf reads
-values at call time from a local import, so patch.object works without
-importlib.reload).
+Uses Django's test Client (real DB) for the integration-level gate
+behaviour. The verified flag is the gate's own signed cookie
+(django_waf.services.site_password_service.SITE_PASSWORD_COOKIE), not
+Django's session -- WafMiddleware is documented to run before
+SessionMiddleware, so the gate must not depend on request.session (see
+TestNoSessionMiddlewareRegression below, which reproduces the shipped
+defect with SessionMiddleware removed from the stack entirely). Unit-level
+checks on the service module use direct calls with patched conf
+attributes, mirroring tests/test_services.py's TestCheckRateLimit pattern
+(django_waf.conf reads values at call time from a local import, so
+patch.object works without importlib.reload).
 
 By default DJANGO_WAF_SITE_PASSWORD is unset in tests/settings.py, so the
 gate is off unless a test explicitly enables it via override_settings +
@@ -228,7 +232,7 @@ class TestPromptIsNoindex401:
 
 
 # ---------------------------------------------------------------------------
-# BR-SP-004: correct password sets the flag and lets verified sessions through
+# BR-SP-004: correct password sets the cookie and lets verified visitors through
 # ---------------------------------------------------------------------------
 
 
@@ -252,7 +256,22 @@ class TestCorrectPasswordVerifies:
         assert response.status_code == 302
         assert response["Location"] == "/"
 
-    def test_verified_session_passes_without_reprompt(self):
+    def test_correct_password_sets_verified_cookie(self):
+        with _enable_gate(password="letmein"):
+            client = Client()
+            response = client.post(
+                "/waf/site-password/",
+                {"password": "letmein", "next": "/"},
+            )
+
+        from django_waf.services.site_password_service import SITE_PASSWORD_COOKIE
+
+        assert SITE_PASSWORD_COOKIE in response.cookies
+        cookie = response.cookies[SITE_PASSWORD_COOKIE]
+        assert cookie["httponly"] is True
+        assert cookie["samesite"] == "Lax"
+
+    def test_verified_cookie_passes_without_reprompt(self):
         with _enable_gate(password="letmein"):
             client = Client()
             verify_response = client.post(
@@ -261,7 +280,8 @@ class TestCorrectPasswordVerifies:
             )
             assert verify_response.status_code == 302
 
-            # Same client/session -- subsequent request within TTL is not gated.
+            # Same client -- its cookiejar carries the verified cookie, so
+            # the subsequent request within TTL is not gated.
             response = client.get("/")
 
         assert response.status_code == 200
@@ -309,7 +329,7 @@ class TestWrongPasswordReprompts:
         assert response.status_code == 401
         assert b"Incorrect password" in response.content
 
-    def test_wrong_password_does_not_set_session_flag(self):
+    def test_wrong_password_does_not_set_verified_cookie(self):
         with _enable_gate(password="correct-horse"):
             client = Client()
             client.post("/waf/site-password/", {"password": "wrong-guess", "next": "/"})
@@ -635,3 +655,230 @@ class TestGateRunsWithinMiddlewareEnabledCheck:
             assert response.status_code == 200
         finally:
             importlib.reload(conf_mod)
+
+
+# ---------------------------------------------------------------------------
+# Signed-cookie unit tests: site_password_service.has_valid_cookie /
+# set_verified_cookie
+# ---------------------------------------------------------------------------
+
+
+class TestSignedCookieService:
+    """Unit-level checks on the cookie signing/verification helpers,
+    independent of the middleware/view integration above."""
+
+    def test_set_verified_cookie_sets_signed_value(self):
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from django_waf.services.site_password_service import (
+            SITE_PASSWORD_COOKIE,
+            set_verified_cookie,
+        )
+
+        with _enable_gate(password="letmein"):
+            request = RequestFactory().get("/")
+            response = HttpResponse()
+            set_verified_cookie(response, request)
+
+        assert SITE_PASSWORD_COOKIE in response.cookies
+        # The cookie value is opaque signed data, not the marker/password.
+        raw_value = response.cookies[SITE_PASSWORD_COOKIE].value
+        assert raw_value != "verified"
+        assert "letmein" not in raw_value
+
+    def test_has_valid_cookie_true_for_freshly_set_cookie(self):
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from django_waf.services.site_password_service import (
+            SITE_PASSWORD_COOKIE,
+            has_valid_cookie,
+            set_verified_cookie,
+        )
+
+        with _enable_gate(password="letmein"):
+            factory = RequestFactory()
+            response = HttpResponse()
+            set_verified_cookie(response, factory.get("/"))
+            signed_value = response.cookies[SITE_PASSWORD_COOKIE].value
+
+            request = factory.get("/")
+            request.COOKIES[SITE_PASSWORD_COOKIE] = signed_value
+
+            assert has_valid_cookie(request) is True
+
+    def test_has_valid_cookie_false_when_missing(self):
+        from django.test import RequestFactory
+
+        from django_waf.services.site_password_service import has_valid_cookie
+
+        with _enable_gate(password="letmein"):
+            request = RequestFactory().get("/")
+            assert has_valid_cookie(request) is False
+
+    def test_has_valid_cookie_false_when_tampered(self):
+        from django.test import RequestFactory
+
+        from django_waf.services.site_password_service import (
+            SITE_PASSWORD_COOKIE,
+            has_valid_cookie,
+        )
+
+        with _enable_gate(password="letmein"):
+            request = RequestFactory().get("/")
+            request.COOKIES[SITE_PASSWORD_COOKIE] = "not-a-real-signed-value"
+            assert has_valid_cookie(request) is False
+
+    def test_has_valid_cookie_false_when_expired(self):
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from django_waf.services.site_password_service import (
+            SITE_PASSWORD_COOKIE,
+            has_valid_cookie,
+            set_verified_cookie,
+        )
+
+        with _enable_gate(password="letmein", DJANGO_WAF_SITE_PASSWORD_TTL=1):
+            factory = RequestFactory()
+            response = HttpResponse()
+            set_verified_cookie(response, factory.get("/"))
+            signed_value = response.cookies[SITE_PASSWORD_COOKIE].value
+
+            import time
+
+            time.sleep(1.1)
+
+            request = factory.get("/")
+            request.COOKIES[SITE_PASSWORD_COOKIE] = signed_value
+
+            assert has_valid_cookie(request) is False
+
+    def test_cookie_signed_with_django_waf_signing_key_not_secret_key(self):
+        """The cookie must use the package's own signing key convention
+        (DJANGO_WAF_SIGNING_KEY / tokens.get_signing_key), not Django's
+        SECRET_KEY-backed session/cookie signer directly."""
+        import django_waf.services.site_password_service as sp_mod
+        from django_waf.forms.services import tokens as tokens_mod
+
+        with (
+            patch.object(tokens_mod, "get_signing_key", wraps=tokens_mod.get_signing_key) as spy,
+            _enable_gate(password="letmein"),
+        ):
+            sp_mod._get_signer()
+
+        spy.assert_called_once()
+
+    def test_cookie_scoped_to_session_cookie_domain_by_default(self):
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from django_waf.services.site_password_service import (
+            SITE_PASSWORD_COOKIE,
+            set_verified_cookie,
+        )
+
+        with (
+            _enable_gate(password="letmein"),
+            override_settings(SESSION_COOKIE_DOMAIN=".example.com"),
+        ):
+            response = HttpResponse()
+            set_verified_cookie(response, RequestFactory().get("/"))
+
+        assert response.cookies[SITE_PASSWORD_COOKIE]["domain"] == ".example.com"
+
+    def test_cookie_domain_setting_overrides_session_cookie_domain(self):
+        import django_waf.conf as conf_mod
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from django_waf.services.site_password_service import (
+            SITE_PASSWORD_COOKIE,
+            set_verified_cookie,
+        )
+
+        with (
+            _enable_gate(
+                password="letmein",
+                DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN=".gate-only.example.com",
+            ),
+            override_settings(SESSION_COOKIE_DOMAIN=".example.com"),
+        ):
+            assert conf_mod.DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN == ".gate-only.example.com"
+            response = HttpResponse()
+            set_verified_cookie(response, RequestFactory().get("/"))
+
+        assert response.cookies[SITE_PASSWORD_COOKIE]["domain"] == ".gate-only.example.com"
+
+
+# ---------------------------------------------------------------------------
+# Regression: WafMiddleware runs before SessionMiddleware in production
+# (README-documented order). request.session must never be touched.
+# ---------------------------------------------------------------------------
+
+
+class TestNoSessionMiddlewareRegression:
+    """Reproduces the shipped 1.5.0 defect: site_password_service used
+    request.session, but WafMiddleware is documented to run BEFORE
+    SessionMiddleware (README: 'placing it after SecurityMiddleware and
+    before other middleware'), so request.session does not exist when the
+    gate runs and mark_session_verified() raised AttributeError.
+
+    Builds a middleware stack matching the documented production order
+    (WafMiddleware immediately after SecurityMiddleware, with no session
+    middleware anywhere in the chain) via override_settings(MIDDLEWARE=...),
+    rather than relying on tests/settings.py's MIDDLEWARE (which -- unlike
+    production -- puts SessionMiddleware before WafMiddleware and would
+    mask this exact bug).
+    """
+
+    _NO_SESSION_MIDDLEWARE = [
+        "django.middleware.security.SecurityMiddleware",
+        "django_waf.middleware.WafMiddleware",
+        "django.middleware.common.CommonMiddleware",
+    ]
+
+    def test_full_gate_round_trip_with_no_session_middleware(self):
+        """Prompt -> POST password -> get signed cookie -> next request
+        with the cookie passes -- all without SessionMiddleware installed
+        and without raising AttributeError."""
+        with (
+            _enable_gate(password="letmein"),
+            override_settings(MIDDLEWARE=self._NO_SESSION_MIDDLEWARE),
+        ):
+            client = Client()
+
+            prompt_response = client.get("/")
+            assert prompt_response.status_code == 401
+
+            verify_response = client.post(
+                "/waf/site-password/",
+                {"password": "letmein", "next": "/"},
+            )
+            assert verify_response.status_code == 302
+
+            from django_waf.services.site_password_service import SITE_PASSWORD_COOKIE
+
+            assert SITE_PASSWORD_COOKIE in verify_response.cookies
+
+            next_response = client.get("/")
+
+        assert next_response.status_code == 200
+        assert next_response.content == b"OK"
+
+    def test_request_has_no_session_attribute_during_verify(self):
+        """Explicit guard: a request with no .session attribute at all
+        (not merely an empty one) must not raise when POSTed to the verify
+        path with the correct password."""
+        with (
+            _enable_gate(password="letmein"),
+            override_settings(MIDDLEWARE=self._NO_SESSION_MIDDLEWARE),
+        ):
+            client = Client()
+            response = client.post(
+                "/waf/site-password/",
+                {"password": "letmein", "next": "/"},
+            )
+
+        assert response.status_code == 302

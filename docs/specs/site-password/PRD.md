@@ -14,18 +14,18 @@ not app-aware, and not part of the security surface django-waf already owns.
 django-waf already gates requests (block/challenge/throttle) in one middleware
 and already ships a noindex interstitial pattern (`ChallengeView` +
 `NoIndexResponseMixin`). A site-password gate is the same shape: intercept early,
-show an interstitial, verify, let verified sessions through.
+show an interstitial, verify, let verified visitors through.
 
 **Goal:** a single setting turns a site into a password-gated site. Every request
 to every host the middleware serves is intercepted until the visitor submits the
-correct password; after that, a signed session flag lets them through for a
+correct password; after that, a signed cookie lets them through for a
 configurable duration. Gated responses are noindex. It covers subdomains because
 it is middleware, not per-host config.
 
 ### 1.1 In scope
 - A shared-password wall over the whole site, all hosts/subdomains the app serves.
-- An interstitial password prompt (noindex), a verify endpoint, a signed session
-  flag on success with a TTL.
+- An interstitial password prompt (noindex), a verify endpoint, a signed
+  verified-flag cookie on success with a TTL.
 - Exempt paths (health checks, ACME, robots.txt) configurable so the gate does
   not break liveness probes or cert renewal.
 - Fail-closed: if the gate is enabled and the password is unset/misconfigured,
@@ -57,25 +57,44 @@ short-circuit, or `None` to continue.
 
 Flow per request when `DJANGO_WAF_SITE_PASSWORD` is set:
 1. If the request path is an exempt path (gate-exempt list), continue (no gate).
-2. If the request carries a valid, unexpired site-access session flag, continue.
+2. If the request carries a valid, unexpired verified-flag cookie, continue.
 3. If this is a POST to the gate's verify path, check the submitted password;
-   on success set the session flag and redirect to the originally-requested URL
-   (or `next`); on failure re-render the prompt with an error (and record a
-   throttle hit).
+   on success set the verified-flag cookie on the redirect response and
+   redirect to the originally-requested URL (or `next`); on failure re-render
+   the prompt with an error (and record a throttle hit).
 4. Otherwise, render the password prompt interstitial (noindex, 401), preserving
    the originally-requested URL as `next`.
 
-### 2.2 The session flag
+### 2.2 The verified-flag cookie
 
-On correct password, store a signed marker in the session (a boolean plus an
-issued-at timestamp), valid for `DJANGO_WAF_SITE_PASSWORD_TTL` seconds. The
-session cookie already scopes to the site's domain; to cover subdomains, the
-deployment sets `SESSION_COOKIE_DOMAIN=".example.com"` (documented, not forced,
-this is standard Django and the operator's call). The flag is validated on every
-request; past the TTL, the visitor is prompted again.
+`WafMiddleware` is documented to sit before `SessionMiddleware` in the
+middleware stack (so it can block requests as early as possible), which means
+`request.session` does not exist when the gate runs. The verified flag is
+therefore the gate's own signed cookie (`waf_site_password`), not Django's
+session — a dependency on `request.session` here is a defect, not a design
+choice (see `django_waf.services.site_password_service` module docstring).
 
-Comparison uses `hmac.compare_digest` (constant-time). The stored password is
-read from settings (an env var in production), never rendered, never logged.
+On correct password, the gate signs a marker with
+`django.core.signing.TimestampSigner`, keyed with the package's own signing key
+(`DJANGO_WAF_SIGNING_KEY`, falling back to a `SECRET_KEY`-derived value — the
+same convention every other signed artefact in this package uses) and sets it
+as a cookie on the redirect response, valid for `DJANGO_WAF_SITE_PASSWORD_TTL`
+seconds. The TTL is enforced live via the `max_age` passed to
+`TimestampSigner.unsign()` on every request, so a TTL change in settings takes
+effect for existing cookies on their next request. The cookie is
+`httponly=True`, `samesite="Lax"`, and `secure` matching whether the request is
+served over HTTPS.
+
+To cover subdomains, `DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN` (default `None`)
+falls back to `settings.SESSION_COOKIE_DOMAIN` at call time — a site that
+already sets `SESSION_COOKIE_DOMAIN=".example.com"` gets the same subdomain
+coverage on the gate's cookie without configuring it twice; set the gate
+setting explicitly only when its scope must differ from the session cookie's.
+
+Comparison of the submitted password uses `hmac.compare_digest`
+(constant-time); `django.core.signing`'s HMAC verification is inherently
+constant-time for the cookie signature itself. The stored password is read
+from settings (an env var in production), never rendered, never logged.
 
 ### 2.3 The interstitial
 
@@ -96,9 +115,11 @@ on the prompt (unauthorised), so bots and scanners see a locked door, not conten
   (default: health check, `/.well-known/`, `/robots.txt`, the WAF challenge/verify
   paths) bypass the gate so liveness, ACME, and the WAF's own interstitials keep
   working.
-- **BR-SP-004 Verified session passes for its TTL.** A correct password sets a
-  signed session flag valid for `DJANGO_WAF_SITE_PASSWORD_TTL` (default 12h);
-  requests within the TTL are not re-prompted.
+- **BR-SP-004 Verified cookie passes for its TTL.** A correct password sets a
+  signed verified-flag cookie valid for `DJANGO_WAF_SITE_PASSWORD_TTL` (default
+  12h); requests within the TTL are not re-prompted. The cookie is the gate's
+  own (`waf_site_password`), independent of Django's session, because
+  `WafMiddleware` runs before `SessionMiddleware`.
 - **BR-SP-005 Constant-time comparison; no leakage.** Password compared with
   `hmac.compare_digest`; never rendered, never logged, never in an error message.
 - **BR-SP-006 Prompt is noindex and 401.** The interstitial carries
@@ -116,13 +137,15 @@ on the prompt (unauthorised), so bots and scanners see a locked door, not conten
 |---------|---------|---------|
 | `DJANGO_WAF_SITE_PASSWORD` | `""` | The shared password. Unset = gate off. |
 | `DJANGO_WAF_SITE_PASSWORD_ENABLED` | `bool(DJANGO_WAF_SITE_PASSWORD)` | Explicit on/off; enabling with an empty password fails closed (BR-SP-002). |
-| `DJANGO_WAF_SITE_PASSWORD_TTL` | `43200` (12h) | Verified-session lifetime, seconds. |
+| `DJANGO_WAF_SITE_PASSWORD_TTL` | `43200` (12h) | Verified-cookie lifetime, seconds. |
 | `DJANGO_WAF_SITE_PASSWORD_EXEMPT_PATHS` | health, `/.well-known/`, `/robots.txt`, WAF interstitials | Paths that bypass the gate. |
 | `DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH` | `/waf/site-password/` | Where the prompt posts. |
+| `DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN` | `None` (falls back to `SESSION_COOKIE_DOMAIN`) | Domain scope of the gate's own verified-flag cookie. |
 
 Subdomain coverage is achieved by the operator setting Django's
-`SESSION_COOKIE_DOMAIN` to the parent domain (documented); the gate itself is
-host-agnostic (middleware runs on every host).
+`SESSION_COOKIE_DOMAIN` to the parent domain (documented) — the gate's own
+cookie inherits it by default via `DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN`; the
+gate itself is host-agnostic (middleware runs on every host).
 
 ## 5. Acceptance criteria
 
@@ -130,8 +153,11 @@ host-agnostic (middleware runs on every host).
   regression guard that existing WAF behaviour is unchanged).
 - AC: with it set, an un-verified request to any path (except exempt) gets the
   401 noindex prompt, not the app.
-- AC: a correct password POST sets the session flag and redirects to `next`;
-  subsequent requests within the TTL proceed without a prompt.
+- AC: a correct password POST sets the verified-flag cookie and redirects to
+  `next`; subsequent requests within the TTL proceed without a prompt.
+- AC: the gate works with no `SessionMiddleware` in the stack at all (it never
+  touches `request.session`) -- regression guard for the defect that shipped
+  in 1.5.0.
 - AC: an incorrect password re-prompts with an error and records a throttle hit;
   after the throttle limit, further attempts from that IP are rate-limited.
 - AC: exempt paths (health, `/.well-known/`, robots.txt, the WAF challenge/verify)
