@@ -41,6 +41,14 @@ urlpatterns = [
     path("challenge/", views.challenge_view, name="challenge"),
     path("verify/", views.verify_view, name="verify"),
     # -----------------------------------------------------------------------
+    # Site password gate — WafMiddleware intercepts POSTs to
+    # DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH directly (see
+    # WafMiddleware._handle_site_password_verify); this route exists as a
+    # fallback so reverse() resolves and a direct hit still gets a
+    # sane response.
+    # -----------------------------------------------------------------------
+    path("site-password/", views.site_password_verify_view, name="site-password-verify"),
+    # -----------------------------------------------------------------------
     # Staff dashboard
     # -----------------------------------------------------------------------
     path("dashboard/", views.dashboard_view, name="dashboard"),
