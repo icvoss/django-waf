@@ -440,6 +440,19 @@ DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH: str = getattr(
     settings, "DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH", "/waf/site-password/"
 )
 
+# Domain for the gate's own verified-flag cookie (see
+# django_waf.services.site_password_service -- the gate uses its own signed
+# cookie, not Django's session, because WafMiddleware runs before
+# SessionMiddleware). Defaults to None, which means
+# site_password_service.set_verified_cookie() falls back to
+# settings.SESSION_COOKIE_DOMAIN at call time -- so a site that already sets
+# SESSION_COOKIE_DOMAIN=".example.com" for subdomain coverage gets the same
+# coverage on this cookie without configuring it twice. Set explicitly only
+# when the gate's subdomain scope must differ from the session cookie's.
+DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN: str | None = getattr(
+    settings, "DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN", None
+)
+
 # ---------------------------------------------------------------------------
 # Celery Beat schedule helper
 # ---------------------------------------------------------------------------

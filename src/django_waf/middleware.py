@@ -207,9 +207,9 @@ class WafMiddleware:
         2. Exempt path → None (BR-SP-003).
         3. Fail-closed misconfiguration (enabled, empty password) → always
            deny, never fall through to "no gate" (BR-SP-002).
-        4. Valid, unexpired session flag → None (BR-SP-004).
+        4. Valid, unexpired signed verified-flag cookie → None (BR-SP-004).
         5. POST to the verify path → check the password and either set the
-           flag + redirect, or re-prompt with an error and a throttle hit.
+           cookie + redirect, or re-prompt with an error and a throttle hit.
         6. Otherwise → render the noindex 401 prompt.
         """
         from django_waf import conf
@@ -228,7 +228,7 @@ class WafMiddleware:
             )
             return self._render_site_password_prompt(request, error=_SITE_PASSWORD_MISCONFIGURED_ERROR)
 
-        if sp.has_valid_session_flag(request):
+        if sp.has_valid_cookie(request):
             return None
 
         verify_path = conf.DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH
@@ -240,10 +240,16 @@ class WafMiddleware:
     def _handle_site_password_verify(self, request):
         """Handle a POST to the site-password verify path.
 
-        On success: set the session flag and redirect to a validated
-        ``next`` (BR-SP-004). On failure: re-render the prompt with an
-        error and record a throttle hit against the WAF's existing
-        rate-limit surface (BR-SP-007).
+        On success: build the redirect response to a validated ``next``
+        and set the gate's signed verified cookie on *that* response
+        (BR-SP-004). On failure: re-render the prompt with an error and
+        record a throttle hit against the WAF's existing rate-limit
+        surface (BR-SP-007).
+
+        Never touches ``request.session`` -- ``WafMiddleware`` runs before
+        ``SessionMiddleware`` in the documented middleware order, so the
+        session is not available here. See site_password_service module
+        docstring.
         """
         from django.utils.http import url_has_allowed_host_and_scheme
 
@@ -253,7 +259,6 @@ class WafMiddleware:
         next_param = request.POST.get("next", "")
 
         if sp.check_password(submitted):
-            sp.mark_session_verified(request)
             safe_next = "/"
             if next_param and url_has_allowed_host_and_scheme(
                 url=next_param,
@@ -261,7 +266,9 @@ class WafMiddleware:
                 require_https=request.is_secure(),
             ):
                 safe_next = next_param
-            return HttpResponseRedirect(safe_next)
+            response = HttpResponseRedirect(safe_next)
+            sp.set_verified_cookie(response, request)
+            return response
 
         ip_address = _extract_ip(request) or "0.0.0.0"
         redis_client = _get_redis_client()

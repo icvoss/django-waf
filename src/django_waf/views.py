@@ -332,7 +332,6 @@ class SitePasswordVerifyView(NoIndexResponseMixin, View):
         next_param = request.POST.get("next", "")
 
         if sp.check_password(submitted):
-            sp.mark_session_verified(request)
             safe_next = "/"
             if next_param and url_has_allowed_host_and_scheme(
                 url=next_param,
@@ -340,7 +339,9 @@ class SitePasswordVerifyView(NoIndexResponseMixin, View):
                 require_https=request.is_secure(),
             ):
                 safe_next = next_param
-            return redirect(safe_next)
+            response = redirect(safe_next)
+            sp.set_verified_cookie(response, request)
+            return response
 
         ip = _get_ip(request)
         redis_client = _get_redis_client()
