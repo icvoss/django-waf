@@ -15,6 +15,24 @@ def _clear_rule_cache():
     re_mod._process_cache_version = -1
 
 
+@pytest.fixture(autouse=True)
+def _reset_conf_module():
+    """Reload the conf module after each test to ensure settings overrides are picked up.
+
+    Tests that use @override_settings or modify django.conf.settings directly
+    need the conf module reloaded so its module-level constants reflect the
+    current settings. This fixture ensures that regardless of test execution
+    order or whether individual tests remember to reload conf, every test
+    starts with a conf module synchronized to the current settings.
+    """
+    import importlib
+
+    import django_waf.conf as conf_mod
+
+    yield
+    importlib.reload(conf_mod)
+
+
 def pytest_configure(config):
     """Ensure django_waf is in INSTALLED_APPS when running from the project root."""
     from django.conf import settings
