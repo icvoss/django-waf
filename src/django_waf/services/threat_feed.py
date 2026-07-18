@@ -29,9 +29,16 @@ def sync_feed(
     feed_url: str | None = None,
     min_confidence: float | None = None,
 ) -> dict:
-    """Fetch the central threat feed and create/update/expire BlockRules.
+    """Fetch the central threat feed and create/update/expire rules.
 
-    Only processes rules with confidence >= min_confidence (BR-FEED-002).
+    Only processes entries with confidence >= min_confidence (BR-FEED-002).
+    Each entry carries an optional ``kind`` discriminator (ADR-035, spec
+    06-threat-feed-api.md section 2.8): absent or ``"block"`` imports as a
+    BlockRule exactly as before; ``"allow"`` imports as an AllowRule. The two
+    kinds are tracked and matched independently: a BlockRule and an
+    AllowRule sharing the same (rule_type, pattern) never interfere with each
+    other, because they live in separate tables.
+
     Rules are tagged source='feed' (BR-FEED-003). Existing rules are matched on
     (source='feed', rule_type, pattern) — idempotent (BR-FEED-006).
     Rules absent from the feed are deactivated (BR-FEED-005).
@@ -42,13 +49,14 @@ def sync_feed(
         min_confidence: Override confidence threshold. Defaults to DJANGO_WAF_FEED_MIN_CONFIDENCE.
 
     Returns:
-        Dict with keys: created, updated, expired, skipped.
+        Dict with keys: created, updated, expired, skipped (totals across
+        both block and allow entries).
     """
     import httpx
 
     from django_waf import conf
     from django_waf.enums import RuleSource
-    from django_waf.models import BlockRule
+    from django_waf.models import AllowRule, BlockRule
 
     url = feed_url or conf.DJANGO_WAF_FEED_URL
     threshold = min_confidence if min_confidence is not None else conf.DJANGO_WAF_FEED_MIN_CONFIDENCE
@@ -70,7 +78,8 @@ def sync_feed(
     feed_entries = feed_data if isinstance(feed_data, list) else feed_data.get("rules", [])
 
     created = updated = expired = skipped = 0
-    seen_keys: set[tuple[str, str]] = set()  # (rule_type, pattern)
+    seen_block_keys: set[tuple[str, str]] = set()  # (rule_type, pattern)
+    seen_allow_keys: set[tuple[str, str]] = set()  # (rule_type, pattern)
 
     for entry in feed_entries:
         confidence = float(entry.get("confidence", 0.0))
@@ -84,9 +93,7 @@ def sync_feed(
             skipped += 1
             continue
 
-        seen_keys.add((rule_type, pattern))
-
-        action = entry.get("action", "block")
+        kind = entry.get("kind", "block")
         match_type = entry.get("match_type", "exact")
 
         # expires_at from feed or 30 days from now (BR-FEED-005)
@@ -97,6 +104,49 @@ def sync_feed(
             expires_at = parse_datetime(feed_expires) or (timezone.now() + timedelta(days=30))
         else:
             expires_at = timezone.now() + timedelta(days=30)
+
+        if kind == "allow":
+            seen_allow_keys.add((rule_type, pattern))
+            verify_rdns = bool(entry.get("verify_rdns", False))
+            rdns_pattern = entry.get("rdns_pattern", "")
+
+            with transaction.atomic():
+                existing_allow = AllowRule.objects.filter(
+                    source=RuleSource.FEED,
+                    rule_type=rule_type,
+                    pattern=pattern,
+                ).first()
+
+                if existing_allow:
+                    existing_allow.match_type = match_type
+                    existing_allow.verify_rdns = verify_rdns
+                    existing_allow.rdns_pattern = rdns_pattern
+                    existing_allow.expires_at = expires_at
+                    existing_allow.confidence = confidence
+                    existing_allow.is_active = True
+                    existing_allow.feed_reporters = entry.get("reporters", existing_allow.feed_reporters)
+                    existing_allow.save()
+                    updated += 1
+                else:
+                    AllowRule.objects.create(
+                        name=f"Feed: {rule_type} {pattern[:50]}",
+                        rule_type=rule_type,
+                        match_type=match_type,
+                        pattern=pattern,
+                        verify_rdns=verify_rdns,
+                        rdns_pattern=rdns_pattern,
+                        source=RuleSource.FEED,
+                        expires_at=expires_at,
+                        confidence=confidence,
+                        feed_reporters=entry.get("reporters", 0),
+                        feed_first_seen=timezone.now().date(),
+                    )
+                    created += 1
+            continue
+
+        # kind == "block" (or any unrecognised value, per section 2.8)
+        seen_block_keys.add((rule_type, pattern))
+        action = entry.get("action", "block")
 
         with transaction.atomic():
             existing = BlockRule.objects.filter(
@@ -129,12 +179,22 @@ def sync_feed(
                 )
                 created += 1
 
-    # Deactivate feed rules no longer present in the feed (BR-FEED-005)
-    active_feed_rules = BlockRule.objects.filter(source=RuleSource.FEED, is_active=True)
-    for rule in active_feed_rules:
-        if (rule.rule_type, rule.pattern) not in seen_keys:
-            rule.is_active = False
-            rule.save(update_fields=["is_active"])
+    # Deactivate feed rules no longer present in the feed (BR-FEED-005).
+    # Block and allow rules live in separate tables and are checked against
+    # separate seen-key sets, so a block entry and an allow entry sharing the
+    # same (rule_type, pattern) never expire each other.
+    active_feed_block_rules = BlockRule.objects.filter(source=RuleSource.FEED, is_active=True)
+    for block_rule in active_feed_block_rules:
+        if (block_rule.rule_type, block_rule.pattern) not in seen_block_keys:
+            block_rule.is_active = False
+            block_rule.save(update_fields=["is_active"])
+            expired += 1
+
+    active_feed_allow_rules = AllowRule.objects.filter(source=RuleSource.FEED, is_active=True)
+    for allow_rule in active_feed_allow_rules:
+        if (allow_rule.rule_type, allow_rule.pattern) not in seen_allow_keys:
+            allow_rule.is_active = False
+            allow_rule.save(update_fields=["is_active"])
             expired += 1
 
     result = {"created": created, "updated": updated, "expired": expired, "skipped": skipped}

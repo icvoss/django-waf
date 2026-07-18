@@ -141,6 +141,7 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | `DJANGO_WAF_TRUST_X_FORWARDED_FOR` | `False` | Trust `X-Forwarded-For` header for client IP extraction |
 | `DJANGO_WAF_REDIS_ALIAS` | `"default"` | Django cache alias for Redis connections |
 | `DJANGO_WAF_ALLOWED_METHODS` | `None` | Allowed HTTP methods; requests with other methods receive 405 before rule evaluation. `None` allows all methods. |
+| `DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS` | `True` | Seed rDNS-verified `AllowRule` rows for major search crawlers (Googlebot, Bingbot) so a verified crawler is never served the `noindex` challenge. See [Search engine crawlers](#search-engine-crawlers). Set `False` to opt out |
 
 ### Rate Limiting
 
@@ -165,6 +166,34 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | `DJANGO_WAF_NO_REFERER_EXEMPT_PATHS` | `["/", "/search/", "/robots.txt", "/sitemap.xml", "/favicon.ico"]` | Paths exempt from the no-referer challenge (only evaluated when `DJANGO_WAF_CHALLENGE_NO_REFERER` is `True`) |
 | `DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD` | `10` | Number of unsolved challenges before auto-escalating to a block |
 | `DJANGO_WAF_ESCALATION_BLOCK_TTL` | `3600` | TTL in seconds for escalation blocks |
+
+### Search engine crawlers
+
+The proof-of-work challenge carries `X-Robots-Tag: noindex` and a robots meta
+tag, and it only clears after JavaScript solves it. A search crawler runs no
+JavaScript, so left unhandled it is served the `noindex` interstitial on every
+path, never sees real content, and your pages fall out of the index. This is a
+silent SEO failure for any site that puts a public marketing surface behind the
+WAF.
+
+To prevent it, `DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS` (default `True`) seeds
+`AllowRule` rows for the major crawlers on migrate. Each row is **rDNS-gated**
+(`verify_rdns=True`): a request claiming to be Googlebot only passes if the
+client IP's reverse-DNS record resolves under `googlebot.com`/`google.com`
+(Bingbot: `search.msn.com`). A spoofed `Googlebot` user-agent from an
+unverified IP does not match and is scored and challenged like any other bot, so
+the exemption is not a user-agent bypass. Set the setting to `False`, or
+deactivate the seeded rows in the admin, to opt out.
+
+If `DJANGO_WAF_TRUST_X_FORWARDED_FOR` is `True`, the rDNS check runs against the
+`X-Forwarded-For` client IP, so your reverse proxy must set a trustworthy XFF
+for crawler traffic; otherwise the check verifies the wrong IP and the rule
+silently fails to match.
+
+Operators of the Drystane collective feed receive a curated, always-current
+crawler allowlist (new engines and revised reverse-DNS suffixes) over the same
+feed that ships block rules; the built-in seed covers Googlebot and Bingbot
+without any feed.
 
 ### Anomaly Scoring
 
