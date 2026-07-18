@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-18
+
+### Added
+
+- **Site password gate.** `DJANGO_WAF_SITE_PASSWORD` walls an entire site (and
+  every subdomain it serves) behind a single shared password, enforced in the
+  WAF middleware before any application view runs. For staging sites, private
+  betas, holding pages, and internal tools that must be live but not public.
+  Off by default (additive, no change to existing sites). An un-verified request
+  gets a noindex 401 password prompt; a correct password sets a signed session
+  flag valid for `DJANGO_WAF_SITE_PASSWORD_TTL` (default 12h). Fail-closed when
+  enabled with an empty password (system check `django_waf.E003`). Exempt paths
+  (`DJANGO_WAF_SITE_PASSWORD_EXEMPT_PATHS`, default health / `.well-known/` /
+  `robots.txt` / the WAF's own interstitials) bypass the gate so liveness and
+  ACME keep working. Guess attempts are throttled via the existing rate limiter;
+  the `next` redirect is validated against open-redirect. Password comparison is
+  constant-time and the password never appears in a response, log, or template.
+  Subdomain coverage: set `SESSION_COOKIE_DOMAIN` to the parent domain.
+  Security-reviewed. New settings: `DJANGO_WAF_SITE_PASSWORD`,
+  `_ENABLED`, `_TTL`, `_EXEMPT_PATHS`, `_VERIFY_PATH`.
+
 ## [1.4.0] - 2026-07-18
 
 ### Added
