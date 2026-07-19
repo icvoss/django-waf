@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `Development Status` classifier corrected from `3 - Alpha` to `4 - Beta` —
+  the package has shipped to a production consumer (vendablyv3) since
+  v1.3.0 and no longer reflects an alpha maturity level.
+
+### Docs
+
+- `check_middleware_ordering` (W004) docstring records the outcome of
+  investigating #18 (self-sufficient staff bypass for early placement):
+  rejected, because `django.contrib.auth.get_user(request)` reads
+  `request.session`, which does not exist before `SessionMiddleware` runs —
+  the same class of defect fixed in v1.5.1 for the site-password gate.
+
 ## [1.5.1] - 2026-07-18
 
 ### Fixed

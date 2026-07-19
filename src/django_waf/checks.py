@@ -173,6 +173,18 @@ def check_middleware_ordering(app_configs, **kwargs):
     attaches. If the WAF runs first, ``request.user`` is not yet available
     (or not yet resolved), so the staff bypass silently fails and staff
     users can be blocked/challenged like anyone else.
+
+    Investigated (#18) and rejected: making the bypass "self-sufficient" by
+    calling ``django.contrib.auth.get_user(request)`` directly reads
+    ``request.session``, which does not exist until ``SessionMiddleware``
+    has run. The README's own recommended stack places ``WafMiddleware``
+    before ``SessionMiddleware`` (to reject bad traffic before any other
+    work runs), so a lazy ``get_user()`` call at that position would raise
+    ``AttributeError`` exactly as the site-password gate's session lookup
+    did before v1.5.1 (fixed by moving that gate to its own signed cookie,
+    independent of the session framework). This check's remedy therefore
+    stays "move WafMiddleware after AuthenticationMiddleware", not "resolve
+    the user yourself" -- see the v1.5.1 CHANGELOG entry for the precedent.
     """
     from django.conf import settings
 
