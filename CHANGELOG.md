@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-07-19
+
+### Fixed
+
+- **Site-password gate leaked a template comment into the page.** The gate's
+  CSRF-rationale note was written as a multi-line `{# ... #}` comment, but Django
+  template `{# #}` comments are single-line only, so the note rendered verbatim
+  as visible body text on the password prompt. Switched to a
+  `{% comment %}...{% endcomment %}` block, the correct multi-line construct.
+
 ### Changed
 
 - `Development Status` classifier corrected from `3 - Alpha` to `4 - Beta` —
