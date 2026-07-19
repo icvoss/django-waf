@@ -449,9 +449,7 @@ DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH: str = getattr(
 # SESSION_COOKIE_DOMAIN=".example.com" for subdomain coverage gets the same
 # coverage on this cookie without configuring it twice. Set explicitly only
 # when the gate's subdomain scope must differ from the session cookie's.
-DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN: str | None = getattr(
-    settings, "DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN", None
-)
+DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN: str | None = getattr(settings, "DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN", None)
 
 # ---------------------------------------------------------------------------
 # Celery Beat schedule helper
