@@ -789,10 +789,10 @@ class TestSignedCookieService:
         assert response.cookies[SITE_PASSWORD_COOKIE]["domain"] == ".example.com"
 
     def test_cookie_domain_setting_overrides_session_cookie_domain(self):
-        import django_waf.conf as conf_mod
         from django.http import HttpResponse
         from django.test import RequestFactory
 
+        import django_waf.conf as conf_mod
         from django_waf.services.site_password_service import (
             SITE_PASSWORD_COOKIE,
             set_verified_cookie,
