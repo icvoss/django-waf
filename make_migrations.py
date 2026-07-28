@@ -1,4 +1,4 @@
-    #!/usr/bin/env python
+#!/usr/bin/env python
 """Generate migrations for the reusable django_waf app.
 
 This package ships no manage.py. ``tests/settings.py`` deliberately disables
