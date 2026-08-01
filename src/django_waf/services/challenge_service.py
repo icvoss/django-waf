@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import secrets
@@ -18,6 +19,17 @@ from django.conf import settings
 from django.utils import timezone
 
 logger = logging.getLogger("django_waf.challenge_service")
+
+# ---------------------------------------------------------------------------
+# Pass-cookie payload format
+# ---------------------------------------------------------------------------
+
+# "|" cannot appear in a hex token, an IP address, or a decimal timestamp, so
+# it is an unambiguous delimiter, unlike ":", which IPv6 addresses contain.
+# The "v2" tag lets validation reject anything issued by the old colon-joined
+# format outright rather than mis-parsing it (see GH #26).
+_PASS_COOKIE_VERSION = "v2"
+_PASS_COOKIE_DELIMITER = "|"
 
 # ---------------------------------------------------------------------------
 # Custom exceptions
@@ -265,6 +277,21 @@ def verify_challenge_solution(
     return True
 
 
+def _normalise_ip(ip_address: str) -> str:
+    """Return the compressed canonical form of an IP address.
+
+    Ensures compressed and expanded forms of the same IPv6 address (e.g.
+    ``2001:db8::1`` and ``2001:0db8:0000:...:0001``) compare equal both when
+    a cookie is issued and when it is later validated. Falls back to the raw
+    input for anything ``ipaddress`` cannot parse, so an invalid value still
+    reaches the normal reject-and-return-False path rather than raising here.
+    """
+    try:
+        return ipaddress.ip_address(ip_address).compressed
+    except ValueError:
+        return ip_address
+
+
 def issue_pass_cookie(
     response,
     token: str,
@@ -273,8 +300,12 @@ def issue_pass_cookie(
 ) -> None:
     """Set the waf_pass cookie on the response to mark successful challenge completion.
 
-    Cookie value format: ``{token}:{ip_address}:{expiry_timestamp}:{signature}``
-    where signature is HMAC-SHA256 of the value prefix.
+    Cookie value format: ``v2|{token}|{ip_address}|{expiry_timestamp}|{signature}``
+    where signature is HMAC-SHA256 of the ``v2|token|ip|expiry`` prefix. The
+    "|" delimiter is unambiguous for IPv6 addresses, which contain ":" and
+    broke the previous colon-joined format (GH #26). ``ip_address`` is stored
+    in its compressed canonical form so validation can compare like for like
+    regardless of which form the client's IP is seen in.
 
     Per BR-CHAL-005 and BR-CHAL-007.
 
@@ -288,10 +319,11 @@ def issue_pass_cookie(
 
     ttl = conf.DJANGO_WAF_CHALLENGE_COOKIE_TTL
     expiry_ts = int(time.time()) + ttl
+    normalised_ip = _normalise_ip(ip_address)
 
-    value_prefix = f"{token}:{ip_address}:{expiry_ts}"
+    value_prefix = _PASS_COOKIE_DELIMITER.join([_PASS_COOKIE_VERSION, token, normalised_ip, str(expiry_ts)])
     signature = _hmac_sign(value_prefix)
-    cookie_value = f"{value_prefix}:{signature}"
+    cookie_value = f"{value_prefix}{_PASS_COOKIE_DELIMITER}{signature}"
 
     response.set_cookie(
         "waf_pass",
@@ -308,6 +340,11 @@ def validate_pass_cookie(cookie_value: str, ip_address: str) -> bool:
 
     Pure function — no DB or Redis access.
 
+    Only understands the versioned "v2|token|ip|expiry|signature" format
+    (see ``issue_pass_cookie``). A cookie issued by the pre-fix colon-joined
+    format simply fails to parse and returns False: the client re-solves the
+    challenge once, there is no legacy-format fallback (GH #26).
+
     Per BR-CHAL-006.
 
     Args:
@@ -318,29 +355,26 @@ def validate_pass_cookie(cookie_value: str, ip_address: str) -> bool:
         True if the cookie is valid (HMAC verifies, not expired, IP matches).
     """
     try:
-        parts = cookie_value.rsplit(":", 1)
-        if len(parts) != 2:
-            return False
-        value_prefix, signature = parts
+        value_prefix, signature = cookie_value.rsplit(_PASS_COOKIE_DELIMITER, 1)
 
-        # Verify HMAC
+        # Verify HMAC before trusting anything else in the payload.
         expected_sig = _hmac_sign(value_prefix)
         if not hmac.compare_digest(expected_sig, signature):
             return False
 
-        # Parse value prefix: token:ip:expiry
-        prefix_parts = value_prefix.split(":", 2)
-        if len(prefix_parts) != 3:
+        # Parse value prefix: v2|token|ip|expiry
+        version, _token, cookie_ip, expiry_str = value_prefix.split(_PASS_COOKIE_DELIMITER, 3)
+        if version != _PASS_COOKIE_VERSION:
             return False
-        _token, cookie_ip, expiry_str = prefix_parts
 
         # Check expiry
         expiry_ts = int(expiry_str)
         if time.time() > expiry_ts:
             return False
 
-        # Check IP binding
-        return cookie_ip == ip_address
+        # Check IP binding: normalise both sides so a compressed cookie IP
+        # matches an expanded request IP (or vice versa).
+        return cookie_ip == _normalise_ip(ip_address)
 
     except (ValueError, AttributeError, TypeError):
         return False

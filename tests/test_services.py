@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,8 +25,6 @@ from django_waf.services.challenge_service import (
     ChallengeInvalidError,
     ChallengeMismatchError,
     issue_challenge,
-    issue_pass_cookie,
-    validate_pass_cookie,
     verify_challenge_solution,
 )
 from django_waf.services.fingerprint import (
@@ -1355,95 +1352,10 @@ class TestVerifyChallengeService:
 
 # ---------------------------------------------------------------------------
 # validate_pass_cookie / issue_pass_cookie
+#
+# Covered in tests/test_pass_cookie.py, including the IPv6-safety fix for
+# GH #26 (the versioned "|"-delimited payload format).
 # ---------------------------------------------------------------------------
-
-
-class TestPassCookie:
-    def test_round_trip_valid(self):
-        """A cookie issued by issue_pass_cookie passes validate_pass_cookie."""
-        import django_waf.conf as conf_mod
-
-        ip = "10.0.0.1"
-        token = "abc123def456abc123def456abc123"
-
-        response = MagicMock()
-        cookie_value_captured = {}
-
-        def capture_cookie(name, value, **kwargs):
-            cookie_value_captured["value"] = value
-
-        response.set_cookie.side_effect = capture_cookie
-
-        with patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 3600):
-            issue_pass_cookie(response, token, ip, secure=False)
-
-        assert cookie_value_captured["value"] is not None
-        assert validate_pass_cookie(cookie_value_captured["value"], ip) is True
-
-    def test_wrong_ip_returns_false(self):
-        """Cookie issued for one IP does not validate for a different IP."""
-        import django_waf.conf as conf_mod
-
-        ip = "10.0.0.1"
-        other_ip = "10.0.0.2"
-        token = "some-token-value"
-
-        response = MagicMock()
-        cookie_value_captured = {}
-
-        def capture_cookie(name, value, **kwargs):
-            cookie_value_captured["value"] = value
-
-        response.set_cookie.side_effect = capture_cookie
-
-        with patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 3600):
-            issue_pass_cookie(response, token, ip, secure=False)
-
-        assert validate_pass_cookie(cookie_value_captured["value"], other_ip) is False
-
-    def test_tampered_signature_returns_false(self):
-        """A cookie with a modified signature is rejected."""
-        future_ts = int(time.time()) + 3600
-        # Construct a cookie value with a bogus signature
-        bad_cookie = f"some-token:10.0.0.1:{future_ts}:invalidsignature"
-
-        assert validate_pass_cookie(bad_cookie, "10.0.0.1") is False
-
-    def test_expired_cookie_returns_false(self):
-        """A cookie with a past expiry timestamp is rejected."""
-        from django_waf.services.challenge_service import _hmac_sign
-
-        ip = "10.0.0.1"
-        token = "some-token"
-        expired_ts = int(time.time()) - 1  # Already in the past
-
-        value_prefix = f"{token}:{ip}:{expired_ts}"
-        sig = _hmac_sign(value_prefix)
-        bad_cookie = f"{value_prefix}:{sig}"
-
-        assert validate_pass_cookie(bad_cookie, ip) is False
-
-    def test_malformed_cookie_returns_false(self):
-        """A cookie with wrong format is gracefully rejected."""
-        assert validate_pass_cookie("", "1.2.3.4") is False
-        assert validate_pass_cookie("notacookie", "1.2.3.4") is False
-        assert validate_pass_cookie("a:b", "1.2.3.4") is False
-
-    def test_issue_pass_cookie_sets_cookie_on_response(self):
-        """issue_pass_cookie calls response.set_cookie with correct parameters."""
-        import django_waf.conf as conf_mod
-
-        response = MagicMock()
-
-        with patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_COOKIE_TTL", 86400):
-            issue_pass_cookie(response, "my-token", "10.0.0.1", secure=True)
-
-        response.set_cookie.assert_called_once()
-        call_kwargs = response.set_cookie.call_args
-        assert call_kwargs.args[0] == "waf_pass"
-        assert call_kwargs.kwargs.get("httponly") is True
-        assert call_kwargs.kwargs.get("samesite") == "Lax"
-        assert call_kwargs.kwargs.get("secure") is True
 
 
 # ---------------------------------------------------------------------------
