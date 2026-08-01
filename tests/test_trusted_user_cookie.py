@@ -195,7 +195,7 @@ class TestSetAndReadTrustedCookie:
             response = HttpResponse()
             set_trusted_cookie(response, request)
 
-        assert response.cookies[TRUSTED_USER_COOKIE]["secure"] is False
+        assert not response.cookies[TRUSTED_USER_COOKIE]["secure"]
 
     def test_cookie_scoped_to_session_cookie_domain_by_default(self):
         from django_waf.services.trusted_user_service import (
@@ -385,9 +385,8 @@ class TestLoginReceiverFlagsRequest:
         assert getattr(request, "_waf_set_trusted_cookie", False) is True
 
     def test_receiver_no_op_when_feature_disabled(self):
-        from django_waf.receivers import set_trusted_cookie_flag_on_login
-
         import django_waf.conf as conf_mod
+        from django_waf.receivers import set_trusted_cookie_flag_on_login
 
         with patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_ENABLED", False):
             user = _make_user(is_staff=True)

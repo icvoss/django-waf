@@ -316,7 +316,7 @@ class TestTrustedCookieTrustLevelCheck:
 
         assert len(messages) == 1
         assert messages[0].id == "django_waf.W006"
-        assert "everyone" in messages[0].message
+        assert "everyone" in messages[0].msg
 
     def test_invalid_value_silent_when_feature_disabled(self):
         import django_waf.conf as conf_mod
