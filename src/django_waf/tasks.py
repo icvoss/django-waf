@@ -212,32 +212,44 @@ def prune_challenge_tokens(hours: int = 24) -> dict:
 
 @shared_task
 def expire_rules() -> dict:
-    """Deactivate BlockRules whose expires_at has passed.
+    """Deactivate BlockRules and AllowRules whose expires_at has passed.
 
-    Sets is_active=False. Does not delete rules (BR-LIFE-001). After bulk update,
-    manually increments the Redis rule version key to invalidate the cache since
-    bulk update() does not trigger post_save signals.
+    Sets is_active=False. Does not delete rules (BR-LIFE-001). Covers both
+    rule tables (#25) — an expired AllowRule left active would otherwise
+    keep bypassing every WAF check indefinitely. After bulk update,
+    manually increments the Redis rule version key to invalidate the cache
+    since bulk update() does not trigger post_save signals.
 
     Returns:
-        Dict with keys: expired_count.
+        Dict with keys: expired_block_count, expired_allow_count,
+        expired_count (total, kept for backwards compatibility).
 
     Scheduled: every 30 minutes (BR-LIFE-002).
     """
-    from django_waf.models import BlockRule
+    from django_waf.models import AllowRule, BlockRule
 
-    expired_qs = BlockRule.objects.expired()
-    count = expired_qs.update(is_active=False)
+    expired_block_count = BlockRule.objects.expired().update(is_active=False)
+    expired_allow_count = AllowRule.objects.expired().update(is_active=False)
+    total = expired_block_count + expired_allow_count
 
-    if count > 0:
+    if total > 0:
         # bulk update() bypasses signals — manually invalidate the rule cache
         try:
             _invalidate_rule_cache_redis()
         except Exception:
             logger.exception("django-waf: failed to invalidate rule cache after expire_rules")
 
-        logger.info("django-waf: expired %d BlockRules", count)
+        logger.info(
+            "django-waf: expired %d BlockRules, %d AllowRules",
+            expired_block_count,
+            expired_allow_count,
+        )
 
-    return {"expired_count": count}
+    return {
+        "expired_block_count": expired_block_count,
+        "expired_allow_count": expired_allow_count,
+        "expired_count": total,
+    }
 
 
 @shared_task

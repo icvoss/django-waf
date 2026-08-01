@@ -188,6 +188,7 @@ def _rebuild_rule_cache_from_db(redis_client, version: int, cache_key: str) -> R
         "pattern",
         "action",
         "priority",
+        "expires_at",
     )
 
     block_rules = [
@@ -198,6 +199,7 @@ def _rebuild_rule_cache_from_db(redis_client, version: int, cache_key: str) -> R
             "pattern": r["pattern"],
             "action": r["action"],
             "priority": r["priority"],
+            "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
         }
         for r in block_qs
     ]
@@ -209,6 +211,7 @@ def _rebuild_rule_cache_from_db(redis_client, version: int, cache_key: str) -> R
         "pattern",
         "verify_rdns",
         "rdns_pattern",
+        "expires_at",
     )
     allow_rules = [
         {
@@ -218,6 +221,7 @@ def _rebuild_rule_cache_from_db(redis_client, version: int, cache_key: str) -> R
             "pattern": r["pattern"],
             "verify_rdns": r["verify_rdns"],
             "rdns_pattern": r["rdns_pattern"],
+            "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
         }
         for r in allow_qs
     ]
@@ -450,6 +454,26 @@ def evaluate_request(
 # ---------------------------------------------------------------------------
 
 
+def _is_cached_rule_expired(rule: dict) -> bool:
+    """Return True if a cached rule dict's expires_at has passed.
+
+    The rule cache can lag the database by up to _CACHE_TTL seconds (or
+    longer if expire_rules hasn't run yet), so a rule that expired after
+    the cache was built must still be rejected at match time rather than
+    waiting for the next cache rebuild (#25).
+    """
+    expires_at = rule.get("expires_at")
+    if not expires_at:
+        return False
+
+    from datetime import datetime
+
+    from django.utils import timezone
+
+    expiry = datetime.fromisoformat(expires_at)
+    return expiry <= timezone.now()
+
+
 def _check_allow_rules(
     ip_address: str,
     user_agent: str,
@@ -458,6 +482,8 @@ def _check_allow_rules(
 ) -> tuple[str, dict] | None:
     """Return (rule_id, rule_dict) if an AllowRule matches, else None."""
     for rule in cache.allow_rules:
+        if _is_cached_rule_expired(rule):
+            continue  # expired since the cache was built (#25) — not a match
         if _rule_matches(rule, ip_address, user_agent):
             if (
                 rule.get("verify_rdns")
@@ -481,6 +507,8 @@ def _check_block_rules(
     (flushed to DB by the update_rule_hit_counts task).
     """
     for rule in cache.block_rules:
+        if _is_cached_rule_expired(rule):
+            continue  # expired since the cache was built (#25) — not a match
         if _rule_matches(rule, ip_address, user_agent):
             if redis_client is not None:
                 _record_rule_hit(rule["id"], redis_client)
