@@ -272,10 +272,13 @@ class WafMiddleware:
 
         ip_address = _extract_ip(request) or "0.0.0.0"
         redis_client = _get_redis_client()
-        throttled = sp.record_guess_throttle_hit(ip_address, redis_client)
-        if throttled:
+        throttle_result = sp.record_guess_throttle_hit_detailed(ip_address, redis_client)
+        if throttle_result.exceeded:
             response = HttpResponse("Too many attempts. Please retry later.", status=429)
-            response["Retry-After"] = "60"
+            # Accurate sliding-window value (#30) — falls back to 60 only
+            # when the limiter genuinely returned none (fail-open path).
+            retry_after = throttle_result.retry_after
+            response["Retry-After"] = str(retry_after) if retry_after is not None else "60"
             response["X-Robots-Tag"] = _SITE_PASSWORD_NOINDEX_HEADER
             return response
 
@@ -355,11 +358,14 @@ class WafMiddleware:
         if verdict == Verdict.THROTTLED:
             _emit_request_throttled(result, ip_address)
             response = HttpResponse("Too many requests. Please retry later.", status=429)
-            if result.action and hasattr(result, "retry_after"):
-                response["Retry-After"] = str(result.retry_after)
-            else:
-                # Default Retry-After — 60 seconds
-                response["Retry-After"] = "60"
+            # hasattr() was always True for the real EvaluationResult
+            # NamedTuple even before it carried a real retry_after value, so
+            # this always sent the fixed fallback (#30). Use the accurate
+            # sliding-window value when present; only fall back to a fixed
+            # 60 seconds when the result genuinely carries none (e.g. a
+            # test double or a pre-#30 caller).
+            retry_after = getattr(result, "retry_after", None)
+            response["Retry-After"] = str(retry_after) if retry_after is not None else "60"
             return response
 
         if verdict == Verdict.CHALLENGED:

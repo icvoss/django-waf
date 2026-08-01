@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -67,9 +68,17 @@ def _make_redis() -> MagicMock:
 
 
 def _make_pipeline_mock(zcard_return: int) -> MagicMock:
-    """Return a pipeline mock whose execute() result has zcard_return at index 2."""
+    """Return a pipeline mock for [zadd, zremrangebyscore, zcard, zrange, expire].
+
+    zcard_return sits at index 2, matching every existing call site. The
+    zrange(0, 0, withscores=True) result at index 3 is a single (member,
+    score) pair scored "now", enough for _retry_after_from_oldest to
+    compute a real value in tests that don't care about the exact number
+    (see test_retry_after.py for tests pinning an exact Retry-After value).
+    """
     pipeline = MagicMock()
-    pipeline.execute.return_value = [1, 0, zcard_return, True]
+    now = time.time()
+    pipeline.execute.return_value = [1, 0, zcard_return, [(str(now), now)], True]
     return pipeline
 
 
@@ -223,8 +232,17 @@ class TestCheckRateLimit:
     """
 
     def _pipeline_returning(self, zcard_value: int) -> MagicMock:
+        """Pipeline mock for [zadd, zremrangebyscore, zcard, zrange, expire].
+
+        The zrange(0, 0, withscores=True) result is a single (member, score)
+        pair with score=time.time() (i.e. "just added now") — enough for
+        _retry_after_from_oldest to compute a real value without pinning an
+        exact number (tests assert retry_after >= 1, not an exact value; the
+        exact-value assertions live in test_retry_after.py).
+        """
         pipeline = MagicMock()
-        pipeline.execute.return_value = [1, 0, zcard_value, True]
+        now = time.time()
+        pipeline.execute.return_value = [1, 0, zcard_value, [(str(now), now)], True]
         return pipeline
 
     def test_within_limits_returns_not_exceeded(self):
@@ -316,7 +334,8 @@ class TestCheckRateLimit:
 
         redis = _make_redis()
         pipeline = MagicMock()
-        pipeline.execute.return_value = [1, 0, 1, True]
+        now = time.time()
+        pipeline.execute.return_value = [1, 0, 1, [(str(now), now)], True]
         redis.pipeline.return_value = pipeline
 
         ip = "5.5.5.5"

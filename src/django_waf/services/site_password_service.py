@@ -181,16 +181,32 @@ def record_guess_throttle_hit(ip_address: str, redis_client) -> bool:
     False) on any Redis error, matching the WAF's existing fail-open policy
     for infrastructure failures — a throttling outage must never turn into
     a site-wide lockout on its own.
+
+    Returns a plain bool (not the RateLimitResult) so this stays a drop-in
+    "should I throttle?" check. Callers that also need the accurate
+    Retry-After value (#30) should call
+    ``record_guess_throttle_hit_detailed`` instead — this function is kept
+    for callers that only need the boolean.
+    """
+    return record_guess_throttle_hit_detailed(ip_address, redis_client).exceeded
+
+
+def record_guess_throttle_hit_detailed(ip_address: str, redis_client):
+    """Like ``record_guess_throttle_hit``, but returns the full
+    ``RateLimitResult`` (exceeded, window, retry_after) instead of a bare
+    bool, so the caller can send an accurate Retry-After header (#30)
+    rather than a fixed fallback.
+
+    Fails open on any Redis error: returns
+    ``RateLimitResult(exceeded=False, window=None, retry_after=None)``.
     """
     from django_waf import conf
-    from django_waf.services.rate_limiter import check_rate_limit
+    from django_waf.services.rate_limiter import RateLimitResult, check_rate_limit
 
     if redis_client is None:
-        return False
+        return RateLimitResult(exceeded=False, window=None, retry_after=None)
 
     try:
-        result = check_rate_limit(ip_address, redis_client, path=conf.DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH)
+        return check_rate_limit(ip_address, redis_client, path=conf.DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH)
     except Exception:
-        return False
-
-    return result.exceeded
+        return RateLimitResult(exceeded=False, window=None, retry_after=None)

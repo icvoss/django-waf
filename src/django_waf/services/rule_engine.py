@@ -31,6 +31,11 @@ class EvaluationResult(NamedTuple):
     matched_rule_id: UUID | None
     matched_rule_type: str  # "" when no rule matched; RequestLog.matched_rule_type is NOT NULL
     anomaly_score: float | None
+    # Populated only on THROTTLED verdicts (#30) — the true seconds until the
+    # sliding window's oldest counted event ages out. None for every other
+    # verdict. Defaulted so existing positional/keyword construction sites
+    # that predate this field keep working unchanged.
+    retry_after: int | None = None
 
 
 class RuleCache(NamedTuple):
@@ -375,6 +380,7 @@ def evaluate_request(
             matched_rule_id=None,
             matched_rule_type="",
             anomaly_score=None,
+            retry_after=rate_result.retry_after,
         )
 
     # Step 8: No-referer challenge (moved from middleware for proper logging)

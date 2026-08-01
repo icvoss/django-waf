@@ -31,6 +31,31 @@ _WINDOWS: list[tuple[str, int]] = [
 ]
 
 
+def _retry_after_from_oldest(oldest_in_window: list, window_seconds: int, now: float) -> int:
+    """Return the true seconds-until-retry from a ZRANGE(0, 0, withscores=True) result.
+
+    ``oldest_in_window`` is the pipeline's ZRANGE result for the surviving
+    (post-ZREMRANGEBYSCORE) entry with the lowest score — the oldest event
+    still counted in the window. The client may retry once that event ages
+    out of the window, at ``oldest_timestamp + window_seconds``. Previously
+    this was computed as ``window_seconds - (now - cutoff)`` where
+    ``cutoff = now - window_seconds``, which algebraically collapses to a
+    constant ``0`` every time regardless of actual window occupancy — hence
+    the fixed 1-second floor always winning (#30).
+
+    Falls back to the full window_seconds (floored at 1) if the ZRANGE
+    result is empty — this should not happen in practice (the event that
+    just triggered the breach is always in the set), but a fake/incomplete
+    Redis client in tests may return an empty list.
+    """
+    if not oldest_in_window:
+        return max(1, window_seconds)
+
+    _member, oldest_timestamp = oldest_in_window[0]
+    retry_after = int(float(oldest_timestamp) + window_seconds - now)
+    return max(1, retry_after)
+
+
 def _check_path_rate_limit(
     ip_address: str,
     path: str,
@@ -82,14 +107,15 @@ def _check_path_rate_limit(
     pipe.zadd(key, {str(now): now})
     pipe.zremrangebyscore(key, 0, cutoff)
     pipe.zcard(key)
+    pipe.zrange(key, 0, 0, withscores=True)
     pipe.expire(key, window_seconds + 10)
     results = pipe.execute()
 
     count = results[2]
+    oldest_in_window = results[3]
 
     if count > max_requests:
-        retry_after = int(window_seconds - (now - cutoff))
-        retry_after = max(1, retry_after)
+        retry_after = _retry_after_from_oldest(oldest_in_window, window_seconds, now)
         return RateLimitResult(exceeded=True, window="path", retry_after=retry_after)
 
     return None
@@ -156,14 +182,15 @@ def check_rate_limit(
         pipe.zadd(key, {str(now): now})
         pipe.zremrangebyscore(key, 0, cutoff)
         pipe.zcard(key)
+        pipe.zrange(key, 0, 0, withscores=True)
         pipe.expire(key, ttl)
         results = pipe.execute()
 
         count = results[2]
+        oldest_in_window = results[3]
 
         if count > threshold:
-            retry_after = int(window_seconds - (now - cutoff))
-            retry_after = max(1, retry_after)
+            retry_after = _retry_after_from_oldest(oldest_in_window, window_seconds, now)
             return RateLimitResult(exceeded=True, window=window_name, retry_after=retry_after)
 
     return RateLimitResult(exceeded=False, window=None, retry_after=None)

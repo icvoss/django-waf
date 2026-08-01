@@ -14,6 +14,7 @@ using unittest.mock, matching the pattern in test_services.py and test_tasks.py.
 
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
@@ -39,9 +40,15 @@ def _make_redis() -> MagicMock:
 
 
 def _make_pipeline_mock(zcard_return: int) -> MagicMock:
-    """Return a pipeline mock whose execute() result has zcard_return at index 2."""
+    """Return a pipeline mock for [zadd, zremrangebyscore, zcard, zrange, expire].
+
+    Matches the 5-command pipeline shape rate_limiter.py builds since #30
+    (see tests/test_retry_after.py) — zcard_return sits at index 2, and a
+    single (member, score) zrange result sits at index 3.
+    """
     pipeline = MagicMock()
-    pipeline.execute.return_value = [1, 0, zcard_return, True]
+    now = time.time()
+    pipeline.execute.return_value = [1, 0, zcard_return, [(str(now), now)], True]
     return pipeline
 
 
