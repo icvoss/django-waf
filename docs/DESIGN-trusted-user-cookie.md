@@ -1,6 +1,6 @@
 # Design proposal: signed trusted-user cookie so the WAF recognises staff without AuthenticationMiddleware
 
-Status: proposed (2026-07-29). Owner-requested from an icvlocal/vendablyconnect
+Status: implemented in 1.8.0 (2026-08-01). Owner-requested from an icvlocal/vendablyconnect
 integration finding. This is the durable brief; file it as an issue with the
 `gh` command at the bottom.
 
@@ -116,6 +116,28 @@ cookie, exactly mirroring `site_password_service`:
 - **Setting names** follow the existing `DJANGO_WAF_*` conf convention
   (`conf.py`); mirror the site-password settings (enable flag, TTL, cookie
   domain, cookie name).
+
+Decisions taken (1.8.0):
+
+- Staff-only by default: `DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL` defaults to
+  `"staff"` (`is_staff` or `is_superuser`); `"authenticated"` is available as an
+  explicit opt-in broadening. An unrecognised value fails closed to `"staff"`
+  rather than raising, and is flagged by system check `django_waf.W006`.
+- The feature is off by default: `DJANGO_WAF_TRUSTED_COOKIE_ENABLED = False`, so
+  no behaviour changes for a site that does not opt in, and the `user_logged_in`
+  receiver is only connected in `DjangoWafConfig.ready()` when the setting is
+  `True` at process startup (a restart is required to pick up a later change).
+- Setting names mirror the site-password convention exactly:
+  `DJANGO_WAF_TRUSTED_COOKIE_ENABLED`, `DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL`,
+  `DJANGO_WAF_TRUSTED_COOKIE_TTL` (default 3600s), and
+  `DJANGO_WAF_TRUSTED_COOKIE_DOMAIN` (default `None`, falling back to
+  `SESSION_COOKIE_DOMAIN`).
+- IP binding uses `django_waf.services.client_ip.resolve_client_ip`, the same
+  hardened, trust-boundary-aware resolver the rest of the WAF now uses (#29),
+  rather than reading `REMOTE_ADDR` directly.
+- The TTL is deliberately short (3600s default) as the primary mitigation
+  against a stolen cookie; the IP binding is a secondary control, not a
+  complete one on shared or NAT'd networks.
 
 ## Acceptance criteria
 

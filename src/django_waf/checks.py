@@ -36,6 +36,14 @@ The site-password check (``django_waf.E003``) errors when
 at runtime in this state (every request is denied), so this is an Error
 rather than a Warning -- it flags an operator's site as permanently locked
 rather than a soft misconfiguration.
+
+The trust-level check (``django_waf.W006``) warns when
+``DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL`` is set to anything other than
+``"staff"`` or ``"authenticated"`` while the trusted-user-cookie feature
+(#23) is enabled. The service layer already fails safe on this
+(``django_waf.services.trusted_user_service.get_trust_level`` coerces an
+unrecognised value to ``"staff"``), so this is a Warning about an
+ineffective setting, not an Error about a lockout.
 """
 
 from __future__ import annotations
@@ -185,8 +193,22 @@ def check_middleware_ordering(app_configs, **kwargs):
     independent of the session framework). This check's remedy therefore
     stays "move WafMiddleware after AuthenticationMiddleware", not "resolve
     the user yourself" -- see the v1.5.1 CHANGELOG entry for the precedent.
+
+    #23 dissolves this tension for sites that opt in:
+    ``DJANGO_WAF_TRUSTED_COOKIE_ENABLED`` gives the staff bypass a signed,
+    WAF-owned cookie (``django_waf.services.trusted_user_service``) that
+    does not depend on ``request.user`` at all, so the WAF can stay
+    security-first (before auth) without losing the bypass. When that
+    setting is True, this check no longer fires: the ordering it warns
+    about is no longer a defect for that site. It is unchanged, and still
+    fires exactly as before, when the feature is off.
     """
     from django.conf import settings
+
+    from django_waf import conf
+
+    if conf.DJANGO_WAF_TRUSTED_COOKIE_ENABLED:
+        return []
 
     middleware = list(getattr(settings, "MIDDLEWARE", []))
     waf_name = "django_waf.middleware.WafMiddleware"
@@ -210,7 +232,10 @@ def check_middleware_ordering(app_configs, **kwargs):
                 hint=(
                     "Place django_waf.middleware.WafMiddleware after "
                     "django.contrib.auth.middleware.AuthenticationMiddleware "
-                    "in MIDDLEWARE."
+                    "in MIDDLEWARE, or set DJANGO_WAF_TRUSTED_COOKIE_ENABLED "
+                    "= True and wire the login receiver (see "
+                    "docs/DESIGN-trusted-user-cookie.md) so the staff bypass "
+                    "no longer depends on middleware order."
                 ),
                 id="django_waf.W004",
             )
@@ -248,5 +273,39 @@ def check_site_password_configured(app_configs, **kwargs):
                 "DJANGO_WAF_SITE_PASSWORD_ENABLED = False to disable the gate."
             ),
             id="django_waf.E003",
+        )
+    ]
+
+
+@register()
+def check_trusted_cookie_trust_level(app_configs, **kwargs):
+    """Warn (``django_waf.W006``) when ``DJANGO_WAF_TRUSTED_COOKIE_ENABLED``
+    is True and ``DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL`` is set to
+    anything other than ``"staff"`` or ``"authenticated"``.
+
+    Not an Error: ``django_waf.services.trusted_user_service.get_trust_level``
+    already fails safe, coercing an unrecognised value to ``"staff"`` (the
+    narrower, safer population) rather than raising or silently widening
+    the bypass. This check exists so the misconfiguration is visible at
+    boot rather than only discoverable by noticing the setting has no
+    effect.
+    """
+    from django_waf import conf
+
+    if not conf.DJANGO_WAF_TRUSTED_COOKIE_ENABLED:
+        return []
+
+    level = conf.DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL
+    if level in ("staff", "authenticated"):
+        return []
+
+    return [
+        Warning(
+            f"DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL={level!r} is not "
+            '"staff" or "authenticated"; the trusted-user-cookie login '
+            'receiver is falling back to "staff" (the narrower, safer '
+            "population) rather than honouring this value.",
+            hint='Set DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL to "staff" or "authenticated".',
+            id="django_waf.W006",
         )
     ]
