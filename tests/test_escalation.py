@@ -130,10 +130,10 @@ class TestEscalationReachableFromScoreDrivenChallenge:
 
         redis.get.side_effect = _get
 
-        with override_settings(
-            DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD=10,
-            DJANGO_WAF_CHALLENGE_NO_REFERER=True,
-            DJANGO_WAF_NO_REFERER_EXEMPT_PATHS=[],
+        with (
+            override_settings(DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD=10),
+            patch("django_waf.conf.DJANGO_WAF_CHALLENGE_NO_REFERER", True),
+            patch("django_waf.conf.DJANGO_WAF_NO_REFERER_EXEMPT_PATHS", []),
         ):
             result = evaluate_request(
                 ip_address="13.13.13.13",
