@@ -201,4 +201,3 @@ def has_valid_trusted_cookie(request: HttpRequest) -> bool:
         return False
 
     return bound_ip == resolve_client_ip(request)
-
