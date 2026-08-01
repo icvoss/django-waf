@@ -596,8 +596,11 @@ def _get_or_create_auto_rule(
     rules" matches what a subsequent non-dry-run invocation would actually do.
 
     Returns:
-        (rule, created) tuple. ``rule`` is unsaved (``pk`` still unset) when
-        ``dry_run`` is True.
+        (rule, created) tuple. ``rule`` is unsaved (``rule._state.adding is
+        True``, never written to the database) when ``dry_run`` is True.
+        Its ``pk`` is not unset: ``BlockRule.id`` is a UUIDField with
+        ``default=uuid.uuid4``, so Django generates the UUID at
+        instantiation regardless of whether the instance is ever saved.
     """
     from django_waf.enums import RuleSource
     from django_waf.models import BlockRule

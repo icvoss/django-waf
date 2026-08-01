@@ -43,7 +43,11 @@ class TestGetOrCreateAutoRuleDryRun:
         )
 
         assert created is True
-        assert rule.pk is None
+        # BlockRule.id is a UUIDField(default=uuid.uuid4): Django evaluates
+        # that default at __init__, so an unsaved instance already carries a
+        # generated pk. "Unsaved" is proven by _state.adding (True until the
+        # first save()) and by the row count below, not by pk being None.
+        assert rule._state.adding is True
         assert BlockRule.objects.count() == before
 
     def test_dry_run_reports_created_false_when_rule_already_exists(self, db):
