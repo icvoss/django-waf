@@ -31,6 +31,11 @@ class EvaluationResult(NamedTuple):
     matched_rule_id: UUID | None
     matched_rule_type: str  # "" when no rule matched; RequestLog.matched_rule_type is NOT NULL
     anomaly_score: float | None
+    # Populated only on THROTTLED verdicts (#30) — the true seconds until the
+    # sliding window's oldest counted event ages out. None for every other
+    # verdict. Defaulted so existing positional/keyword construction sites
+    # that predate this field keep working unchanged.
+    retry_after: int | None = None
 
 
 class RuleCache(NamedTuple):
@@ -49,9 +54,18 @@ class RuleCache(NamedTuple):
 _RULES_VERSION_KEY = "waf:rules:version"
 _RULES_CACHE_KEY = "waf:rules:cache:{version}"
 _BLOCKED_IP_KEY = "waf:blocked:{ip}"
-_BOT_RDNS_KEY = "waf:bot_rdns:{ip}"
+# Forward-confirmed rDNS (FCrDNS) verified-verdict cache (#34). Keyed on both
+# ip and rdns_pattern_hash: a single IP can legitimately be checked against
+# more than one AllowRule's rdns_pattern (e.g. a Googlebot pattern and a
+# Bingbot pattern both tried against the same request), and the verdict is a
+# function of both. The pattern is hashed (not embedded raw) so the key
+# stays a bounded length regardless of pattern content.
+_BOT_FCRDNS_KEY = "waf:bot_fcrdns:{ip}:{pattern_hash}"
 _STATS_KEY = "waf:stats:today"
 _CACHE_TTL = 600  # 10 minutes
+# Positive FCrDNS verifications are cached for 24 hours — PTR/forward DNS
+# records for legitimate crawler infrastructure change rarely.
+_FCRDNS_POSITIVE_CACHE_TTL = 86400
 
 _REBUILD_LOCK_KEY = "waf:rule_cache:lock"
 _REBUILD_LOCK_TTL = 5  # seconds
@@ -188,6 +202,7 @@ def _rebuild_rule_cache_from_db(redis_client, version: int, cache_key: str) -> R
         "pattern",
         "action",
         "priority",
+        "expires_at",
     )
 
     block_rules = [
@@ -198,6 +213,7 @@ def _rebuild_rule_cache_from_db(redis_client, version: int, cache_key: str) -> R
             "pattern": r["pattern"],
             "action": r["action"],
             "priority": r["priority"],
+            "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
         }
         for r in block_qs
     ]
@@ -209,6 +225,7 @@ def _rebuild_rule_cache_from_db(redis_client, version: int, cache_key: str) -> R
         "pattern",
         "verify_rdns",
         "rdns_pattern",
+        "expires_at",
     )
     allow_rules = [
         {
@@ -218,6 +235,7 @@ def _rebuild_rule_cache_from_db(redis_client, version: int, cache_key: str) -> R
             "pattern": r["pattern"],
             "verify_rdns": r["verify_rdns"],
             "rdns_pattern": r["rdns_pattern"],
+            "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
         }
         for r in allow_qs
     ]
@@ -284,6 +302,14 @@ def evaluate_request(
     7. Rate limits
     8. UA anomaly score (if IP has >10 recent requests)
 
+    Every point below that would return a CHALLENGED verdict (a rule-driven
+    BlockRule challenge, the no-referer challenge, or a score-driven
+    challenge) is routed through ``_gate_challenge_or_escalate`` first (#27).
+    Without that gate, an IP that keeps ignoring challenges never revisits
+    the threshold check that would otherwise auto-block it, because each
+    new request returns its own challenge verdict before evaluation ever
+    reaches the old end-of-function escalation check.
+
     Args:
         ip_address: Client IP address string.
         user_agent: Raw User-Agent header string.
@@ -343,13 +369,16 @@ def evaluate_request(
         matched_id, rule = block_result
         action = rule["action"]
         verdict = _action_to_verdict(action)
-        return EvaluationResult(
+        block_eval_result = EvaluationResult(
             verdict=verdict,
             action=action,
             matched_rule_id=UUID(matched_id),
             matched_rule_type="block",
             anomaly_score=None,
         )
+        if verdict == Verdict.CHALLENGED:
+            return _gate_challenge_or_escalate(ip_address, redis_client, block_eval_result)
+        return block_eval_result
 
     # Step 7: Rate limits
     rate_result = check_rate_limit(ip_address, redis_client, path=path)
@@ -360,18 +389,23 @@ def evaluate_request(
             matched_rule_id=None,
             matched_rule_type="",
             anomaly_score=None,
+            retry_after=rate_result.retry_after,
         )
 
     # Step 8: No-referer challenge (moved from middleware for proper logging)
     if conf.DJANGO_WAF_CHALLENGE_NO_REFERER and not referer:
         exempt = any(path == p or path.startswith(p) for p in conf.DJANGO_WAF_NO_REFERER_EXEMPT_PATHS)
         if not exempt:
-            return EvaluationResult(
-                verdict=Verdict.CHALLENGED,
-                action=RuleAction.CHALLENGE,
-                matched_rule_id=None,
-                matched_rule_type="",
-                anomaly_score=None,
+            return _gate_challenge_or_escalate(
+                ip_address,
+                redis_client,
+                EvaluationResult(
+                    verdict=Verdict.CHALLENGED,
+                    action=RuleAction.CHALLENGE,
+                    matched_rule_id=None,
+                    matched_rule_type="",
+                    anomaly_score=None,
+                ),
             )
 
     # Step 9: Path scoring — always evaluated (no volume threshold).
@@ -401,39 +435,24 @@ def evaluate_request(
     total_score = ua_score + path_score + fp_score
     if total_score > 0:
         verdict, action = _score_to_verdict(total_score)
-        if verdict != Verdict.ALLOWED:
-            return EvaluationResult(
-                verdict=verdict,
-                action=action,
-                matched_rule_id=None,
-                matched_rule_type="",
-                anomaly_score=total_score,
+        if verdict == Verdict.CHALLENGED:
+            return _gate_challenge_or_escalate(
+                ip_address,
+                redis_client,
+                EvaluationResult(
+                    verdict=verdict,
+                    action=action,
+                    matched_rule_id=None,
+                    matched_rule_type="",
+                    anomaly_score=total_score,
+                ),
             )
         return EvaluationResult(
-            verdict=Verdict.ALLOWED,
-            action=None,
+            verdict=verdict,
+            action=action,
             matched_rule_id=None,
             matched_rule_type="",
             anomaly_score=total_score,
-        )
-
-    # Step 10: Challenge escalation — auto-block IPs that ignore challenges.
-    # Creates a persistent auto BlockRule + Redis fast-path with configurable TTL.
-    challenged_count = _get_unsolved_challenge_count(ip_address, redis_client)
-    if challenged_count >= conf.DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD:
-        escalation_rule = _create_escalation_rule(ip_address)
-        record_block_verdict(
-            ip_address,
-            redis_client,
-            ttl=conf.DJANGO_WAF_ESCALATION_BLOCK_TTL,
-            rule_id=str(escalation_rule.id) if escalation_rule else None,
-        )
-        return EvaluationResult(
-            verdict=Verdict.BLOCKED,
-            action=RuleAction.BLOCK,
-            matched_rule_id=None,
-            matched_rule_type="",
-            anomaly_score=None,
         )
 
     return EvaluationResult(
@@ -450,6 +469,26 @@ def evaluate_request(
 # ---------------------------------------------------------------------------
 
 
+def _is_cached_rule_expired(rule: dict) -> bool:
+    """Return True if a cached rule dict's expires_at has passed.
+
+    The rule cache can lag the database by up to _CACHE_TTL seconds (or
+    longer if expire_rules hasn't run yet), so a rule that expired after
+    the cache was built must still be rejected at match time rather than
+    waiting for the next cache rebuild (#25).
+    """
+    expires_at = rule.get("expires_at")
+    if not expires_at:
+        return False
+
+    from datetime import datetime
+
+    from django.utils import timezone
+
+    expiry = datetime.fromisoformat(expires_at)
+    return expiry <= timezone.now()
+
+
 def _check_allow_rules(
     ip_address: str,
     user_agent: str,
@@ -458,6 +497,8 @@ def _check_allow_rules(
 ) -> tuple[str, dict] | None:
     """Return (rule_id, rule_dict) if an AllowRule matches, else None."""
     for rule in cache.allow_rules:
+        if _is_cached_rule_expired(rule):
+            continue  # expired since the cache was built (#25) — not a match
         if _rule_matches(rule, ip_address, user_agent):
             if (
                 rule.get("verify_rdns")
@@ -481,6 +522,8 @@ def _check_block_rules(
     (flushed to DB by the update_rule_hit_counts task).
     """
     for rule in cache.block_rules:
+        if _is_cached_rule_expired(rule):
+            continue  # expired since the cache was built (#25) — not a match
         if _rule_matches(rule, ip_address, user_agent):
             if redis_client is not None:
                 _record_rule_hit(rule["id"], redis_client)
@@ -558,37 +601,108 @@ def _match_cidr(ip_address: str, cidr_pattern: str) -> bool:
 
 
 def _verify_rdns(ip_address: str, rdns_pattern: str, redis_client) -> bool:
-    """Verify that the IP's reverse DNS hostname matches rdns_pattern.
+    """Verify the IP via forward-confirmed reverse DNS (FCrDNS) (#34).
 
-    Results are cached in Redis for 24 hours (BR-EVAL-004).
+    A bare PTR (reverse-DNS) lookup is not proof of identity: an attacker
+    who controls the PTR record of their own IP (any cloud VM with settable
+    rDNS) can make ``socket.gethostbyaddr`` return a hostname that matches
+    ``rdns_pattern`` (e.g. anything ending ``.googlebot.com``) without being
+    Google at all. Forward confirmation closes that gap: after the PTR
+    hostname matches the pattern, the hostname is forward-resolved
+    (``socket.getaddrinfo``, both address families) and the check only
+    passes if the *original* IP appears among the forward-resolved
+    addresses — proving whoever controls ``rdns_pattern``'s DNS zone (e.g.
+    Google, for ``*.googlebot.com``) also vouches for this IP, not just
+    whoever controls the PTR record of the IP itself.
+
+    The final verified verdict (not the raw hostname) is cached in Redis,
+    keyed on both ip and rdns_pattern (hashed) since a single IP can
+    legitimately be checked against more than one AllowRule's pattern.
+    Positive verdicts cache for 24 hours; negative verdicts (pattern
+    mismatch, forward-resolution mismatch, or any DNS error on either
+    lookup) cache for DJANGO_WAF_RDNS_FAILURE_CACHE_TTL (default 5 minutes)
+    so a transient resolver outage does not suppress a legitimate crawler's
+    AllowRule match for a full day per IP.
+
+    Any DNS error — on the reverse lookup or the forward lookup — fails
+    closed (returns False).
 
     Args:
-        ip_address: IP to reverse-lookup.
-        rdns_pattern: Regex the resolved hostname must match.
+        ip_address: IP to reverse-lookup and confirm.
+        rdns_pattern: Regex the resolved PTR hostname must match.
         redis_client: Redis client for caching.
 
     Returns:
-        True if rDNS resolves and hostname matches the pattern.
+        True only if the PTR hostname matches rdns_pattern AND the
+        hostname's forward DNS resolution includes ip_address.
     """
-    cache_key = _BOT_RDNS_KEY.format(ip=ip_address)
-    cached_hostname = redis_client.get(cache_key)
+    from django_waf import conf
 
-    if cached_hostname is None:
-        try:
-            hostname = socket.gethostbyaddr(ip_address)[0]
-        except (socket.herror, socket.gaierror, OSError):
-            hostname = ""
-        redis_client.setex(cache_key, 86400, hostname)
-    else:
-        hostname = cached_hostname if isinstance(cached_hostname, str) else cached_hostname.decode()
+    cache_key = _fcrdns_cache_key(ip_address, rdns_pattern)
+    cached_verdict = redis_client.get(cache_key)
+    if cached_verdict is not None:
+        verdict_str = cached_verdict if isinstance(cached_verdict, str) else cached_verdict.decode()
+        return verdict_str == "1"
+
+    verdict = _resolve_and_confirm_rdns(ip_address, rdns_pattern)
+
+    ttl = _FCRDNS_POSITIVE_CACHE_TTL if verdict else conf.DJANGO_WAF_RDNS_FAILURE_CACHE_TTL
+    redis_client.setex(cache_key, ttl, "1" if verdict else "0")
+    return verdict
+
+
+def _fcrdns_cache_key(ip_address: str, rdns_pattern: str) -> str:
+    """Return the FCrDNS verdict cache key for an (ip, pattern) pair.
+
+    Not a security use — just a stable, bounded-length key fragment derived
+    from the pattern string, mirroring the same hashing approach used for
+    per-path rate-limit keys in rate_limiter.py.
+    """
+    import hashlib
+
+    pattern_hash = hashlib.sha1(rdns_pattern.encode(), usedforsecurity=False).hexdigest()[:12]
+    return _BOT_FCRDNS_KEY.format(ip=ip_address, pattern_hash=pattern_hash)
+
+
+def _resolve_and_confirm_rdns(ip_address: str, rdns_pattern: str) -> bool:
+    """Perform the actual reverse + forward DNS resolution and comparison.
+
+    No caching here — callers (``_verify_rdns``) own the cache. Split out
+    so the two concerns (DNS resolution vs. verdict caching) can be tested
+    independently.
+    """
+    try:
+        hostname = socket.gethostbyaddr(ip_address)[0]
+    except (socket.herror, socket.gaierror, OSError):
+        return False  # reverse lookup failed — fail closed
 
     if not hostname:
         return False
 
     try:
-        return bool(re.search(rdns_pattern, hostname, re.IGNORECASE))
+        if not re.search(rdns_pattern, hostname, re.IGNORECASE):
+            return False
     except re.error:
         return False
+
+    try:
+        forward_addresses = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
+    except (socket.gaierror, OSError):
+        return False  # forward lookup failed — fail closed
+
+    try:
+        target = ipaddress.ip_address(ip_address)
+    except ValueError:
+        return False
+
+    for candidate in forward_addresses:
+        try:
+            if ipaddress.ip_address(candidate) == target:
+                return True
+        except ValueError:
+            continue
+
+    return False
 
 
 def _action_to_verdict(action: str) -> str:
@@ -644,6 +758,61 @@ def _score_path(path: str) -> float:
         except re.error:
             continue
     return score
+
+
+def _gate_challenge_or_escalate(
+    ip_address: str,
+    redis_client,
+    challenge_result: EvaluationResult,
+) -> EvaluationResult:
+    """Single escalation gate — called before returning ANY challenge verdict.
+
+    Fixes #27: evaluate_request has three places that can produce a
+    CHALLENGED verdict (a rule-driven BlockRule challenge, the no-referer
+    challenge, and a score-driven challenge). The escalation check used to
+    live only at the very end of evaluate_request, after all three of
+    those early returns — so a repeatedly-challenged IP never reached it
+    and auto-block-on-ignored-challenges was dead code. Routing every
+    challenge verdict through this one gate first makes escalation reachable
+    regardless of which path produced the challenge.
+
+    If the IP's unsolved-challenge count has reached
+    DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD, creates (or reuses) a
+    persistent auto BlockRule and returns a BLOCKED verdict referencing it
+    instead of the challenge verdict. Otherwise returns challenge_result
+    unchanged.
+
+    Args:
+        ip_address: Client IP address string.
+        redis_client: Configured Redis client instance.
+        challenge_result: The CHALLENGED EvaluationResult that would
+            otherwise be returned.
+
+    Returns:
+        A BLOCKED EvaluationResult when escalation triggers, else
+        challenge_result unchanged.
+    """
+    from django_waf import conf
+    from django_waf.enums import RuleAction, Verdict
+
+    challenged_count = _get_unsolved_challenge_count(ip_address, redis_client)
+    if challenged_count < conf.DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD:
+        return challenge_result
+
+    escalation_rule = _create_escalation_rule(ip_address)
+    record_block_verdict(
+        ip_address,
+        redis_client,
+        ttl=conf.DJANGO_WAF_ESCALATION_BLOCK_TTL,
+        rule_id=str(escalation_rule.id) if escalation_rule else None,
+    )
+    return EvaluationResult(
+        verdict=Verdict.BLOCKED,
+        action=RuleAction.BLOCK,
+        matched_rule_id=None,
+        matched_rule_type="",
+        anomaly_score=None,
+    )
 
 
 def _get_unsolved_challenge_count(ip_address: str, redis_client) -> int:

@@ -16,6 +16,13 @@ from django.utils import timezone
 
 logger = logging.getLogger("django_waf.anomaly_detector")
 
+# A referer that is a bare origin with no path (e.g. "https://host") cannot be
+# produced by genuine browser navigation: even Referrer-Policy: origin always
+# serialises at least a trailing slash after the host ("https://host/"). A
+# botnet that spoofs a static bare-origin referer to defeat the missing-referer
+# check must therefore be treated the same as a missing referer (issue #24).
+BARE_ORIGIN_REFERER_RE = r"^https?://[^/]+$"
+
 
 def detect_ua_rotation(
     window_minutes: int = 5,
@@ -330,6 +337,12 @@ def detect_cloud_spray(window_minutes: int = 30) -> list:
     where each IP makes only 1-3 requests with no referer. This pattern is
     characteristic of cloud-hosted bot farms that evade per-IP rate limits.
 
+    A referer that is a bare origin with no path (``BARE_ORIGIN_REFERER_RE``,
+    e.g. "https://example.com") is treated the same as a missing referer:
+    genuine browser navigation always serialises at least a trailing slash
+    after the host, so a spoofed static bare-origin referer is otherwise
+    invisible to this detector (issue #24).
+
     Flags subnets rather than individual IPs — cloud providers allocate
     contiguous blocks, so a single CIDR catches the cluster efficiently.
     Aggregation uses ``_get_subnet_prefix`` (the /24 network for IPv4, the
@@ -351,12 +364,13 @@ def detect_cloud_spray(window_minutes: int = 30) -> list:
     min_ips = conf.DJANGO_WAF_CLOUD_SPRAY_MIN_IPS
     max_per_ip = conf.DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP
 
-    # Step 1: Find UAs used by many distinct IPs with no referer
+    # Step 1: Find UAs used by many distinct IPs with no referer (or a
+    # spoofed bare-origin referer, which is indistinguishable from missing).
     spray_uas = (
         RequestLog.objects.filter(
             timestamp__gte=cutoff,
         )
-        .filter(Q(referer="") | Q(referer__isnull=True))
+        .filter(Q(referer="") | Q(referer__isnull=True) | Q(referer__regex=BARE_ORIGIN_REFERER_RE))
         .exclude(user_agent="")
         .values("user_agent")
         .annotate(distinct_ips=Count("ip_address", distinct=True))
@@ -371,12 +385,13 @@ def detect_cloud_spray(window_minutes: int = 30) -> list:
         ua = ua_row["user_agent"]
 
         # Step 2: Get IPs using this UA with low request counts and no referer
+        # (or a spoofed bare-origin referer — same treatment as Step 1).
         ip_counts = (
             RequestLog.objects.filter(
                 timestamp__gte=cutoff,
                 user_agent=ua,
             )
-            .filter(Q(referer="") | Q(referer__isnull=True))
+            .filter(Q(referer="") | Q(referer__isnull=True) | Q(referer__regex=BARE_ORIGIN_REFERER_RE))
             .values("ip_address")
             .annotate(req_count=Count("id"))
             .filter(req_count__lte=max_per_ip)

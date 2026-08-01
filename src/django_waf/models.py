@@ -49,8 +49,15 @@ class BlockRuleManager(models.Manager):
     """Custom manager for BlockRule with convenience querysets."""
 
     def active(self) -> models.QuerySet:
-        """Return all active rules ordered by priority."""
-        return self.filter(is_active=True).order_by("priority")
+        """Return all active, non-expired rules ordered by priority.
+
+        Excludes rules whose expires_at has passed even when is_active is
+        still True — the periodic expire_rules task deactivates those, but
+        evaluation must not enforce a rule that has expired in the gap
+        before that task next runs (#25).
+        """
+        not_expired = Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
+        return self.filter(is_active=True).filter(not_expired).order_by("priority")
 
     def for_nginx(self) -> models.QuerySet:
         """Return active IP/CIDR/UA block or throttle rules suitable for nginx export."""
@@ -193,8 +200,15 @@ class AllowRuleManager(models.Manager):
     """Custom manager for AllowRule with convenience querysets."""
 
     def active(self) -> models.QuerySet:
-        """Return all active allow rules."""
-        return self.filter(is_active=True)
+        """Return all active, non-expired allow rules.
+
+        Excludes rules whose expires_at has passed even when is_active is
+        still True — mirrors BlockRuleManager.active() (#25). Without this,
+        an expired feed or crawler AllowRule keeps bypassing every WAF
+        check until the periodic expire_rules task next deactivates it.
+        """
+        not_expired = Q(expires_at__isnull=True) | Q(expires_at__gt=timezone.now())
+        return self.filter(is_active=True).filter(not_expired)
 
     def requiring_rdns(self) -> models.QuerySet:
         """Return active rules that require reverse-DNS verification."""
@@ -203,6 +217,14 @@ class AllowRuleManager(models.Manager):
     def feed_sourced(self) -> models.QuerySet:
         """Return active rules sourced from the collective threat feed."""
         return self.active().filter(source=RuleSource.FEED)
+
+    def expired(self) -> models.QuerySet:
+        """Return active rules whose expiry time has passed.
+
+        Mirrors BlockRuleManager.expired() so the expire_rules task can
+        deactivate AllowRules using the same shape (#25).
+        """
+        return self.filter(is_active=True, expires_at__lte=timezone.now())
 
 
 class AllowRule(BaseModel):

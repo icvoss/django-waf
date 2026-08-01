@@ -397,6 +397,7 @@ class TestGuessThrottling:
         mock_check.assert_called_once()
 
     def test_throttle_exceeded_returns_429(self):
+        """#30: the 429 carries the limiter's real retry_after, not a fixed 60."""
         with (
             _enable_gate(password="correct-horse"),
             patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
@@ -412,7 +413,7 @@ class TestGuessThrottling:
             )
 
         assert response.status_code == 429
-        assert "Retry-After" in response
+        assert response["Retry-After"] == "42"
 
     def test_throttle_check_reuses_rate_limiter_module_not_a_new_limiter(self):
         """BR-SP-007: guess throttling must go through

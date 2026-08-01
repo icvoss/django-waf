@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-08-01
+
+A defect wave from the 2026-08-01 issue triage. Each of these was latent since
+the feature that introduced it, not a regression: the fixes below correct
+behaviour that was wrong from first release (the one exception is noted under
+rule expiry). All 929 tests pass.
+
+### Fixed
+
+- **Cloud-spray detection was blind to botnets that spoof a referer (#24).**
+  `detect_cloud_spray` only counted requests with an empty or missing referer,
+  so a botnet that stamped every request with a static referer was invisible.
+  Observed in production (2026-08-01): a distributed click-fraud flood of
+  131,293 distinct IPs in one day, a rotated pool of plausible Chrome/Edge user
+  agents, every request carrying a bare-origin `Referer` header, reported as
+  zero cloud-spray while roughly 95% of the flood was allowed. A referer that
+  is a bare origin with no path (matching `^https?://[^/]+$`) is now treated
+  the same as a missing referer in both detector queries, because genuine
+  browser navigation always serialises at least a trailing slash after the host
+  (including `Referrer-Policy: origin`), so a path-less referer cannot come from
+  real traffic. Referers with a real path, and trailing-slash origins, are
+  unaffected.
+- **Proof-of-work pass cookies could not round-trip an IPv6 address (#26).** The
+  cookie payload was colon-joined (`token:ip:expiry:signature`) and validation
+  split on colons, so an IPv6 client's address (which contains colons)
+  mis-parsed and every solved IPv6 client was re-challenged on every request.
+  The payload is now a versioned, pipe-delimited format (`v2|token|ip|expiry|
+  signature`) and IPs are normalised through the `ipaddress` module, so
+  compressed and expanded IPv6 forms validate interchangeably. Cookies in the
+  old format are rejected without special-casing: a client holding one is
+  re-challenged once after upgrade, then behaves normally. Cookie name, TTL, and
+  IP binding are unchanged.
+- **Rule expiry was not enforced during evaluation, and AllowRules never
+  expired (#25).** Active-rule queries filtered only on `is_active`, so the
+  cache could serve a rule past its `expires_at` until the housekeeping task
+  ran, and that task deactivated only BlockRules. An expired feed or crawler
+  AllowRule therefore bypassed every WAF check indefinitely. (The AllowRule half
+  became possible in 1.4.0, which first gave AllowRules an `expires_at`.) Both
+  `active()` querysets now exclude passed expiry, the rule cache carries
+  `expires_at` per entry and rejects expired entries at match time, and the
+  `expire_rules` task deactivates expired AllowRules as well as BlockRules and
+  invalidates the cache when either model had an expired row.
+- **Unsolved-challenge escalation was unreachable (#27).** The escalation check
+  sat after the rule-driven, no-referer, and score-driven challenge verdicts had
+  already returned, so an IP that repeatedly ignored challenges never reached
+  auto-block. Escalation is now gated before every challenge-verdict return
+  point: once the unsolved-challenge count reaches the threshold, the request is
+  blocked with a single TTL-bound auto rule instead of challenged again. A
+  successful solve resets the counter, as before.
+- **Rate limiting returned an inaccurate `Retry-After` (#30).** The retry
+  calculation always collapsed to one second and the value was then dropped
+  because `EvaluationResult` carried no rate-limit metadata, so the middleware
+  sent a fixed 60 seconds. The sliding-window limiter now returns the true
+  seconds until the oldest event ages out (computed atomically in the same Redis
+  pipeline), `EvaluationResult` carries `retry_after`, and both the main WAF
+  throttle and the site-password guess-throttle emit accurate headers.
+- **Verified-crawler allow rules trusted an unconfirmed PTR record (#34).**
+  Crawler verification accepted a reverse-DNS hostname whose suffix matched an
+  approved pattern without forward-resolving it, so anyone controlling the PTR
+  record for their own IP (any cloud host with settable reverse DNS) could pass
+  as Googlebot or Bingbot. Verification now performs forward-confirmed reverse
+  DNS: after the PTR suffix matches, the hostname is forward-resolved and the
+  original IP must appear among the results. Any DNS failure fails closed.
+
+### Added
+
+- `DJANGO_WAF_RDNS_FAILURE_CACHE_TTL` (default 300): negative reverse-DNS
+  verdicts are now cached briefly, rather than for the 24 hours a positive
+  verdict is cached, so a transient resolver outage no longer suppresses a
+  crawler allow rule for a full day.
+
+### Changed
+
+- `EvaluationResult` gained a `retry_after` field (keyword default `None`);
+  positional 5-argument constructions are unaffected.
+- The `expire_rules` task result gained `expired_block_count` and
+  `expired_allow_count` alongside the existing `expired_count`.
+
 ## [1.5.2] - 2026-07-19
 
 ### Fixed

@@ -215,6 +215,17 @@ DJANGO_WAF_EXEMPT_HOSTS: list[str] = getattr(
 # opt out, or deactivate the seeded AllowRule rows directly.
 DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS: bool = getattr(settings, "DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS", True)
 
+# TTL in seconds for a NEGATIVE forward-confirmed reverse DNS (FCrDNS)
+# verification result — a PTR/hostname pattern match that then failed the
+# forward-resolution check, or any DNS error on either lookup (#34). Kept
+# short (5 minutes) rather than the 24-hour positive-result TTL, because a
+# negative result can come from a transient resolver outage, and a long
+# negative cache would suppress a legitimate crawler's AllowRule match for
+# a full day per IP on every hiccup. A positive FCrDNS verification is
+# always cached for 24 hours, unaffected by this setting — legitimate
+# crawler infrastructure's DNS records change rarely.
+DJANGO_WAF_RDNS_FAILURE_CACHE_TTL: int = getattr(settings, "DJANGO_WAF_RDNS_FAILURE_CACHE_TTL", 300)
+
 # Trust the X-Forwarded-For header when extracting the real client IP.
 DJANGO_WAF_TRUST_X_FORWARDED_FOR: bool = getattr(settings, "DJANGO_WAF_TRUST_X_FORWARDED_FOR", False)
 
