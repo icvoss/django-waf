@@ -65,14 +65,13 @@ _IP_CHANGED_SCORE = 3.0
 def _extract_ip(request) -> str:
     """Pull the client IP from the request.
 
-    Defence-time helper — the orchestrator already does the same
-    via the WAF's request_ip logic, but defences are also constructed
-    in tests where the orchestrator isn't in the loop. Falling back
-    to ``REMOTE_ADDR`` is fine because the WAF's trusted-proxy logic
-    runs upstream; by the time a defence sees the request the IP is
-    already authoritative.
+    Delegates to ``django_waf.services.client_ip.resolve_client_ip`` (#29),
+    the single trusted-proxy-aware resolver shared by the middleware, the
+    challenge views, and every form defence that needs the client IP.
     """
-    return request.META.get("REMOTE_ADDR", "") if request else ""
+    from django_waf.services.client_ip import resolve_client_ip
+
+    return resolve_client_ip(request) if request else ""
 
 
 def _user_id(request) -> str:

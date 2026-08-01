@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-waf"
-version = "1.6.0"
+version = "1.7.0"
 description = "Self-hosted request filtering, bot management, and WAF middleware for Django — rate limiting, UA anomaly scoring, JS challenges, nginx blocklist generation, and collective threat feed."
 readme = "README.md"
 license = "MIT"
@@ -62,7 +62,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-django_waf = ["templates/**/*.html"]
+django_waf = ["templates/**/*.html", "conf/nginx/*.conf.example"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"

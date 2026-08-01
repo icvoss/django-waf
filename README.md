@@ -35,8 +35,12 @@ all configurable without a reverse-proxy vendor.
   database periodically
 - **Configurable anomaly score thresholds**: separate thresholds for log,
   challenge, and block verdicts
-- **nginx blocklist generation**: exports `map`/`geo` blocks for C-level
-  filtering at < 0.01 ms latency
+- **nginx blocklist export utility**: generates `map`/`geo` variable
+  declarations (block and throttle kept separate) for C-level filtering at
+  < 0.01 ms latency, with `nginx -t` validation and automatic rollback to
+  the last-known-good file before any reload is signalled. django-waf
+  generates the variables; you wire the enforcement, see
+  [nginx Integration](#nginx-integration)
 - **Anomaly detection**: auto-creates expiring rules for UA rotation, subnet
   bursts, and challenge farms
 - **Collective threat feed**: opt-in sync of anonymised threat intelligence
@@ -57,7 +61,7 @@ all configurable without a reverse-proxy vendor.
 - `httpx >= 0.27` (for threat feed sync)
 - Optional: `celery >= 5.3` (for scheduled tasks)
 - Optional: `maxminddb >= 2.4` (for GeoIP lookups)
-- Optional: `djangorestframework >= 3.14` (for the REST API — see [REST API (optional)](#rest-api-optional))
+- Optional: `djangorestframework >= 3.14` (for the REST API, see [REST API (optional)](#rest-api-optional))
 
 ## Installation
 
@@ -223,11 +227,69 @@ without any feed.
 
 ### nginx Integration
 
+**django-waf is an export utility, not an auto-enforcing package.**
+`generate_nginx_blocklist()` (run every 5 minutes by the `generate_blocklist`
+Celery task, BR-BL-004) writes an nginx configuration file declaring four
+variables from active `BlockRule` rows, it does not itself reject, throttle,
+or otherwise touch any request. **You** wire the enforcement (the `if
+($waf_block_ip) { return 403; }` style checks, and the `limit_req` throttle
+zone) into your own `server{}`/`location{}` blocks, once, by hand. This is a
+deliberate split: which server blocks are public-facing, and what nginx
+features are already in use there, is a decision the package cannot safely
+make on an operator's behalf.
+
+**Reference wiring is shipped as package data** under
+`django_waf/conf/nginx/` (importable path:
+`importlib.resources.files("django_waf") / "conf" / "nginx"`), based on the
+config shape proven in production:
+
+| File | Purpose |
+|------|---------|
+| `http-include.conf.example` | The `http{}`-scope include that pulls in the generated blocklist file, plus the writable-path pattern below |
+| `server-include.conf.example` | The per-`server{}`/`location{}` enforcement snippet: block → `return 403`, throttle → `limit_req` |
+
+**Why `http{}` scope**: nginx's `map` and `geo` directives are only valid at
+the `http{}` configuration level, never inside a `server{}` or `location{}`
+block. Drop `http-include.conf.example` (or its `include` line) into your
+`http{}`-scope include directory (typically `/etc/nginx/conf.d/` on most
+distributions), never into a server block.
+
+**Writable-path pattern**: the Django process running `generate_blocklist`
+is typically an unprivileged application user, and `/etc/nginx/` is
+root-owned on most distributions. Either grant that user write access to a
+specific file under `/etc/nginx/conf.d/`, or point
+`DJANGO_WAF_NGINX_BLOCKLIST_PATH` at a location the application user already
+owns (e.g. `/var/lib/django-waf/blocklist.conf`) and `include` that absolute
+path from a root-owned, one-time-edited file under `/etc/nginx/conf.d/`. The
+generated file itself then never needs to live under `/etc/nginx/` at all.
+
+**Block vs throttle**: the generated file declares block and throttle rules
+to *separate* variables, `$waf_block_ip` / `$waf_block_ua` for
+`action=block`, `$waf_throttle_ip` / `$waf_throttle_ua` for
+`action=throttle`, so a throttle rule never appears in the block variables
+and vice versa. Wire block to an unconditional `return 403`; wire throttle
+to nginx's own `limit_req` (requires a `limit_req_zone` at `http{}` scope).
+See `server-include.conf.example` for the full example, including the
+`limit_req_zone` declaration.
+
+**Validation and rollback**: when `DJANGO_WAF_NGINX_VALIDATE` is `True` (the
+default), `generate_nginx_blocklist()` preserves the previous file as a
+`.last-good` copy, activates the new candidate, then runs
+`DJANGO_WAF_NGINX_TEST_COMMAND` (`nginx -t` by default). A validation
+failure restores the `.last-good` copy immediately, so a syntactically
+broken candidate never survives on disk as a reload timebomb waiting for the
+next restart. If the test command's binary is not on `PATH` (e.g. the
+Django process runs somewhere without a local nginx binary), validation is
+skipped gracefully and logged, the candidate still activates, exactly as
+if `DJANGO_WAF_NGINX_VALIDATE` were `False`.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `DJANGO_WAF_NGINX_BLOCKLIST_PATH` | `"/etc/nginx/conf.d/django-waf-blocklist.conf"` | Output path for the generated nginx blocklist |
 | `DJANGO_WAF_ACCESS_LOG_PATH` | `"/var/log/nginx/access.log"` | nginx access log path for parsing |
 | `DJANGO_WAF_NGINX_RELOAD_COMMAND` | `["nginx", "-s", "reload"]` | Command to reload nginx after blocklist generation |
+| `DJANGO_WAF_NGINX_VALIDATE` | `True` | Run a syntax test against the candidate blocklist before activating it, with automatic rollback on failure |
+| `DJANGO_WAF_NGINX_TEST_COMMAND` | `["nginx", "-t"]` | Command used for the syntax test above |
 
 ### Collective Threat Feed
 
@@ -355,8 +417,8 @@ JSON object per line, ready for a log aggregator (ELK, Loki, CloudWatch
 Logs, etc.). It always includes `timestamp`, `level`, `logger`, and
 `message`; it additionally includes `ip`, `verdict`, `rule_id`,
 `anomaly_score`, `latency_ms`, `path`, `method`, and `user_agent` (truncated
-to 200 characters) whenever those attributes are present on the log record
-— fields that are absent are omitted entirely rather than emitted as
+to 200 characters) whenever those attributes are present on the log record.
+Fields that are absent are omitted entirely rather than emitted as
 `null`.
 
 Wire it into the `django_waf` logger via `LOGGING`:
@@ -478,7 +540,7 @@ DJANGO_WAF_API_ENABLED = True
 ```
 
 The routes are mounted automatically by `django_waf.urls` when the setting is
-true and `djangorestframework` is importable — no extra `include()` needed
+true and `djangorestframework` is importable, no extra `include()` needed
 beyond the existing `path("waf/", include("django_waf.urls", namespace="django_waf"))`.
 If the setting is true but `djangorestframework` is not installed, the
 routes are skipped and a warning is logged at import time; every endpoint
@@ -488,17 +550,17 @@ also returns `503 Service Unavailable` while the setting is false.
 
 | Endpoint | Viewset | Access |
 |----------|---------|--------|
-| `block-rules/` | `BlockRuleViewSet` — full CRUD | `IsWafAdmin` |
-| `allow-rules/` | `AllowRuleViewSet` — full CRUD | `IsWafAdmin` |
-| `request-logs/` | `RequestLogViewSet` — read-only, `?verdict=`, `?ip_address=`, `?from_ts=` (ISO 8601) filters | `IsAdminUser` |
-| `ip-reputation/` | `IPReputationViewSet` — read-only, `?min_threat_score=` filter | `IsAdminUser` |
+| `block-rules/` | `BlockRuleViewSet`, full CRUD | `IsWafAdmin` |
+| `allow-rules/` | `AllowRuleViewSet`, full CRUD | `IsWafAdmin` |
+| `request-logs/` | `RequestLogViewSet`, read-only, `?verdict=`, `?ip_address=`, `?from_ts=` (ISO 8601) filters | `IsAdminUser` |
+| `ip-reputation/` | `IPReputationViewSet`, read-only, `?min_threat_score=` filter | `IsAdminUser` |
 
 **Permission model:**
 
-- `IsWafAdmin` — grants access to superusers, and to staff users holding the
+- `IsWafAdmin`, grants access to superusers, and to staff users holding the
   `django_waf.change_blockrule` permission. Used on the two writable
   endpoints (`block-rules/`, `allow-rules/`).
-- `IsAdminUser` (DRF's built-in) — grants access to `is_staff` users. Used on
+- `IsAdminUser` (DRF's built-in), grants access to `is_staff` users. Used on
   the two read-only audit endpoints (`request-logs/`, `ip-reputation/`),
   which carry no write actions to restrict further.
 

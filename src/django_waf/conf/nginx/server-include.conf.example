@@ -1,0 +1,75 @@
+# django-waf reference nginx wiring, per-location enforcement snippet (#31)
+#
+# The variables $waf_block_ip, $waf_block_ua, $waf_throttle_ip, and
+# $waf_throttle_ua (declared by http-include.conf.example) are inert on
+# their own. This snippet is the enforcement half: paste it into every
+# server{} or location{} block you want the WAF's nginx-level fast path to
+# cover. django-waf never edits your server{} blocks for you, copy this
+# in by hand, once, to each block that needs it (this is deliberate: which
+# server blocks are public-facing, and which nginx features are already in
+# use there, is a decision the package cannot safely make on an operator's
+# behalf, see README.md's nginx Integration section for the full
+# rationale for shipping this as a reference rather than an auto-applied
+# include).
+#
+# BLOCK vs THROTTLE
+# -------------------
+# Block and throttle are wired differently on purpose: a block rule should
+# reject immediately, a throttle rule should rate-limit, not reject
+# outright.
+#
+#   BLOCK   -> unconditional 403 (this snippet, below)
+#   THROTTLE -> nginx's own limit_req machinery, gated by the throttle
+#               variables. This requires a limit_req_zone directive at
+#               http{} scope (see the commented-out example below) plus a
+#               limit_req directive in this server/location block.
+#
+# Example server{} block:
+#
+#   server {
+#       listen 443 ssl;
+#       server_name example.com;
+#
+#       # --- django-waf: block enforcement ---
+#       if ($waf_block_ip) {
+#           return 403;
+#       }
+#       if ($waf_block_ua) {
+#           return 403;
+#       }
+#
+#       # --- django-waf: throttle enforcement ---
+#       # Requires, at http{} scope (see http-include.conf.example's
+#       # surrounding http{} block, or nginx.conf directly):
+#       #
+#       #   limit_req_zone $binary_remote_addr zone=waf_throttle:10m rate=10r/s;
+#       #
+#       # A throttled IP/UA still reaches this block (it is not rejected by
+#       # the if-blocks above); limit_req below then rate-limits it rather
+#       # than blocking it outright. burst/nodelay tuning is a per-site
+#       # capacity decision, not something django-waf can default safely.
+#       set $waf_throttle_key "";
+#       if ($waf_throttle_ip) {
+#           set $waf_throttle_key $binary_remote_addr;
+#       }
+#       if ($waf_throttle_ua) {
+#           set $waf_throttle_key $binary_remote_addr;
+#       }
+#       limit_req zone=waf_throttle burst=5 nodelay;
+#
+#       location / {
+#           proxy_pass http://django_upstream;
+#       }
+#   }
+#
+# The if-blocks above are deliberately minimal (nginx's `if` is famously
+# limited in what it can safely do, see the nginx "If is Evil" wiki page).
+# Two independent checks, each returning immediately, avoids every pitfall
+# that comes from combining `if` with other directives in the same block.
+
+if ($waf_block_ip) {
+    return 403;
+}
+if ($waf_block_ua) {
+    return 403;
+}

@@ -77,6 +77,17 @@ _REBUILD_LOCK_RETRY_DELAY = 0.1  # seconds
 _process_cache: RuleCache | None = None
 _process_cache_version: int = -1
 
+# Compiled-UA-regex memoisation cache (#28), keyed on (pattern, match_type).
+# _compile_ua_patterns populates this for every UA rule it compiles as part
+# of a rule-cache rebuild; _match_ua consults it before falling back to
+# re.search on the raw pattern, and memoises anything it compiles itself
+# (e.g. an AllowRule UA pattern, which _compile_ua_patterns does not cover,
+# or a call made directly against a rule dict that bypassed the cache
+# machinery entirely, as some tests do). This means a given pattern is
+# compiled at most once per process regardless of which path first needed
+# it, closing the gap where cache.ua_regex_set was built but never read.
+_ua_pattern_cache: dict[tuple[str, str], re.Pattern | None] = {}
+
 
 # ---------------------------------------------------------------------------
 # Rule cache management
@@ -255,7 +266,11 @@ def _rebuild_rule_cache_from_db(redis_client, version: int, cache_key: str) -> R
 def _compile_ua_patterns(block_rules: list) -> list:
     """Pre-compile UA regex/contains patterns for fast matching.
 
-    Returns list of (compiled_re, rule_dict) for UA-type rules only.
+    Returns list of (compiled_re, rule_dict) for UA-type rules only. Every
+    ``regex``-match-type pattern compiled here is also memoised into
+    ``_ua_pattern_cache`` (#28), keyed on ``(pattern, "regex")``, so
+    ``_match_ua`` finds the same compiled object instead of recompiling it
+    on every request.
     """
     compiled = []
     for rule in block_rules:
@@ -265,7 +280,9 @@ def _compile_ua_patterns(block_rules: list) -> list:
         match_type = rule["match_type"]
         try:
             if match_type == "regex":
-                compiled.append((re.compile(pattern, re.IGNORECASE), rule))
+                compiled_re = re.compile(pattern, re.IGNORECASE)
+                _ua_pattern_cache[(pattern, "regex")] = compiled_re
+                compiled.append((compiled_re, rule))
             elif match_type == "contains":
                 # Escape and wrap for substring match
                 compiled.append((re.compile(re.escape(pattern), re.IGNORECASE), rule))
@@ -273,6 +290,7 @@ def _compile_ua_patterns(block_rules: list) -> list:
                 compiled.append((re.compile(f"^{re.escape(pattern)}$", re.IGNORECASE), rule))
         except re.error:
             logger.warning("Invalid UA pattern in rule %s: %r", rule["id"], pattern)
+            _ua_pattern_cache[(pattern, "regex")] = None
     return compiled
 
 
@@ -572,17 +590,49 @@ def _rule_matches(rule: dict, ip_address: str, user_agent: str) -> bool:
 
 
 def _match_ua(user_agent: str, pattern: str, match_type: str) -> bool:
-    """Match a user agent string against a pattern."""
+    """Match a user agent string against a pattern.
+
+    For ``match_type == "regex"``, uses the compiled-pattern memoisation
+    cache (#28) instead of calling ``re.search`` on the raw string on every
+    invocation: a pattern compiled once (either here or by
+    ``_compile_ua_patterns`` during a rule-cache rebuild) is looked up by
+    ``(pattern, "regex")`` and reused for the lifetime of the process,
+    rather than being recompiled on every request that carries a matching
+    rule.
+    """
     if match_type == "exact":
         return user_agent == pattern
     if match_type == "contains":
         return pattern.lower() in user_agent.lower()
     if match_type == "regex":
-        try:
-            return bool(re.search(pattern, user_agent, re.IGNORECASE))
-        except re.error:
+        compiled = _get_compiled_ua_regex(pattern)
+        if compiled is None:
             return False
+        return bool(compiled.search(user_agent))
     return False
+
+
+def _get_compiled_ua_regex(pattern: str) -> re.Pattern | None:
+    """Return the compiled regex for ``pattern``, compiling and memoising on miss.
+
+    Returns ``None`` if the pattern is invalid (mirrors the previous
+    behaviour of ``_match_ua`` swallowing ``re.error`` and returning False).
+    A cache hit avoids recompiling the same pattern on every request; a
+    cache miss compiles once and stores the result (including a negative
+    result for an invalid pattern) so subsequent calls never recompile.
+    """
+    cache_key = (pattern, "regex")
+    if cache_key in _ua_pattern_cache:
+        return _ua_pattern_cache[cache_key]
+
+    try:
+        compiled = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        _ua_pattern_cache[cache_key] = None
+        return None
+
+    _ua_pattern_cache[cache_key] = compiled
+    return compiled
 
 
 def _match_ip(ip_address: str, pattern: str, match_type: str) -> bool:

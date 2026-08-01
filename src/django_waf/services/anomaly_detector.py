@@ -27,6 +27,7 @@ BARE_ORIGIN_REFERER_RE = r"^https?://[^/]+$"
 def detect_ua_rotation(
     window_minutes: int = 5,
     threshold: int | None = None,
+    dry_run: bool = False,
 ) -> list:
     """Detect IPs using an unusually large number of distinct User-Agent strings.
 
@@ -38,9 +39,12 @@ def detect_ua_rotation(
         window_minutes: Time window to analyse (default 5).
         threshold: Distinct UA count threshold. Defaults to
                    DJANGO_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS.
+        dry_run: When True (#38), collects what would be created without
+                 writing any BlockRule or emitting the anomaly_detected signal.
 
     Returns:
-        List of BlockRule instances created.
+        List of BlockRule instances that were created (or, in dry-run, would
+        have been created).
     """
     from django.db.models import Count
 
@@ -71,20 +75,22 @@ def detect_ua_rotation(
             pattern=ip,
             action=RuleAction.CHALLENGE,
             expiry=expiry,
+            dry_run=dry_run,
         )
         if created:
             created_rules.append(rule)
-            _emit_anomaly_signal(
-                rule=rule,
-                anomaly_type=AnomalyType.UA_ROTATION,
-                details={"distinct_ua_count": row["distinct_ua_count"], "window_minutes": window_minutes},
-            )
-            logger.info("django-waf: auto-created UA rotation rule for %s", ip)
+            if not dry_run:
+                _emit_anomaly_signal(
+                    rule=rule,
+                    anomaly_type=AnomalyType.UA_ROTATION,
+                    details={"distinct_ua_count": row["distinct_ua_count"], "window_minutes": window_minutes},
+                )
+                logger.info("django-waf: auto-created UA rotation rule for %s", ip)
 
     return created_rules
 
 
-def detect_subnet_burst(window_minutes: int = 15) -> list:
+def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list:
     """Detect /24 (IPv4) or /48 (IPv6) subnets with anomalously high request volume.
 
     Per BR-ANOM-002: flags subnets where request count exceeds 3× the mean
@@ -92,9 +98,12 @@ def detect_subnet_burst(window_minutes: int = 15) -> list:
 
     Args:
         window_minutes: Time window to analyse (default 15).
+        dry_run: When True (#38), collects what would be created without
+                 writing any BlockRule or emitting the anomaly_detected signal.
 
     Returns:
-        List of BlockRule instances created.
+        List of BlockRule instances that were created (or, in dry-run, would
+        have been created).
     """
     from django_waf import conf
     from django_waf.enums import AnomalyType, RuleAction, RuleType
@@ -132,20 +141,22 @@ def detect_subnet_burst(window_minutes: int = 15) -> list:
             pattern=subnet,
             action=RuleAction.CHALLENGE,
             expiry=expiry,
+            dry_run=dry_run,
         )
         if created:
             created_rules.append(rule)
-            _emit_anomaly_signal(
-                rule=rule,
-                anomaly_type=AnomalyType.SUBNET_FLOOD,
-                details={"count": count, "mean": mean_count, "threshold": burst_threshold},
-            )
-            logger.info("django-waf: auto-created subnet burst rule for %s (count=%d)", subnet, count)
+            if not dry_run:
+                _emit_anomaly_signal(
+                    rule=rule,
+                    anomaly_type=AnomalyType.SUBNET_FLOOD,
+                    details={"count": count, "mean": mean_count, "threshold": burst_threshold},
+                )
+                logger.info("django-waf: auto-created subnet burst rule for %s (count=%d)", subnet, count)
 
     return created_rules
 
 
-def detect_challenge_farms(window_hours: int = 24) -> list:
+def detect_challenge_farms(window_hours: int = 24, dry_run: bool = False) -> list:
     """Detect IPs with high challenge failure rates and low pass rates.
 
     Per BR-ANOM-003: IPs with challenge_failures > 10 and challenge_passes < 2
@@ -153,9 +164,12 @@ def detect_challenge_farms(window_hours: int = 24) -> list:
 
     Args:
         window_hours: Time window to analyse (default 24).
+        dry_run: When True (#38), collects what would be created without
+                 writing any BlockRule or emitting the anomaly_detected signal.
 
     Returns:
-        List of BlockRule instances created.
+        List of BlockRule instances that were created (or, in dry-run, would
+        have been created).
     """
     from django_waf import conf
     from django_waf.enums import AnomalyType, RuleAction, RuleType
@@ -181,18 +195,20 @@ def detect_challenge_farms(window_hours: int = 24) -> list:
             pattern=ip,
             action=RuleAction.BLOCK,
             expiry=expiry,
+            dry_run=dry_run,
         )
         if created:
             created_rules.append(rule)
-            _emit_anomaly_signal(
-                rule=rule,
-                anomaly_type=AnomalyType.CHALLENGE_FARM,
-                details={
-                    "challenge_failures": rep.challenge_failures,
-                    "challenge_passes": rep.challenge_passes,
-                },
-            )
-            logger.info("django-waf: auto-created challenge farm rule for %s", ip)
+            if not dry_run:
+                _emit_anomaly_signal(
+                    rule=rule,
+                    anomaly_type=AnomalyType.CHALLENGE_FARM,
+                    details={
+                        "challenge_failures": rep.challenge_failures,
+                        "challenge_passes": rep.challenge_passes,
+                    },
+                )
+                logger.info("django-waf: auto-created challenge farm rule for %s", ip)
 
     return created_rules
 
@@ -201,6 +217,7 @@ def detect_unsolved_challenges(
     window_minutes: int = 60,
     min_challenged: int = 3,
     referer_ratio: float = 0.8,
+    dry_run: bool = False,
 ) -> list:
     """Detect IPs that receive challenges but never solve them.
 
@@ -220,9 +237,12 @@ def detect_unsolved_challenges(
         min_challenged: Minimum challenged verdicts to consider (default 3).
         referer_ratio: Fraction of non-root requests with empty referer
                        required to trigger (default 0.8).
+        dry_run: When True (#38), collects what would be created without
+                 writing any BlockRule or emitting the anomaly_detected signal.
 
     Returns:
-        List of BlockRule instances created.
+        List of BlockRule instances that were created (or, in dry-run, would
+        have been created).
     """
     from django.db.models import Count, Q
 
@@ -230,6 +250,7 @@ def detect_unsolved_challenges(
     from django_waf.enums import (
         AnomalyType,
         ChallengeStatus,
+        RequestLogSource,
         RuleAction,
         RuleType,
         Verdict,
@@ -238,11 +259,18 @@ def detect_unsolved_challenges(
 
     cutoff = timezone.now() - timedelta(minutes=window_minutes)
 
-    # Step 1: IPs with >= min_challenged challenged verdicts in window
+    # Step 1: IPs with >= min_challenged challenged verdicts in window.
+    # Scoped to source=middleware (#32): a nginx_log row's verdict is
+    # inferred from the access-log status code, not observed by
+    # rule_engine.evaluate_request. The nginx access log records the same
+    # request middleware already logged, so counting both would double the
+    # apparent challenged_count for every IP and distort this detector's
+    # threshold check.
     challenged_ips = (
         RequestLog.objects.filter(
             timestamp__gte=cutoff,
             verdict=Verdict.CHALLENGED,
+            source=RequestLogSource.MIDDLEWARE,
         )
         .values("ip_address")
         .annotate(challenged_count=Count("id"))
@@ -307,30 +335,32 @@ def detect_unsolved_challenges(
             pattern=ip,
             action=RuleAction.BLOCK,
             expiry=expiry,
+            dry_run=dry_run,
         )
         if created:
             created_rules.append(rule)
-            _emit_anomaly_signal(
-                rule=rule,
-                anomaly_type=AnomalyType.UNSOLVED_CHALLENGE,
-                details={
-                    "challenged_count": row["challenged_count"],
-                    "empty_referer_ratio": round(empty_count / non_root_count, 2),
-                    "non_root_requests": non_root_count,
-                    "window_minutes": window_minutes,
-                },
-            )
-            logger.info(
-                "django-waf: auto-created unsolved challenge rule for %s (challenged=%d, referer_empty=%.0f%%)",
-                ip,
-                row["challenged_count"],
-                (empty_count / non_root_count) * 100,
-            )
+            if not dry_run:
+                _emit_anomaly_signal(
+                    rule=rule,
+                    anomaly_type=AnomalyType.UNSOLVED_CHALLENGE,
+                    details={
+                        "challenged_count": row["challenged_count"],
+                        "empty_referer_ratio": round(empty_count / non_root_count, 2),
+                        "non_root_requests": non_root_count,
+                        "window_minutes": window_minutes,
+                    },
+                )
+                logger.info(
+                    "django-waf: auto-created unsolved challenge rule for %s (challenged=%d, referer_empty=%.0f%%)",
+                    ip,
+                    row["challenged_count"],
+                    (empty_count / non_root_count) * 100,
+                )
 
     return created_rules
 
 
-def detect_cloud_spray(window_minutes: int = 30) -> list:
+def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
     """Detect coordinated low-and-slow scraping from many distinct IPs.
 
     Identifies UAs shared by many distinct IPs (>= DJANGO_WAF_CLOUD_SPRAY_MIN_IPS)
@@ -350,9 +380,12 @@ def detect_cloud_spray(window_minutes: int = 30) -> list:
 
     Args:
         window_minutes: Time window to analyse (default 30).
+        dry_run: When True (#38), collects what would be created without
+                 writing any BlockRule or emitting the anomaly_detected signal.
 
     Returns:
-        List of BlockRule instances created.
+        List of BlockRule instances that were created (or, in dry-run, would
+        have been created).
     """
     from django.db.models import Count, Q
 
@@ -421,30 +454,32 @@ def detect_cloud_spray(window_minutes: int = 30) -> list:
                 pattern=subnet,
                 action=RuleAction.CHALLENGE,
                 expiry=expiry,
+                dry_run=dry_run,
             )
             if created:
                 created_rules.append(rule)
-                _emit_anomaly_signal(
-                    rule=rule,
-                    anomaly_type=AnomalyType.CLOUD_SPRAY,
-                    details={
-                        "subnet": subnet,
-                        "ip_count": count,
-                        "total_spray_ips": len(suspicious_ips),
-                        "user_agent": ua[:200],
-                        "window_minutes": window_minutes,
-                    },
-                )
-                logger.info(
-                    "django-waf: auto-created cloud spray rule for %s (%d IPs)",
-                    subnet,
-                    count,
-                )
+                if not dry_run:
+                    _emit_anomaly_signal(
+                        rule=rule,
+                        anomaly_type=AnomalyType.CLOUD_SPRAY,
+                        details={
+                            "subnet": subnet,
+                            "ip_count": count,
+                            "total_spray_ips": len(suspicious_ips),
+                            "user_agent": ua[:200],
+                            "window_minutes": window_minutes,
+                        },
+                    )
+                    logger.info(
+                        "django-waf: auto-created cloud spray rule for %s (%d IPs)",
+                        subnet,
+                        count,
+                    )
 
     return created_rules
 
 
-def run_all_detectors(window_minutes: int | None = None) -> dict:
+def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) -> dict:
     """Run all anomaly detectors and return a summary of findings.
 
     Args:
@@ -453,29 +488,37 @@ def run_all_detectors(window_minutes: int | None = None) -> dict:
             configured default window. ``detect_challenge_farms`` takes its
             window in hours, so the value is converted (rounded up to the
             nearest hour, minimum 1) before being forwarded to it.
+        dry_run: When True (#38), every detector collects what would be
+            created and reports it in the return value without writing any
+            BlockRule, activating anything, or emitting the
+            anomaly_detected signal. ``run_all_detectors(dry_run=True)``
+            makes zero DB writes.
 
     Returns:
         Dict with keys: ua_rotation_rules, subnet_burst_rules,
-        challenge_farm_rules, total_rules_created.
+        challenge_farm_rules, unsolved_challenge_rules, cloud_spray_rules,
+        total_rules_created. In dry-run these counts describe what WOULD be
+        created, not what was created.
     """
     if window_minutes is None:
-        ua_rules = detect_ua_rotation()
-        subnet_rules = detect_subnet_burst()
-        farm_rules = detect_challenge_farms()
-        unsolved_rules = detect_unsolved_challenges()
-        spray_rules = detect_cloud_spray()
+        ua_rules = detect_ua_rotation(dry_run=dry_run)
+        subnet_rules = detect_subnet_burst(dry_run=dry_run)
+        farm_rules = detect_challenge_farms(dry_run=dry_run)
+        unsolved_rules = detect_unsolved_challenges(dry_run=dry_run)
+        spray_rules = detect_cloud_spray(dry_run=dry_run)
     else:
         window_hours = max(1, -(-window_minutes // 60))  # ceiling division
-        ua_rules = detect_ua_rotation(window_minutes=window_minutes)
-        subnet_rules = detect_subnet_burst(window_minutes=window_minutes)
-        farm_rules = detect_challenge_farms(window_hours=window_hours)
-        unsolved_rules = detect_unsolved_challenges(window_minutes=window_minutes)
-        spray_rules = detect_cloud_spray(window_minutes=window_minutes)
+        ua_rules = detect_ua_rotation(window_minutes=window_minutes, dry_run=dry_run)
+        subnet_rules = detect_subnet_burst(window_minutes=window_minutes, dry_run=dry_run)
+        farm_rules = detect_challenge_farms(window_hours=window_hours, dry_run=dry_run)
+        unsolved_rules = detect_unsolved_challenges(window_minutes=window_minutes, dry_run=dry_run)
+        spray_rules = detect_cloud_spray(window_minutes=window_minutes, dry_run=dry_run)
 
     total = len(ua_rules) + len(subnet_rules) + len(farm_rules) + len(unsolved_rules) + len(spray_rules)
     logger.info(
-        "django-waf anomaly detection: ua_rotation=%d subnet_burst=%d "
+        "django-waf anomaly detection%s: ua_rotation=%d subnet_burst=%d "
         "challenge_farm=%d unsolved_challenge=%d cloud_spray=%d total=%d",
+        " (dry-run)" if dry_run else "",
         len(ua_rules),
         len(subnet_rules),
         len(farm_rules),
@@ -532,6 +575,7 @@ def _get_or_create_auto_rule(
     pattern: str,
     action: str,
     expiry,
+    dry_run: bool = False,
 ) -> tuple:
     """Create or refresh an auto-generated BlockRule, avoiding duplicates.
 
@@ -543,8 +587,20 @@ def _get_or_create_auto_rule(
     via a race condition), catches MultipleObjectsReturned, deduplicates by
     keeping the newest row and deleting the rest, then retries.
 
+    When ``dry_run`` is True (#38), performs a read-only existence check
+    instead of update_or_create: no BlockRule is written, activated, or
+    refreshed. Returns an unsaved ``BlockRule`` instance built from the same
+    fields a real run would use, with ``created`` mirroring what a real run
+    would report (``False`` if a matching auto rule is already active,
+    ``True`` otherwise), so command/task output describing "would create N
+    rules" matches what a subsequent non-dry-run invocation would actually do.
+
     Returns:
-        (rule, created) tuple.
+        (rule, created) tuple. ``rule`` is unsaved (``rule._state.adding is
+        True``, never written to the database) when ``dry_run`` is True.
+        Its ``pk`` is not unset: ``BlockRule.id`` is a UUIDField with
+        ``default=uuid.uuid4``, so Django generates the UUID at
+        instantiation regardless of whether the instance is ever saved.
     """
     from django_waf.enums import RuleSource
     from django_waf.models import BlockRule
@@ -561,6 +617,12 @@ def _get_or_create_auto_rule(
         "is_active": True,
         "expires_at": expiry,
     }
+
+    if dry_run:
+        existing = BlockRule.objects.filter(**lookup).first()
+        if existing is not None:
+            return existing, False
+        return BlockRule(**lookup, **defaults), True
 
     try:
         with transaction.atomic():

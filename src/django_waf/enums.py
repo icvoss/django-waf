@@ -69,3 +69,17 @@ class AnomalyType(models.TextChoices):
     CHALLENGE_FARM = "challenge_farm", _("Challenge farm")
     UNSOLVED_CHALLENGE = "unsolved_challenge", _("Unsolved challenge")
     CLOUD_SPRAY = "cloud_spray", _("Cloud spray")
+
+
+class RequestLogSource(models.TextChoices):
+    """How a RequestLog row was created (#32).
+
+    ``MIDDLEWARE`` is the DB default so every existing and future
+    middleware-written row is correctly tagged without middleware.py having
+    to pass ``source`` explicitly. ``NGINX_LOG`` is set only by the
+    ``parse_access_log`` ingestion path, which infers a verdict from the
+    nginx status code rather than observing a real WAF decision.
+    """
+
+    MIDDLEWARE = "middleware", _("Middleware")
+    NGINX_LOG = "nginx_log", _("Nginx access log")

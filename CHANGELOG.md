@@ -7,6 +7,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-01
+
+The P2/P3 hardening pass from the 2026-08-01 issue triage: six defects and
+hardening items across client-IP resolution, rule matching, log ingestion,
+the threat feed, and the nginx export path. All 1028 tests pass.
+
+### Fixed
+
+- **Client IP was resolved from an unverified `X-Forwarded-For`, and three
+  subsystems disagreed on the client IP (#29).** With
+  `DJANGO_WAF_TRUST_X_FORWARDED_FOR` on, the middleware took the leftmost
+  (fully client-controlled) `X-Forwarded-For` value without confirming the
+  direct peer was a trusted proxy, so a client could choose its own
+  block/rate-limit identity; separately, the middleware, the views, and the
+  form defences each resolved the IP differently, so behind a proxy every
+  form submission bound to the proxy IP. A single resolver
+  (`django_waf.services.client_ip.resolve_client_ip`) now backs all three.
+  It honours `X-Forwarded-For` only when `REMOTE_ADDR` is inside a configured
+  `DJANGO_WAF_TRUSTED_PROXIES` CIDR, walking the header right-to-left and
+  returning the first hop that is not itself a trusted proxy, and validates
+  every candidate with `ipaddress`. The legacy leftmost behaviour survives
+  only when no trusted proxies are configured, and now logs a warning on
+  every use.
+- **Rule matching recompiled regexes per request and never used its own
+  compiled cache, and no entry point validated patterns (#28).** The UA regex
+  path re-ran `re.search` on the raw pattern string on every request while the
+  precompiled `ua_regex_set` cache went unused. Matching now uses a
+  process-lifetime compiled cache. Patterns are validated at write time by
+  `django_waf.services.pattern_validation.validate_ua_regex_pattern`, which
+  rejects empty, over-length, non-compiling, and catastrophic-backtracking
+  (nested-quantifier) patterns; it is called from the admin forms, the
+  threat-feed importer (#33), and now `BlockRule.clean()`/`AllowRule.clean()`
+  so a ReDoS-prone pattern is rejected regardless of how the rule is created.
+  The validator is a static heuristic, not a formal safety proof (no RE2
+  dependency added).
+- **WAF decision events and parsed nginx access-log lines shared `RequestLog`
+  with no way to tell them apart, double-counting and losing data (#32).**
+  `RequestLog` gains a `source` field (`middleware` by default, so existing
+  and middleware-written rows are correctly tagged without a middleware
+  change) and a `source_event_id`; a partial unique constraint on
+  `(source, source_event_id)` for `nginx_log` rows makes re-ingestion
+  idempotent, so `bulk_create(ignore_conflicts=True)` finally deduplicates.
+  The log parser now stores the real log-line timestamp instead of discarding
+  it and stamping `now()`, and detects file rotation/truncation (size below
+  the stored offset resets to zero) with a warning when no offset is cached.
+  `detect_unsolved_challenges` scopes its verdict count to middleware rows so
+  status-code-inferred nginx rows no longer distort it. (Offset storage
+  remains cache-backed; a cache eviction triggers a safe, deduplicated
+  re-read rather than lost or double-counted rows.)
+- **`django_waf_detect_anomalies --dry-run` actually created and activated
+  rules (#38).** The command dropped the flag and always ran the real
+  detectors. `run_all_detectors` and every detector now accept `dry_run`;
+  in dry-run the auto-rule path performs no database writes and emits no
+  signal, and the command prints what it would have created.
+- **Threat-feed entries were minimally validated, letting a bad or compromised
+  feed corrupt local rules (#33).** `sync_feed()` now validates each entry
+  before importing it, and skips (logs + counts) rather than acting on a bad
+  one: a non-numeric `confidence` no longer aborts the whole sync with an
+  uncaught `ValueError`; `rule_type`, `match_type`, and `action` must be in a
+  known whitelist, so an unrecognised `action` is skipped rather than
+  silently falling through to the rule engine's default-BLOCKED behaviour;
+  regex/UA patterns are checked against
+  `django_waf.services.pattern_validation.validate_ua_regex_pattern` (#28)
+  where available, with a defensive local fallback otherwise. A feed-sourced
+  `kind: "allow"` entry must now carry `verify_rdns: true` with a non-empty
+  `rdns_pattern` or it is skipped outright (a compromised feed can no longer
+  strip the rDNS safeguard off its own allow rules), and a newly-created
+  feed allow rule is quarantined (`is_active=False`) pending operator review
+  by default (`DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES=True`); an operator's
+  manual approval survives later syncs.
+- **The nginx blocklist generator was repositioned as an export utility with
+  a complete enforcement contract (#31).** Previously the generated file
+  declared `map`/`geo` variables that nothing consumed, block and throttle
+  rules wrote identical output, and a syntactically broken candidate file
+  could be activated and survive on disk as a reload timebomb. The generator
+  now writes block and throttle rules to distinct variables
+  (`$waf_block_ip`/`$waf_block_ua` vs `$waf_throttle_ip`/`$waf_throttle_ua`),
+  ships a reference `http{}`-scope include and per-`location{}` enforcement
+  snippet as package data under `django_waf/conf/nginx/` (based on the config
+  shape proven in production), and validates the candidate with `nginx -t`
+  (or `DJANGO_WAF_NGINX_TEST_COMMAND`) before leaving it active. A failed
+  validation restores the previous file automatically
+  (`DJANGO_WAF_NGINX_VALIDATE`, default `True`; skips gracefully when no
+  local nginx binary is available). README.md's nginx Integration section is
+  rewritten to state plainly that django-waf generates configuration and
+  reloads nginx, but the operator wires enforcement.
+
+### Added
+
+- `DJANGO_WAF_TRUSTED_PROXIES` (list of CIDR strings, default empty): the
+  hardened replacement for `DJANGO_WAF_TRUST_X_FORWARDED_FOR` (#29).
+- `DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES` (bool, default `True`): import
+  feed-sourced allow rules inactive, pending operator review (#33).
+- `DJANGO_WAF_NGINX_VALIDATE` (bool, default `True`) and
+  `DJANGO_WAF_NGINX_TEST_COMMAND` (list, default `["nginx", "-t"]`):
+  validate a generated blocklist before activating it, with automatic
+  rollback on failure (#31).
+- Reference nginx configuration shipped as package data under
+  `django_waf/conf/nginx/` (the `http{}` include and the enforcement
+  snippet) (#31).
+
+### Changed
+
+- `RequestLog` gains `source` and `source_event_id` fields and a partial
+  unique constraint for deduplicating ingested nginx-log rows (migration
+  `0004`) (#32).
+- `run_all_detectors` and every anomaly detector accept a `dry_run` keyword
+  (#38).
+
 ## [1.6.0] - 2026-08-01
 
 A defect wave from the 2026-08-01 issue triage. Each of these was latent since

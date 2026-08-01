@@ -372,6 +372,52 @@ class TestRequestLog:
         assert log.anomaly_score is None
         assert log.country_code == ""
 
+    def test_source_defaults_to_middleware(self, db):
+        """source defaults to 'middleware' so existing/untagged writes are correctly tagged (#32)."""
+        from django_waf.enums import RequestLogSource
+
+        log = RequestLog.objects.create(
+            timestamp=timezone.now(),
+            ip_address="3.3.3.3",
+            path="/",
+            verdict=Verdict.ALLOWED,
+        )
+
+        assert log.source == RequestLogSource.MIDDLEWARE
+        assert log.source_event_id == ""
+
+    def test_manager_from_middleware_excludes_nginx_log_rows(self, db):
+        """RequestLogManager.from_middleware() excludes source='nginx_log' rows (#32)."""
+        from django_waf.enums import RequestLogSource
+
+        middleware_row = RequestLogFactory(source=RequestLogSource.MIDDLEWARE)
+        RequestLogFactory(source=RequestLogSource.NGINX_LOG, source_event_id="evt-1")
+
+        qs = RequestLog.objects.from_middleware()
+
+        assert qs.count() == 1
+        assert qs.first().pk == middleware_row.pk
+
+    def test_nginx_log_rows_with_same_event_id_are_unique_constrained(self, db):
+        """The partial unique constraint rejects a second nginx_log row with the same event id (#32)."""
+        from django.db import IntegrityError
+
+        from django_waf.enums import RequestLogSource
+
+        RequestLogFactory(source=RequestLogSource.NGINX_LOG, source_event_id="dup-event")
+
+        with pytest.raises(IntegrityError):
+            RequestLogFactory(source=RequestLogSource.NGINX_LOG, source_event_id="dup-event")
+
+    def test_middleware_rows_with_blank_event_id_are_not_constrained(self, db):
+        """Middleware rows (blank source_event_id) never collide against the nginx dedup constraint (#32)."""
+        from django_waf.enums import RequestLogSource
+
+        RequestLogFactory(source=RequestLogSource.MIDDLEWARE)
+        RequestLogFactory(source=RequestLogSource.MIDDLEWARE)
+
+        assert RequestLog.objects.filter(source=RequestLogSource.MIDDLEWARE).count() == 2
+
 
 # ---------------------------------------------------------------------------
 # IPReputation

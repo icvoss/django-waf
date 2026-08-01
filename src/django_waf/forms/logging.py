@@ -23,7 +23,11 @@ logger = logging.getLogger("django_waf.forms")
 
 
 def _extract_ip(request) -> str:
-    return request.META.get("REMOTE_ADDR", "") if request else ""
+    if request is None:
+        return ""
+    from django_waf.services.client_ip import resolve_client_ip
+
+    return resolve_client_ip(request)
 
 
 def _extract_user_id(request) -> str | None:

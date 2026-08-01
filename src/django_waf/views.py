@@ -64,19 +64,14 @@ class NoIndexResponseMixin:
 def _get_ip(request: HttpRequest) -> str:
     """Extract the client IP address from the request.
 
-    Respects DJANGO_WAF_TRUST_X_FORWARDED_FOR — uses the first IP in the
-    X-Forwarded-For chain when trusted, otherwise falls back to REMOTE_ADDR.
-    Returns ``0.0.0.0`` as a last resort to avoid NULL constraint violations
-    on ChallengeToken.ip_address.
+    Thin wrapper over ``django_waf.services.client_ip.resolve_client_ip``
+    (#29) — see that function for the full trusted-proxy resolution
+    behaviour. Returns ``0.0.0.0`` as a last resort to avoid NULL
+    constraint violations on ChallengeToken.ip_address.
     """
-    from django_waf import conf
+    from django_waf.services.client_ip import resolve_client_ip
 
-    if conf.DJANGO_WAF_TRUST_X_FORWARDED_FOR:
-        forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
-        if forwarded_for:
-            return forwarded_for.split(",")[0].strip()
-
-    return request.META.get("REMOTE_ADDR", "") or "0.0.0.0"
+    return resolve_client_ip(request) or "0.0.0.0"
 
 
 def _get_redis_client():

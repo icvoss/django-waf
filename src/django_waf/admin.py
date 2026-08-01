@@ -1,5 +1,6 @@
 """Admin registrations for django-waf models."""
 
+from django import forms
 from django.contrib import admin
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -11,6 +12,57 @@ from django_waf.models import (
     IPReputation,
     RequestLog,
 )
+from django_waf.services.pattern_validation import (
+    PatternValidationError,
+    validate_ua_regex_pattern,
+)
+
+# ---------------------------------------------------------------------------
+# Pattern validation (#28)
+# ---------------------------------------------------------------------------
+# Shared by BlockRuleAdminForm and AllowRuleAdminForm — a UA rule saved
+# with rule_type="ua" and match_type="regex" is validated at write time so
+# a catastrophic-backtracking pattern (or one that simply doesn't compile)
+# is rejected visibly in the admin, rather than being stored and only
+# discovered when it starts pinning a worker process at 100% CPU against
+# live traffic.
+
+
+class RuleAdminFormMixin:
+    """Validate the ``pattern`` field for UA regex rules at write time.
+
+    Applies to any ``ModelForm`` whose model has ``rule_type``,
+    ``match_type``, and ``pattern`` fields — both ``BlockRule`` and
+    ``AllowRule`` share this shape. Only ``rule_type="ua"`` combined with
+    ``match_type="regex"`` is checked; other rule/match type combinations
+    (IP, CIDR, exact, contains) have no ReDoS surface and are left alone.
+    """
+
+    def clean_pattern(self):
+        pattern = self.cleaned_data.get("pattern", "")
+        rule_type = self.cleaned_data.get("rule_type") or self.data.get("rule_type")
+        match_type = self.cleaned_data.get("match_type") or self.data.get("match_type")
+
+        if rule_type == "ua" and match_type == "regex":
+            try:
+                validate_ua_regex_pattern(pattern)
+            except PatternValidationError as exc:
+                raise forms.ValidationError(str(exc)) from exc
+
+        return pattern
+
+
+class BlockRuleAdminForm(RuleAdminFormMixin, forms.ModelForm):
+    class Meta:
+        model = BlockRule
+        fields = "__all__"
+
+
+class AllowRuleAdminForm(RuleAdminFormMixin, forms.ModelForm):
+    class Meta:
+        model = AllowRule
+        fields = "__all__"
+
 
 # ---------------------------------------------------------------------------
 # Admin actions
@@ -61,6 +113,7 @@ def extend_expiry(modeladmin, request, queryset):
 
 @admin.register(BlockRule)
 class BlockRuleAdmin(admin.ModelAdmin):
+    form = BlockRuleAdminForm
     list_display = [
         "name",
         "rule_type",
@@ -132,6 +185,7 @@ class BlockRuleAdmin(admin.ModelAdmin):
 
 @admin.register(AllowRule)
 class AllowRuleAdmin(admin.ModelAdmin):
+    form = AllowRuleAdminForm
     list_display = [
         "name",
         "rule_type",

@@ -2217,7 +2217,13 @@ class TestSyncFeed:
         """Re-syncing identical allow feed is idempotent: AllowRule count stable.
 
         Verifies the update_or_create keying on (source, rule_type, pattern).
+        Per #33, a feed allow entry must carry verify_rdns=True with a
+        non-empty rdns_pattern or it is skipped, so this fixture now supplies
+        both. The created rule is quarantined (is_active=False) by default
+        (DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES), which idempotency is
+        unaffected by.
         """
+        from django_waf.models import AllowRule
         from django_waf.services.threat_feed import sync_feed
 
         feed_payload = [
@@ -2226,7 +2232,8 @@ class TestSyncFeed:
                 "rule_type": "ua",
                 "pattern": "IdempotentBot",
                 "match_type": "contains",
-                "verify_rdns": False,
+                "verify_rdns": True,
+                "rdns_pattern": r"\.idempotentbot\.example$",
                 "confidence": 0.95,
             }
         ]
@@ -2244,11 +2251,14 @@ class TestSyncFeed:
         assert result1["updated"] == 0
         assert result2["created"] == 0
         assert result2["updated"] == 1
+        assert AllowRule.objects.filter(pattern="IdempotentBot").count() == 1
 
     def test_block_and_allow_same_pattern_do_not_interfere(self, db):
         """Block and allow entries with same (rule_type, pattern) coexist.
 
         Verifies separate tracking in seen_block_keys and seen_allow_keys.
+        Per #33, the allow entry carries verify_rdns=True and rdns_pattern
+        so it is not skipped by the rDNS-required-for-allow constraint.
         """
         from django_waf.models import AllowRule, BlockRule
         from django_waf.services.threat_feed import sync_feed
@@ -2267,7 +2277,8 @@ class TestSyncFeed:
                 "rule_type": "ua",
                 "pattern": "DualBot",
                 "match_type": "contains",
-                "verify_rdns": False,
+                "verify_rdns": True,
+                "rdns_pattern": r"\.dualbot\.example$",
                 "confidence": 0.9,
             },
         ]

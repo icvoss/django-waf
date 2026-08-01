@@ -547,3 +547,44 @@ DJANGO_WAF_CELERY_BEAT_SCHEDULE: dict = getattr(
     "DJANGO_WAF_CELERY_BEAT_SCHEDULE",
     {**_CELERY_BEAT_INTERVAL_ENTRIES, **_CELERY_BEAT_CRON_ENTRIES},
 )
+
+# ---------------------------------------------------------------------------
+# Client IP resolution (#29)
+# ---------------------------------------------------------------------------
+# See django_waf.services.client_ip for the resolver these settings feed.
+
+# CIDR strings identifying reverse proxies allowed to set X-Forwarded-For.
+# When REMOTE_ADDR falls inside one of these ranges, the resolver honours
+# X-Forwarded-For by walking it right-to-left and returning the first hop
+# that is not itself a trusted proxy. Empty by default: with no trusted
+# proxies configured, DJANGO_WAF_TRUST_X_FORWARDED_FOR (legacy, spoofable)
+# governs whether the header is honoured at all. This is the hardened
+# replacement for that setting and should be preferred in any deployment
+# that sits behind a known reverse-proxy layer (e.g. ["10.0.0.0/8"] for an
+# internal load balancer, or the exact /32 of a single fronting proxy).
+DJANGO_WAF_TRUSTED_PROXIES: list[str] = getattr(settings, "DJANGO_WAF_TRUSTED_PROXIES", [])
+
+# ---------------------------------------------------------------------------
+# Threat-feed import constraints (#33)
+# ---------------------------------------------------------------------------
+# When True (the default), an allow rule created from the threat feed is
+# imported inactive (is_active=False), so a compromised or mistaken feed
+# cannot open an exemption without an operator confirming it. Set False only
+# if you fully trust the feed source to publish allow rules.
+DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES: bool = getattr(settings, "DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES", True)
+
+# ---------------------------------------------------------------------------
+# nginx blocklist export validation (#31)
+# ---------------------------------------------------------------------------
+# When True (the default), a freshly generated blocklist is validated with
+# DJANGO_WAF_NGINX_TEST_COMMAND before the reload is signalled. On failure
+# the previous known-good file is restored and no reload happens, so a bad
+# generated file cannot break a later full nginx restart. If the nginx
+# binary is absent the validation step is skipped gracefully. Set False to
+# restore the pre-1.7.0 write-then-reload behaviour without validation.
+DJANGO_WAF_NGINX_VALIDATE: bool = getattr(settings, "DJANGO_WAF_NGINX_VALIDATE", True)
+
+# The command run to validate the candidate configuration. Defaults to a
+# plain syntax check; override if nginx is not on PATH or needs a specific
+# prefix (e.g. ["sudo", "nginx", "-t"]).
+DJANGO_WAF_NGINX_TEST_COMMAND: list[str] = getattr(settings, "DJANGO_WAF_NGINX_TEST_COMMAND", ["nginx", "-t"])

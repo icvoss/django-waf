@@ -175,9 +175,10 @@ def _try_replay(request, *, form_id: str):
         fetch_from_session,
         verify_replay_token,
     )
+    from django_waf.services.client_ip import resolve_client_ip
 
     raw_token = request.GET.get("form_replay", "")
-    current_ip = request.META.get("REMOTE_ADDR", "")
+    current_ip = resolve_client_ip(request)
     payload = verify_replay_token(raw_token, current_ip=current_ip)
     if payload is None or payload.get("form_id") != form_id:
         return None
@@ -217,12 +218,13 @@ def _maybe_redirect_to_challenge(*, request, form_id: str, result):
 
     from django_waf import conf
     from django_waf.forms.services.replay import issue_replay_token, store_in_session
+    from django_waf.services.client_ip import resolve_client_ip
 
     if not conf.DJANGO_WAF_FORM_CHALLENGE_ON_FLAG:
         return None
 
     post_url = request.path
-    ip = request.META.get("REMOTE_ADDR", "")
+    ip = resolve_client_ip(request)
 
     # Scalarise so the stored session record contains plain strings,
     # not QueryDict-style list values. The QueryDict reconstruction
