@@ -288,6 +288,14 @@ def evaluate_request(
     7. Rate limits
     8. UA anomaly score (if IP has >10 recent requests)
 
+    Every point below that would return a CHALLENGED verdict (a rule-driven
+    BlockRule challenge, the no-referer challenge, or a score-driven
+    challenge) is routed through ``_gate_challenge_or_escalate`` first (#27).
+    Without that gate, an IP that keeps ignoring challenges never revisits
+    the threshold check that would otherwise auto-block it, because each
+    new request returns its own challenge verdict before evaluation ever
+    reaches the old end-of-function escalation check.
+
     Args:
         ip_address: Client IP address string.
         user_agent: Raw User-Agent header string.
@@ -347,13 +355,16 @@ def evaluate_request(
         matched_id, rule = block_result
         action = rule["action"]
         verdict = _action_to_verdict(action)
-        return EvaluationResult(
+        block_eval_result = EvaluationResult(
             verdict=verdict,
             action=action,
             matched_rule_id=UUID(matched_id),
             matched_rule_type="block",
             anomaly_score=None,
         )
+        if verdict == Verdict.CHALLENGED:
+            return _gate_challenge_or_escalate(ip_address, redis_client, block_eval_result)
+        return block_eval_result
 
     # Step 7: Rate limits
     rate_result = check_rate_limit(ip_address, redis_client, path=path)
@@ -370,12 +381,16 @@ def evaluate_request(
     if conf.DJANGO_WAF_CHALLENGE_NO_REFERER and not referer:
         exempt = any(path == p or path.startswith(p) for p in conf.DJANGO_WAF_NO_REFERER_EXEMPT_PATHS)
         if not exempt:
-            return EvaluationResult(
-                verdict=Verdict.CHALLENGED,
-                action=RuleAction.CHALLENGE,
-                matched_rule_id=None,
-                matched_rule_type="",
-                anomaly_score=None,
+            return _gate_challenge_or_escalate(
+                ip_address,
+                redis_client,
+                EvaluationResult(
+                    verdict=Verdict.CHALLENGED,
+                    action=RuleAction.CHALLENGE,
+                    matched_rule_id=None,
+                    matched_rule_type="",
+                    anomaly_score=None,
+                ),
             )
 
     # Step 9: Path scoring — always evaluated (no volume threshold).
@@ -405,39 +420,24 @@ def evaluate_request(
     total_score = ua_score + path_score + fp_score
     if total_score > 0:
         verdict, action = _score_to_verdict(total_score)
-        if verdict != Verdict.ALLOWED:
-            return EvaluationResult(
-                verdict=verdict,
-                action=action,
-                matched_rule_id=None,
-                matched_rule_type="",
-                anomaly_score=total_score,
+        if verdict == Verdict.CHALLENGED:
+            return _gate_challenge_or_escalate(
+                ip_address,
+                redis_client,
+                EvaluationResult(
+                    verdict=verdict,
+                    action=action,
+                    matched_rule_id=None,
+                    matched_rule_type="",
+                    anomaly_score=total_score,
+                ),
             )
         return EvaluationResult(
-            verdict=Verdict.ALLOWED,
-            action=None,
+            verdict=verdict,
+            action=action,
             matched_rule_id=None,
             matched_rule_type="",
             anomaly_score=total_score,
-        )
-
-    # Step 10: Challenge escalation — auto-block IPs that ignore challenges.
-    # Creates a persistent auto BlockRule + Redis fast-path with configurable TTL.
-    challenged_count = _get_unsolved_challenge_count(ip_address, redis_client)
-    if challenged_count >= conf.DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD:
-        escalation_rule = _create_escalation_rule(ip_address)
-        record_block_verdict(
-            ip_address,
-            redis_client,
-            ttl=conf.DJANGO_WAF_ESCALATION_BLOCK_TTL,
-            rule_id=str(escalation_rule.id) if escalation_rule else None,
-        )
-        return EvaluationResult(
-            verdict=Verdict.BLOCKED,
-            action=RuleAction.BLOCK,
-            matched_rule_id=None,
-            matched_rule_type="",
-            anomaly_score=None,
         )
 
     return EvaluationResult(
@@ -672,6 +672,61 @@ def _score_path(path: str) -> float:
         except re.error:
             continue
     return score
+
+
+def _gate_challenge_or_escalate(
+    ip_address: str,
+    redis_client,
+    challenge_result: EvaluationResult,
+) -> EvaluationResult:
+    """Single escalation gate — called before returning ANY challenge verdict.
+
+    Fixes #27: evaluate_request has three places that can produce a
+    CHALLENGED verdict (a rule-driven BlockRule challenge, the no-referer
+    challenge, and a score-driven challenge). The escalation check used to
+    live only at the very end of evaluate_request, after all three of
+    those early returns — so a repeatedly-challenged IP never reached it
+    and auto-block-on-ignored-challenges was dead code. Routing every
+    challenge verdict through this one gate first makes escalation reachable
+    regardless of which path produced the challenge.
+
+    If the IP's unsolved-challenge count has reached
+    DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD, creates (or reuses) a
+    persistent auto BlockRule and returns a BLOCKED verdict referencing it
+    instead of the challenge verdict. Otherwise returns challenge_result
+    unchanged.
+
+    Args:
+        ip_address: Client IP address string.
+        redis_client: Configured Redis client instance.
+        challenge_result: The CHALLENGED EvaluationResult that would
+            otherwise be returned.
+
+    Returns:
+        A BLOCKED EvaluationResult when escalation triggers, else
+        challenge_result unchanged.
+    """
+    from django_waf import conf
+    from django_waf.enums import RuleAction, Verdict
+
+    challenged_count = _get_unsolved_challenge_count(ip_address, redis_client)
+    if challenged_count < conf.DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD:
+        return challenge_result
+
+    escalation_rule = _create_escalation_rule(ip_address)
+    record_block_verdict(
+        ip_address,
+        redis_client,
+        ttl=conf.DJANGO_WAF_ESCALATION_BLOCK_TTL,
+        rule_id=str(escalation_rule.id) if escalation_rule else None,
+    )
+    return EvaluationResult(
+        verdict=Verdict.BLOCKED,
+        action=RuleAction.BLOCK,
+        matched_rule_id=None,
+        matched_rule_type="",
+        anomaly_score=None,
+    )
 
 
 def _get_unsolved_challenge_count(ip_address: str, redis_client) -> int:
