@@ -159,9 +159,9 @@ def _activate_candidate(tmp_path: str, dest: str) -> None:
     here" and logged, not as a validation failure, the candidate is
     activated exactly as if validation were disabled.
     """
-    from django_waf import conf
+    from django.conf import settings
 
-    validate = conf.DJANGO_WAF_NGINX_VALIDATE
+    validate = getattr(settings, "DJANGO_WAF_NGINX_VALIDATE", True)
 
     if not validate:
         os.rename(tmp_path, dest)
@@ -204,9 +204,9 @@ def _validate_nginx_config() -> bool | None:
         attempted at all (test command binary not on PATH), callers must
         treat None as "skip", not as a failure.
     """
-    from django_waf import conf
+    from django.conf import settings
 
-    command = conf.DJANGO_WAF_NGINX_TEST_COMMAND
+    command = getattr(settings, "DJANGO_WAF_NGINX_TEST_COMMAND", ["nginx", "-t"])
 
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=10)

@@ -87,6 +87,12 @@ DJANGO_WAF_ENABLED = True
 DJANGO_WAF_FEED_ENABLED = False  # Never hit the real feed in tests
 DJANGO_WAF_FEED_REPORT = False  # Never report to the feed in tests
 DJANGO_WAF_LOG_SAMPLE_RATE = 1.0  # Log everything in tests
+# Never run the real `nginx -t` in tests. On a runner where an nginx binary
+# exists (CI), validation would actually execute and fail as a non-root user
+# (cannot open /run/nginx.pid), rolling the generated file away underneath
+# any test that reads it. Tests covering the validation/rollback behaviour
+# itself set this True explicitly and mock the validator (#31).
+DJANGO_WAF_NGINX_VALIDATE = False
 
 # Enabled at urlconf-import time so waf/api/ routes exist for tests/test_api.py.
 # Individual tests exercise the disabled (503) path by patching
