@@ -104,6 +104,7 @@ class TestBlockRuleAdminFormPatternValidation:
             "is_active": "on",
             "source": "admin",
             "confidence": "1.00",
+            "hit_count": "0",
             "feed_reporters": "0",
             "notes": "",
         }
