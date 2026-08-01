@@ -41,8 +41,9 @@ class SignupVelocityDefence:
 
     def evaluate(self, ctx: EvaluateContext) -> Outcome:
         from django_waf import conf
+        from django_waf.services.client_ip import resolve_client_ip
 
-        ip = ctx.request.META.get("REMOTE_ADDR", "") if ctx.request else ""
+        ip = resolve_client_ip(ctx.request) if ctx.request else ""
         if not ip:
             return passed()
 

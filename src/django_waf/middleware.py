@@ -466,18 +466,14 @@ def _classify_fingerprint(request) -> str:
 def _extract_ip(request) -> str:
     """Extract the client IP address from the request.
 
-    If DJANGO_WAF_TRUST_X_FORWARDED_FOR is True and the header is present, use the
-    first IP in the X-Forwarded-For chain. Otherwise use REMOTE_ADDR.
+    Thin wrapper over ``django_waf.services.client_ip.resolve_client_ip``
+    (#29), kept so existing call sites within this module don't need to
+    change. See that function for the full trusted-proxy resolution
+    behaviour.
     """
-    from django_waf import conf
+    from django_waf.services.client_ip import resolve_client_ip
 
-    if conf.DJANGO_WAF_TRUST_X_FORWARDED_FOR:
-        forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
-        if forwarded_for:
-            # Take the first (leftmost) IP — the original client
-            return forwarded_for.split(",")[0].strip()
-
-    return request.META.get("REMOTE_ADDR", "")
+    return resolve_client_ip(request)
 
 
 def _is_exempt_host(request, exempt_hosts) -> bool:

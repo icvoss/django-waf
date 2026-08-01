@@ -547,3 +547,19 @@ DJANGO_WAF_CELERY_BEAT_SCHEDULE: dict = getattr(
     "DJANGO_WAF_CELERY_BEAT_SCHEDULE",
     {**_CELERY_BEAT_INTERVAL_ENTRIES, **_CELERY_BEAT_CRON_ENTRIES},
 )
+
+# ---------------------------------------------------------------------------
+# Client IP resolution (#29)
+# ---------------------------------------------------------------------------
+# See django_waf.services.client_ip for the resolver these settings feed.
+
+# CIDR strings identifying reverse proxies allowed to set X-Forwarded-For.
+# When REMOTE_ADDR falls inside one of these ranges, the resolver honours
+# X-Forwarded-For by walking it right-to-left and returning the first hop
+# that is not itself a trusted proxy. Empty by default: with no trusted
+# proxies configured, DJANGO_WAF_TRUST_X_FORWARDED_FOR (legacy, spoofable)
+# governs whether the header is honoured at all. This is the hardened
+# replacement for that setting and should be preferred in any deployment
+# that sits behind a known reverse-proxy layer (e.g. ["10.0.0.0/8"] for an
+# internal load balancer, or the exact /32 of a single fronting proxy).
+DJANGO_WAF_TRUSTED_PROXIES: list[str] = getattr(settings, "DJANGO_WAF_TRUSTED_PROXIES", [])
