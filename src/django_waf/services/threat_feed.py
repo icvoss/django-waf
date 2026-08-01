@@ -19,6 +19,92 @@ logger = logging.getLogger("django_waf.threat_feed")
 
 _INSTALL_ID_SETTING = "DJANGO_WAF_INSTALL_ID"
 
+# Whitelisted values for feed-supplied rule dimensions (#33). A feed entry
+# outside these sets is skipped rather than stored verbatim: an unrecognised
+# action must never silently fall through to BLOCKED at evaluation time
+# (rule_engine.py), and an unrecognised rule_type/match_type must never be
+# persisted only to be inert at match time.
+_KNOWN_RULE_TYPES = {"ip", "cidr", "ua", "composite"}
+_KNOWN_MATCH_TYPES = {"exact", "regex", "contains", "cidr"}
+_KNOWN_ACTIONS = {"block", "challenge", "throttle", "log_only"}
+
+# Feed entry validation counters. Exposed on the sync_feed() result dict as
+# "skipped" (see the function body); this constant only names the guard
+# checks for readability at the call sites below.
+_MAX_PATTERN_LENGTH = 512
+
+
+def _validate_confidence(entry: dict) -> float | None:
+    """Parse and return the entry's confidence, or None if it does not parse.
+
+    A non-numeric confidence must skip only this entry (log + count), never
+    abort the whole sync with an uncaught ValueError (#33).
+    """
+    raw = entry.get("confidence", 0.0)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_pattern(pattern: str, match_type: str) -> bool:
+    """Return True if the pattern is safe to store and use for matching.
+
+    Delegates to django_waf.services.pattern_validation.validate_ua_regex_pattern
+    when available (issue #28, sibling work) — the attempted import is
+    ``from django_waf.services.pattern_validation import validate_ua_regex_pattern,
+    PatternValidationError``. That function raises PatternValidationError on an
+    unsafe pattern and returns None on success, rather than returning a bool,
+    so the call is wrapped accordingly. Falls back to a minimal local check
+    (length bound + a naive nested-quantifier rejection) so this module keeps
+    working standalone if that service is unavailable for any reason.
+    """
+    if not pattern or len(pattern) > _MAX_PATTERN_LENGTH:
+        return False
+
+    if match_type != "regex":
+        return True
+
+    try:
+        from django_waf.services.pattern_validation import (
+            PatternValidationError,
+            validate_ua_regex_pattern,
+        )
+    except ImportError:
+        return _fallback_validate_regex(pattern)
+
+    try:
+        validate_ua_regex_pattern(pattern)
+    except PatternValidationError:
+        return False
+    return True
+
+
+def _fallback_validate_regex(pattern: str) -> bool:
+    """Minimal standalone regex safety check used only if #28 is unavailable.
+
+    Rejects patterns with an obvious nested-quantifier shape (a classic ReDoS
+    construct, e.g. ``(a+)+``) and anything over the shared length bound.
+    Not a substitute for the real validator in pattern_validation.py — this
+    exists only so threat_feed.py has defensive behaviour before that module
+    lands.
+    """
+    import re
+
+    if len(pattern) > _MAX_PATTERN_LENGTH:
+        return False
+
+    nested_quantifier = re.compile(r"\([^)]*[+*][^)]*\)[+*]")
+    if nested_quantifier.search(pattern):
+        return False
+
+    try:
+        re.compile(pattern)
+    except re.error:
+        return False
+
+    return True
+
 
 # ---------------------------------------------------------------------------
 # Feed sync
@@ -44,6 +130,16 @@ def sync_feed(
     Rules absent from the feed are deactivated (BR-FEED-005).
     Emits feed_synced signal on completion.
 
+    Per-entry validation (#33): a bad entry is skipped and counted, never
+    raised. Confidence must parse as a float; rule_type, match_type, and
+    action must be in the known whitelists (an unrecognised action is
+    skipped, never silently treated as a block); a regex/UA pattern must
+    pass pattern_validation.validate_pattern (or the local fallback). A
+    feed-sourced allow entry is quarantined (created inactive) unless
+    DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES is False, and an allow entry must
+    carry verify_rdns=True with a non-empty rdns_pattern or it is skipped: a
+    feed must never be able to ship an unverified crawler allow.
+
     Args:
         feed_url: Override URL. Defaults to DJANGO_WAF_FEED_URL.
         min_confidence: Override confidence threshold. Defaults to DJANGO_WAF_FEED_MIN_CONFIDENCE.
@@ -53,6 +149,7 @@ def sync_feed(
         both block and allow entries).
     """
     import httpx
+    from django.conf import settings as dj_settings
 
     from django_waf import conf
     from django_waf.enums import RuleSource
@@ -60,6 +157,7 @@ def sync_feed(
 
     url = feed_url or conf.DJANGO_WAF_FEED_URL
     threshold = min_confidence if min_confidence is not None else conf.DJANGO_WAF_FEED_MIN_CONFIDENCE
+    quarantine_allow_rules = getattr(dj_settings, "DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES", True)
 
     # No Authorization header, by design. The feed is a public read: the
     # collective threat intel is servable to every install without a key, so
@@ -82,8 +180,17 @@ def sync_feed(
     seen_allow_keys: set[tuple[str, str]] = set()  # (rule_type, pattern)
 
     for entry in feed_entries:
-        confidence = float(entry.get("confidence", 0.0))
-        if confidence < threshold:
+        # A non-numeric confidence must skip only this entry, never abort
+        # the whole sync with an uncaught ValueError (#33).
+        confidence = _validate_confidence(entry)
+        if confidence is None:
+            logger.warning(
+                "django-waf: feed entry skipped — confidence does not parse as a float: %r",
+                entry.get("confidence"),
+            )
+            skipped += 1
+            continue
+        if confidence < threshold or confidence > 1.0:
             skipped += 1
             continue
 
@@ -93,8 +200,23 @@ def sync_feed(
             skipped += 1
             continue
 
+        if rule_type not in _KNOWN_RULE_TYPES:
+            logger.warning("django-waf: feed entry skipped — unknown rule_type %r", rule_type)
+            skipped += 1
+            continue
+
         kind = entry.get("kind", "block")
         match_type = entry.get("match_type", "exact")
+
+        if match_type not in _KNOWN_MATCH_TYPES:
+            logger.warning("django-waf: feed entry skipped — unknown match_type %r", match_type)
+            skipped += 1
+            continue
+
+        if not _validate_pattern(pattern, match_type):
+            logger.warning("django-waf: feed entry skipped — pattern failed safety validation: %r", pattern[:80])
+            skipped += 1
+            continue
 
         # expires_at from feed or 30 days from now (BR-FEED-005)
         feed_expires = entry.get("expires")
@@ -106,9 +228,38 @@ def sync_feed(
             expires_at = timezone.now() + timedelta(days=30)
 
         if kind == "allow":
-            seen_allow_keys.add((rule_type, pattern))
-            verify_rdns = bool(entry.get("verify_rdns", False))
+            # A feed cannot ship an unverified crawler allow (#33): force
+            # verify_rdns True and require a non-empty rdns_pattern, or skip
+            # the entry outright. This closes the path where a compromised
+            # feed strips the rDNS safeguard off its own allow rules by
+            # simply omitting or falsifying verify_rdns.
             rdns_pattern = entry.get("rdns_pattern", "")
+            if not entry.get("verify_rdns", False) or not rdns_pattern:
+                logger.warning(
+                    "django-waf: feed allow entry skipped — verify_rdns must be true with a "
+                    "non-empty rdns_pattern (rule_type=%r pattern=%r)",
+                    rule_type,
+                    pattern[:80],
+                )
+                skipped += 1
+                continue
+            verify_rdns = True
+
+            seen_allow_keys.add((rule_type, pattern))
+
+            # Quarantine (#33): a newly-created feed-sourced allow rule is
+            # never activated automatically; it is created with
+            # is_active=False, pending operator review, unless the operator
+            # has explicitly disabled quarantine via
+            # DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES. An update to an
+            # existing rule does not re-quarantine it: once an operator has
+            # reviewed and activated a quarantined rule, a later sync must
+            # not silently flip it back to inactive, or the approval step
+            # would be undone on every feed run. A first-class
+            # "pending_approval" field on AllowRule would be the fuller fix;
+            # is_active=False on create is the constraint available without
+            # touching models.py (out of scope for this change).
+            allow_is_active_on_create = not quarantine_allow_rules
 
             with transaction.atomic():
                 existing_allow = AllowRule.objects.filter(
@@ -123,8 +274,16 @@ def sync_feed(
                     existing_allow.rdns_pattern = rdns_pattern
                     existing_allow.expires_at = expires_at
                     existing_allow.confidence = confidence
-                    existing_allow.is_active = True
                     existing_allow.feed_reporters = entry.get("reporters", existing_allow.feed_reporters)
+                    if not quarantine_allow_rules:
+                        # Quarantine disabled: reappearing in the feed
+                        # reactivates the rule exactly as a BlockRule does
+                        # (BR-FEED contract, section 2.5). When quarantine is
+                        # enabled, is_active is left as the operator last set
+                        # it: a sync must never silently undo an operator's
+                        # approval, nor silently reactivate a rule the
+                        # operator deliberately left off.
+                        existing_allow.is_active = True
                     existing_allow.save()
                     updated += 1
                 else:
@@ -136,6 +295,7 @@ def sync_feed(
                         verify_rdns=verify_rdns,
                         rdns_pattern=rdns_pattern,
                         source=RuleSource.FEED,
+                        is_active=allow_is_active_on_create,
                         expires_at=expires_at,
                         confidence=confidence,
                         feed_reporters=entry.get("reporters", 0),
@@ -145,8 +305,17 @@ def sync_feed(
             continue
 
         # kind == "block" (or any unrecognised value, per section 2.8)
-        seen_block_keys.add((rule_type, pattern))
         action = entry.get("action", "block")
+        if action not in _KNOWN_ACTIONS:
+            # Unknown actions must never fall through to the rule engine's
+            # default-BLOCKED behaviour (rule_engine.py:598-604). Skip the
+            # entry instead of storing an action the engine cannot
+            # interpret safely.
+            logger.warning("django-waf: feed entry skipped — unknown action %r", action)
+            skipped += 1
+            continue
+
+        seen_block_keys.add((rule_type, pattern))
 
         with transaction.atomic():
             existing = BlockRule.objects.filter(
