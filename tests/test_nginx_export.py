@@ -4,27 +4,43 @@ Covers: block vs throttle variable separation, the shipped reference
 package-data files, nginx -t validation with last-known-good rollback, and
 that the atomic-write contract (BR-BL-002) still holds throughout.
 
-No local nginx binary is assumed to be present in the test environment;
-tests that need a specific nginx -t outcome mock subprocess.run directly,
-following the pattern used by TestReloadNginx in test_services.py.
+A local nginx binary may or may not be present in the test environment (CI
+runners often have one). Tests that assert on generated file content disable
+validation via DJANGO_WAF_NGINX_VALIDATE so the real nginx -t (which fails as
+a non-root user unable to open /run/nginx.pid) cannot roll the candidate away
+underneath them; tests that need a specific nginx -t outcome mock
+_validate_nginx_config or subprocess.run directly.
 """
 
 from __future__ import annotations
 
+import importlib
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from django_waf import conf as conf_mod
 from django_waf.testing.factories import BlockRuleFactory
 
 
+def _disable_nginx_validation(settings) -> None:
+    """Turn off nginx -t validation for content-only generator tests.
+
+    conf caches DJANGO_WAF_* at import, so the setting is mutated and the
+    module reloaded, matching the established pattern in test_api.py.
+    """
+    settings.DJANGO_WAF_NGINX_VALIDATE = False
+    importlib.reload(conf_mod)
+
+
 class TestBlockThrottleSeparation:
-    def test_throttle_rule_does_not_appear_in_block_variables(self, db, tmp_path):
+    def test_throttle_rule_does_not_appear_in_block_variables(self, db, tmp_path, settings):
         """A throttle rule is written only to $waf_throttle_*, never $waf_block_*."""
         from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
+        _disable_nginx_validation(settings)
         BlockRuleFactory(
             is_active=True,
             rule_type="ip",
@@ -43,10 +59,11 @@ class TestBlockThrottleSeparation:
         assert "203.0.113.9" not in block_section
         assert "203.0.113.9" in throttle_section
 
-    def test_block_rule_does_not_appear_in_throttle_variables(self, db, tmp_path):
+    def test_block_rule_does_not_appear_in_throttle_variables(self, db, tmp_path, settings):
         """A block rule is written only to $waf_block_*, never $waf_throttle_*."""
         from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
+        _disable_nginx_validation(settings)
         BlockRuleFactory(
             is_active=True,
             rule_type="ip",
@@ -65,10 +82,11 @@ class TestBlockThrottleSeparation:
         assert "198.51.100.7" in block_section
         assert "198.51.100.7" not in throttle_section
 
-    def test_ua_throttle_rule_separated_from_ua_block_variable(self, db, tmp_path):
+    def test_ua_throttle_rule_separated_from_ua_block_variable(self, db, tmp_path, settings):
         """UA rules follow the same block/throttle split as IP/CIDR rules."""
         from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
+        _disable_nginx_validation(settings)
         BlockRuleFactory(
             is_active=True,
             rule_type="ua",
@@ -99,10 +117,11 @@ class TestBlockThrottleSeparation:
         assert '"ThrottleBot/1.0"' in throttle_ua_section
         assert '"ThrottleBot/1.0"' not in block_ua_section
 
-    def test_all_four_variables_declared_even_when_empty(self, db, tmp_path):
+    def test_all_four_variables_declared_even_when_empty(self, db, tmp_path, settings):
         """All four variables are always declared, even with zero matching rules."""
         from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
+        _disable_nginx_validation(settings)
         output_file = str(tmp_path / "blocklist.conf")
         generate_nginx_blocklist(output_path=output_file)
 
