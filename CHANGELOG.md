@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Threat-feed entries were minimally validated, letting a bad or compromised
+  feed corrupt local rules (#33).** `sync_feed()` now validates each entry
+  before importing it, and skips (logs + counts) rather than acting on a bad
+  one: a non-numeric `confidence` no longer aborts the whole sync with an
+  uncaught `ValueError`; `rule_type`, `match_type`, and `action` must be in a
+  known whitelist, so an unrecognised `action` is skipped rather than
+  silently falling through to the rule engine's default-BLOCKED behaviour;
+  regex/UA patterns are checked against
+  `django_waf.services.pattern_validation.validate_ua_regex_pattern` (#28)
+  where available, with a defensive local fallback otherwise. A feed-sourced
+  `kind: "allow"` entry must now carry `verify_rdns: true` with a non-empty
+  `rdns_pattern` or it is skipped outright — a compromised feed can no longer
+  strip the rDNS safeguard off its own allow rules — and a newly-created
+  feed allow rule is quarantined (`is_active=False`) pending operator review
+  by default (`DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES=True`); an operator's
+  manual approval survives later syncs.
+- **The nginx blocklist generator was repositioned as an export utility with
+  a complete enforcement contract (#31).** Previously the generated file
+  declared `map`/`geo` variables that nothing consumed, block and throttle
+  rules wrote identical output, and a syntactically broken candidate file
+  could be activated and survive on disk as a reload timebomb. The generator
+  now writes block and throttle rules to distinct variables
+  (`$waf_block_ip`/`$waf_block_ua` vs `$waf_throttle_ip`/`$waf_throttle_ua`),
+  ships a reference `http{}`-scope include and per-`location{}` enforcement
+  snippet as package data under `django_waf/conf/nginx/` (based on the config
+  shape proven in production), and validates the candidate with `nginx -t`
+  (or `DJANGO_WAF_NGINX_TEST_COMMAND`) before leaving it active — a failed
+  validation restores the previous file automatically
+  (`DJANGO_WAF_NGINX_VALIDATE`, default `True`; skips gracefully when no
+  local nginx binary is available). README.md's nginx Integration section is
+  rewritten to state plainly that django-waf generates configuration and
+  reloads nginx, but the operator wires enforcement.
+
 ## [1.6.0] - 2026-08-01
 
 A defect wave from the 2026-08-01 issue triage. Each of these was latent since
