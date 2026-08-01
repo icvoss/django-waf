@@ -230,6 +230,7 @@ def detect_unsolved_challenges(
     from django_waf.enums import (
         AnomalyType,
         ChallengeStatus,
+        RequestLogSource,
         RuleAction,
         RuleType,
         Verdict,
@@ -238,11 +239,18 @@ def detect_unsolved_challenges(
 
     cutoff = timezone.now() - timedelta(minutes=window_minutes)
 
-    # Step 1: IPs with >= min_challenged challenged verdicts in window
+    # Step 1: IPs with >= min_challenged challenged verdicts in window.
+    # Scoped to source=middleware (#32): a nginx_log row's verdict is
+    # inferred from the access-log status code, not observed by
+    # rule_engine.evaluate_request. The nginx access log records the same
+    # request middleware already logged, so counting both would double the
+    # apparent challenged_count for every IP and distort this detector's
+    # threshold check.
     challenged_ips = (
         RequestLog.objects.filter(
             timestamp__gte=cutoff,
             verdict=Verdict.CHALLENGED,
+            source=RequestLogSource.MIDDLEWARE,
         )
         .values("ip_address")
         .annotate(challenged_count=Count("id"))

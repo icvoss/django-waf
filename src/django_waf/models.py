@@ -13,6 +13,7 @@ from django.utils.translation import gettext_lazy as _
 from django_waf.enums import (
     ChallengeStatus,
     MatchType,
+    RequestLogSource,
     RuleAction,
     RuleSource,
     RuleType,
@@ -349,6 +350,16 @@ class RequestLogManager(models.Manager):
         cutoff = timezone.now() - timezone.timedelta(days=days)
         return self.filter(timestamp__lt=cutoff)
 
+    def from_middleware(self) -> models.QuerySet:
+        """Return log entries carrying a real WAF verdict (source='middleware').
+
+        Excludes nginx_log rows, whose verdict is inferred from the access
+        log status code rather than observed by rule_engine.evaluate_request
+        (#32). Use this for aggregates where a status-code-inferred verdict
+        would distort the result.
+        """
+        return self.filter(source=RequestLogSource.MIDDLEWARE)
+
 
 class RequestLog(BaseModel):
     """
@@ -453,6 +464,31 @@ class RequestLog(BaseModel):
         blank=True,
         verbose_name=_("country code"),
     )
+    source = models.CharField(
+        max_length=20,
+        choices=RequestLogSource.choices,
+        default=RequestLogSource.MIDDLEWARE,
+        db_index=True,
+        verbose_name=_("source"),
+        help_text=_(
+            "Which pipeline wrote this row. 'middleware' rows carry a real WAF "
+            "verdict; 'nginx_log' rows have a verdict inferred from the access "
+            "log status code (#32). The default is 'middleware' so existing "
+            "and future middleware writes are correctly tagged without the "
+            "middleware needing to pass source explicitly."
+        ),
+    )
+    source_event_id = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        verbose_name=_("source event ID"),
+        help_text=_(
+            "Deterministic identity for a source event, used to dedupe "
+            "re-ingested nginx access-log lines (#32). Populated only for "
+            "source='nginx_log' rows; middleware rows leave this blank."
+        ),
+    )
 
     objects = RequestLogManager()
 
@@ -466,6 +502,18 @@ class RequestLog(BaseModel):
             models.Index(fields=["ip_address", "timestamp"], name="django_waf_rl_ip_ts_idx"),
             models.Index(fields=["verdict", "timestamp"], name="django_waf_rl_verdict_ts_idx"),
             models.Index(fields=["matched_rule_id"], name="django_waf_rl_rule_id_idx"),
+        ]
+        constraints = [
+            # Only nginx_log rows carry a populated source_event_id, so this
+            # constraint is scoped to that source: it lets bulk_create's
+            # ignore_conflicts=True actually dedupe re-ingested log lines
+            # without ever colliding on middleware rows, which always leave
+            # source_event_id blank (#32).
+            models.UniqueConstraint(
+                fields=["source", "source_event_id"],
+                condition=Q(source=RequestLogSource.NGINX_LOG) & ~Q(source_event_id=""),
+                name="django_waf_rl_nginx_event_uniq",
+            ),
         ]
 
     def __str__(self) -> str:

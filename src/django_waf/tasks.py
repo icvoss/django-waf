@@ -20,14 +20,18 @@ Scheduled tasks (Celery Beat):
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from celery import shared_task
 from django.utils import timezone
 
 logger = logging.getLogger("django_waf.tasks")
+
+# nginx's default log_format writes [dd/Mon/yyyy:HH:MM:SS +ZZZZ].
+_NGINX_LOG_TIME_FORMAT = "%d/%b/%Y:%H:%M:%S %z"
 
 
 @shared_task
@@ -77,6 +81,23 @@ def parse_access_log(log_path: str | None = None) -> dict:
     Uses file offset tracking to avoid re-parsing previously imported lines.
     The offset is persisted in the Django cache.
 
+    Rows created here are tagged ``source="nginx_log"`` with a deterministic
+    ``source_event_id`` (#32), so re-ingesting the same lines (e.g. after a
+    cache eviction forces a re-read from offset 0) collides against the
+    partial unique constraint and ``bulk_create(ignore_conflicts=True)``
+    silently skips the duplicates instead of creating them again.
+
+    Offset storage is cache-only (not yet a durable model row): if the cache
+    entry is evicted the file is re-read from the start. That re-read is safe
+    (thanks to the dedup constraint above), but not free — it costs a full
+    file scan and a bulk_create attempt for every previously-seen line, only
+    to have them silently discarded. A durable offset store is left for the
+    next pass. Rotation/truncation is detected without depending on the
+    cache's own durability: if the file's current size is smaller than the
+    stored offset, the log has rotated or been truncated underneath us, so
+    the stored offset is treated as invalid and reset to 0 rather than
+    silently skipping the file's live tail forever.
+
     Args:
         log_path: Override path. Defaults to DJANGO_WAF_ACCESS_LOG_PATH.
 
@@ -90,6 +111,7 @@ def parse_access_log(log_path: str | None = None) -> dict:
     from django.core.cache import cache
 
     from django_waf import conf
+    from django_waf.enums import RequestLogSource
     from django_waf.models import RequestLog
 
     path = log_path or conf.DJANGO_WAF_ACCESS_LOG_PATH
@@ -99,7 +121,19 @@ def parse_access_log(log_path: str | None = None) -> dict:
         logger.debug("django-waf: access log not found at %s — skipping parse", path)
         return {"parsed_lines": 0, "created_records": 0, "skipped_lines": 0}
 
-    stored_offset = cache.get(offset_key, 0)
+    stored_offset = cache.get(offset_key)
+    if stored_offset is None:
+        # No cached offset — either the first run, or the cache entry was
+        # evicted. Either way the whole file will be re-read from 0; that is
+        # only safe because of the dedup constraint on nginx_log rows, so
+        # surface it rather than let a silent full re-read go unnoticed.
+        logger.warning(
+            "django-waf: no cached offset for access log %s — re-reading from start "
+            "(safe due to source_event_id dedup, but re-scans the whole file)",
+            path,
+        )
+        stored_offset = 0
+
     parsed_lines = created_records = skipped_lines = 0
 
     # Combined log format pattern:
@@ -112,6 +146,20 @@ def parse_access_log(log_path: str | None = None) -> dict:
     records_to_create = []
 
     try:
+        file_size = os.path.getsize(path)
+        if file_size < stored_offset:
+            # The file is smaller than where we last stopped reading: it has
+            # been rotated or truncated underneath us. Resuming from the
+            # stale offset would either raise or silently skip the new
+            # tail, so reset to the start of the (new) file instead.
+            logger.warning(
+                "django-waf: access log %s appears rotated (size %d < stored offset %d) — resetting offset",
+                path,
+                file_size,
+                stored_offset,
+            )
+            stored_offset = 0
+
         with open(path, errors="replace") as fh:
             fh.seek(stored_offset)
             for line in fh:
@@ -122,21 +170,26 @@ def parse_access_log(log_path: str | None = None) -> dict:
                     continue
 
                 ip_address = match.group(1)
-                # timestamp_str = match.group(2)  # e.g. 23/Mar/2026:10:00:00 +0000
+                timestamp_str = match.group(2)  # e.g. 23/Mar/2026:10:00:00 +0000
                 method = match.group(3)[:16]
                 path_str = match.group(4)[:2048]
                 status_code = int(match.group(5))
                 user_agent = (match.group(6) or "")[:1024]
 
+                log_timestamp = _parse_nginx_timestamp(timestamp_str)
+                event_id = _build_source_event_id(ip_address, timestamp_str, method, path_str, status_code)
+
                 records_to_create.append(
                     RequestLog(
-                        timestamp=timezone.now(),
+                        timestamp=log_timestamp,
                         ip_address=ip_address,
                         user_agent=user_agent,
                         path=path_str,
                         method=method,
                         verdict=_infer_verdict_from_status(status_code, path_str),
                         response_code=status_code,
+                        source=RequestLogSource.NGINX_LOG,
+                        source_event_id=event_id,
                     )
                 )
 
@@ -510,6 +563,32 @@ def _infer_verdict_from_status(status_code: int, path: str) -> str:
     if status_code == 302 and "/waf/challenge" in path:
         return "challenged"
     return "allowed"
+
+
+def _parse_nginx_timestamp(timestamp_str: str) -> datetime:
+    """Parse an nginx combined-log timestamp into an aware datetime.
+
+    Falls back to the current time if the value cannot be parsed (a
+    malformed timestamp on an otherwise-matching line), so a single bad
+    line degrades gracefully rather than dropping the record (#32).
+    """
+    try:
+        return datetime.strptime(timestamp_str, _NGINX_LOG_TIME_FORMAT)
+    except ValueError:
+        logger.warning("django-waf: could not parse access log timestamp %r — using now()", timestamp_str)
+        return timezone.now()
+
+
+def _build_source_event_id(ip_address: str, timestamp_str: str, method: str, path: str, status_code: int) -> str:
+    """Build a deterministic event identity for a parsed access-log line.
+
+    Re-ingesting the same log line (e.g. after an offset reset) produces the
+    same id, so it collides against the partial unique constraint on
+    (source, source_event_id) and bulk_create(ignore_conflicts=True) skips
+    the duplicate rather than creating a second row (#32).
+    """
+    raw = f"{ip_address}|{timestamp_str}|{method}|{path}|{status_code}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:64]
 
 
 def _invalidate_rule_cache_redis() -> None:
