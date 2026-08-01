@@ -7,12 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-08-01
+
+A single opt-in feature closing the last item from the 2026-08-01 triage: the
+WAF can now recognise staff without depending on `AuthenticationMiddleware`
+order, dissolving the W004 tension. Off by default, so existing sites are
+unaffected. All 1058 tests pass.
+
 ### Added
 
 - **Signed trusted-user cookie so the staff bypass works before
   `AuthenticationMiddleware` (#23).** The staff/superuser rate-limit bypass
   (BR-RATE-003) read `request.user`, which is only populated once
-  `AuthenticationMiddleware` has run — so the bypass silently failed on any
+  `AuthenticationMiddleware` has run, so the bypass silently failed on any
   deployment that (correctly, for security-first ordering) placed
   `WafMiddleware` before auth, and `django_waf.W004` warned about the
   ordering with no fix beyond moving the WAF later, which trades away its
@@ -25,13 +32,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`django_waf.receivers.set_trusted_cookie_flag_on_login`, wired from
   `DjangoWafConfig.ready()`). `_is_staff_user` now checks this cookie
   first, falling back to `request.user` unchanged. When the feature is
-  enabled, `django_waf.W004` is no longer raised — the bypass no longer
-  depends on middleware order. A new setting,
-  `DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL` (default `"staff"`, or
-  `"authenticated"`), controls which logged-in users receive the cookie;
-  an invalid value is warned about by the new `django_waf.W006` check and
-  falls back to `"staff"`. Feature is off by default: existing sites see
-  no behaviour change. See `docs/DESIGN-trusted-user-cookie.md`.
+  enabled, `django_waf.W004` is no longer raised: the bypass no longer
+  depends on middleware order. The cookie is bound to the client IP via the
+  hardened `resolve_client_ip` resolver (#29) and carries a short TTL, so a
+  stolen cookie grants the bypass only briefly and only from the same
+  address.
+- `DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL` (default `"staff"`, or
+  `"authenticated"`): which logged-in users receive the cookie. An invalid
+  value is warned about by the new `django_waf.W006` system check and falls
+  back to `"staff"`.
+- `DJANGO_WAF_TRUSTED_COOKIE_TTL` (default `3600` seconds) and
+  `DJANGO_WAF_TRUSTED_COOKIE_DOMAIN` (default `None`, falling back to
+  `SESSION_COOKIE_DOMAIN`): the cookie's lifetime and cross-subdomain scope,
+  mirroring the site-password settings.
+
+### Changed
+
+- `django_waf.W004` (middleware ordering) is suppressed when
+  `DJANGO_WAF_TRUSTED_COOKIE_ENABLED` is `True`, and still raised as before
+  when the feature is off and the WAF sits before auth.
 
 ## [1.7.0] - 2026-08-01
 
@@ -332,10 +351,10 @@ rule expiry). All 929 tests pass.
   via the new `IsWafAdmin` permission), and read-only `RequestLogViewSet`
   (`?verdict=`, `?ip_address=`, `?from_ts=` filters) and `IPReputationViewSet`
   (`?min_threat_score=` filter), both restricted to Django admin users. Off by
-  default — set `DJANGO_WAF_API_ENABLED = True` to mount the routes, and every
+  default, set `DJANGO_WAF_API_ENABLED = True` to mount the routes, and every
   endpoint returns `503` while disabled. Requires the new `django-waf[api]`
   extra (`djangorestframework>=3.14`); `djangorestframework` stays fully
-  optional otherwise — the package imports and every existing test passes
+  optional otherwise, the package imports and every existing test passes
   with it absent from the environment.
 - System check `django_waf.W005`: warns when `DJANGO_WAF_FEED_ENABLED` is
   true but `DJANGO_WAF_FEED_URL` is not `https://`. Feed responses become
@@ -359,7 +378,7 @@ rule expiry). All 929 tests pass.
   yet in that ordering, so the staff/superuser bypass silently fails and
   staff accounts get blocked/challenged like anonymous traffic.
 - `django_waf.testing.fixtures`: pytest fixtures for consuming-project test
-  suites — `disable_waf`, `waf_redis_mock` (requires `fakeredis`),
+  suites, `disable_waf`, `waf_redis_mock` (requires `fakeredis`),
   `block_rule`, `allow_rule`, `challenge_token`. Re-exported from
   `django_waf.testing`.
 - `django_waf.testing.helpers`: `create_blocked_request()` and
@@ -367,7 +386,7 @@ rule expiry). All 929 tests pass.
   `BlockRule` and issue a request through the Django test client.
   Re-exported from `django_waf.testing`.
 - `django_waf.logging.WafStructuredFormatter`: a JSON logging formatter for
-  the `django_waf` logger hierarchy — one object per line with timestamp,
+  the `django_waf` logger hierarchy, one object per line with timestamp,
   level, logger, message, and (when present on the record) ip, verdict,
   rule_id, anomaly_score, latency_ms, path, method, and user_agent
   (truncated to 200 characters).

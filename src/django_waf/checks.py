@@ -199,7 +199,7 @@ def check_middleware_ordering(app_configs, **kwargs):
     WAF-owned cookie (``django_waf.services.trusted_user_service``) that
     does not depend on ``request.user`` at all, so the WAF can stay
     security-first (before auth) without losing the bypass. When that
-    setting is True, this check no longer fires — the ordering it warns
+    setting is True, this check no longer fires: the ordering it warns
     about is no longer a defect for that site. It is unchanged, and still
     fires exactly as before, when the feature is off.
     """
@@ -302,7 +302,7 @@ def check_trusted_cookie_trust_level(app_configs, **kwargs):
     return [
         Warning(
             f"DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL={level!r} is not "
-            '"staff" or "authenticated" — the trusted-user-cookie login '
+            '"staff" or "authenticated"; the trusted-user-cookie login '
             'receiver is falling back to "staff" (the narrower, safer '
             "population) rather than honouring this value.",
             hint='Set DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL to "staff" or "authenticated".',

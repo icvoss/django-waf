@@ -182,7 +182,7 @@ class WafMiddleware:
         response the view produced, wherever in ``__call__`` that happened.
 
         A no-op when the flag is absent (the overwhelming majority of
-        requests, and every request when the feature is disabled — the
+        requests, and every request when the feature is disabled: the
         receiver that sets the flag is itself only connected when
         ``DJANGO_WAF_TRUSTED_COOKIE_ENABLED`` is True, see
         ``DjangoWafConfig.ready()``), so this changes nothing about the
@@ -547,7 +547,7 @@ def _is_staff_user(request) -> bool:
     ``request.user`` check so the bypass keeps working unchanged when the
     WAF *is* placed after auth, or when the cookie feature is disabled
     (``has_valid_trusted_cookie`` is then a guaranteed no-op, so this
-    fallback is the only path exercised — behaviour is unchanged from
+    fallback is the only path exercised, behaviour is unchanged from
     before #23).
     """
     from django_waf.services.trusted_user_service import has_valid_trusted_cookie

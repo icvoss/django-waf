@@ -284,7 +284,7 @@ class TestMiddlewareOrderingCheck:
 
 
 class TestTrustedCookieTrustLevelCheck:
-    """W006 — warns when DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL is neither
+    """W006 warns when DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL is neither
     "staff" nor "authenticated" while the feature is enabled."""
 
     def test_staff_produces_no_messages(self):

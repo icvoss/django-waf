@@ -72,7 +72,7 @@ def _make_middleware(get_response=None):
 
 
 # ---------------------------------------------------------------------------
-# django_waf.services.trusted_user_service — signing/verification
+# django_waf.services.trusted_user_service, signing/verification
 # ---------------------------------------------------------------------------
 
 
@@ -253,7 +253,7 @@ class TestSetAndReadTrustedCookie:
 
 
 class TestFeatureOffIsANoOp:
-    """DJANGO_WAF_TRUSTED_COOKIE_ENABLED=False (the default) — a stray,
+    """DJANGO_WAF_TRUSTED_COOKIE_ENABLED=False (the default), a stray,
     otherwise-valid-looking cookie must never grant the bypass."""
 
     def test_has_valid_trusted_cookie_false_even_with_freshly_signed_cookie(self):
@@ -269,7 +269,7 @@ class TestFeatureOffIsANoOp:
             set_trusted_cookie(response, factory.get("/", REMOTE_ADDR="203.0.113.9"))
             signed_value = response.cookies[TRUSTED_USER_COOKIE].value
 
-        # Feature now off — the cookie above is real and unexpired.
+        # Feature now off, the cookie above is real and unexpired.
         request = factory.get("/", REMOTE_ADDR="203.0.113.9")
         request.COOKIES[TRUSTED_USER_COOKIE] = signed_value
 
@@ -277,7 +277,7 @@ class TestFeatureOffIsANoOp:
 
 
 # ---------------------------------------------------------------------------
-# django_waf.middleware._is_staff_user — cookie-first, request.user fallback
+# django_waf.middleware._is_staff_user, cookie-first, request.user fallback
 # ---------------------------------------------------------------------------
 
 
@@ -300,7 +300,7 @@ class TestIsStaffUserPrefersTrustedCookie:
 
             request = factory.get("/", REMOTE_ADDR="203.0.113.9")
             request.COOKIES[TRUSTED_USER_COOKIE] = signed_value
-            # No request.user attribute at all — pre-AuthenticationMiddleware.
+            # No request.user attribute at all, pre-AuthenticationMiddleware.
             assert not hasattr(request, "user")
 
             assert _is_staff_user(request) is True

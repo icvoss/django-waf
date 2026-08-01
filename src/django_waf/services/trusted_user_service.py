@@ -6,7 +6,7 @@ WAF-owned cookie that lets ``WafMiddleware`` recognise a trusted (staff)
 user without reading ``request.user``, so the staff/superuser bypass
 (BR-RATE-003, ``django_waf.middleware._is_staff_user``) works even when
 ``WafMiddleware`` runs before
-``django.contrib.auth.middleware.AuthenticationMiddleware`` — the
+``django.contrib.auth.middleware.AuthenticationMiddleware``, the
 security-first ordering the package's own README recommends, and the
 ordering ``django_waf.checks.check_middleware_ordering`` (``django_waf.W004``)
 has historically warned against.
@@ -30,7 +30,7 @@ rejected, and the deliberately short default TTL
 control makes a stolen cookie harmless on a shared/NAT'd network, so the
 short TTL is the primary control, not the IP binding.
 
-This module is DB-free, session-free, and auth-free by design — it must be
+This module is DB-free, session-free, and auth-free by design, it must be
 safe to call from ``WafMiddleware`` at a point in the stack before
 ``SessionMiddleware`` and ``AuthenticationMiddleware`` have run.
 """
@@ -42,7 +42,7 @@ from django.http import HttpRequest, HttpResponse
 
 # Name of the trusted-user cookie. Distinct from the site-password gate's
 # cookie (django_waf.services.site_password_service.SITE_PASSWORD_COOKIE)
-# and from the challenge-pass cookie ("waf_pass") — each signed artefact
+# and from the challenge-pass cookie ("waf_pass"), each signed artefact
 # the WAF issues owns its own cookie name and salt.
 TRUSTED_USER_COOKIE = "waf_trusted"
 
@@ -75,7 +75,7 @@ def get_trust_level() -> str:
 
     ``DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL`` should be "staff" or
     "authenticated" (see conf.py). Any other configured value fails to the
-    narrower, safer population ("staff") rather than raising — a typo in
+    narrower, safer population ("staff") rather than raising, a typo in
     settings must never silently widen the bypass to every authenticated
     user. ``django_waf.checks.check_trusted_cookie_trust_level``
     (``django_waf.W006``) surfaces the misconfiguration at boot.
@@ -91,7 +91,7 @@ def get_trust_level() -> str:
 def user_meets_trust_level(user) -> bool:
     """Return True if ``user`` meets the configured trust level.
 
-    "staff" (default): ``is_staff`` or ``is_superuser`` — the same
+    "staff" (default): ``is_staff`` or ``is_superuser``, the same
     population ``django_waf.middleware._is_staff_user`` already trusted via
     ``request.user`` before this feature existed. "authenticated": any
     ``is_authenticated`` user, an explicit opt-in broadening of the bypass.
@@ -126,8 +126,8 @@ def set_trusted_cookie(response: HttpResponse, request: HttpRequest) -> None:
     """Set the signed trusted-user cookie on the response.
 
     Binds the cookie to the client IP resolved via
-    ``django_waf.services.client_ip.resolve_client_ip`` — the same hardened
-    resolver the rest of the WAF uses (#29) — rather than
+    ``django_waf.services.client_ip.resolve_client_ip``, the same hardened
+    resolver the rest of the WAF uses (#29), rather than
     ``request.META["REMOTE_ADDR"]`` directly, so the binding matches
     whatever IP the WAF itself treats as authoritative for this request
     (trusted-proxy chains, ``X-Forwarded-For`` handling, and so on).
@@ -138,7 +138,7 @@ def set_trusted_cookie(response: HttpResponse, request: HttpRequest) -> None:
     because the cookie can only be written once the login response exists.
 
     ``domain`` defaults to ``DJANGO_WAF_TRUSTED_COOKIE_DOMAIN`` if set, else
-    ``settings.SESSION_COOKIE_DOMAIN`` — mirrors
+    ``settings.SESSION_COOKIE_DOMAIN``, mirrors
     ``site_password_service.set_verified_cookie``.
     """
     from django.conf import settings
@@ -171,7 +171,7 @@ def has_valid_trusted_cookie(request: HttpRequest) -> bool:
     Returns False (never raises) when: the feature is disabled (so a stray
     cookie left over from the feature previously being enabled grants
     nothing); the cookie is missing; the signature is tampered or expired
-    (``signing.BadSignature`` covers both — ``SignatureExpired`` is a
+    (``signing.BadSignature`` covers both, ``SignatureExpired`` is a
     subclass); or the bound IP does not match
     ``django_waf.services.client_ip.resolve_client_ip(request)`` for this
     request (rejects a cookie replayed from a different address).

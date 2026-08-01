@@ -12,7 +12,7 @@ class DjangoWafConfig(AppConfig):
         # #23: connect the trusted-user-cookie login receiver only when the
         # feature is enabled at process startup. ready() runs once, so
         # toggling DJANGO_WAF_TRUSTED_COOKIE_ENABLED needs a restart to take
-        # effect — the standard Django app-loading contract, and consistent
+        # effect, the standard Django app-loading contract, and consistent
         # with every other opt-in wiring in this method.
         from django_waf import conf
 
