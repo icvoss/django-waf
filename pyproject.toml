@@ -62,7 +62,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-django_waf = ["templates/**/*.html"]
+django_waf = ["templates/**/*.html", "conf/nginx/*.conf.example"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"

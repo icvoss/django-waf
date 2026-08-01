@@ -80,6 +80,29 @@ class BlockRuleManager(models.Manager):
         return self.filter(is_active=True, expires_at__lte=timezone.now())
 
 
+def _validate_rule_pattern(rule_type: str, match_type: str, pattern: str) -> None:
+    """Reject a catastrophic or invalid UA regex pattern on any save path.
+
+    Guards the ORM entry points (services, data migrations, shell) that the
+    admin form and feed importer do not cover, so a ReDoS-prone pattern cannot
+    reach the per-request matcher regardless of how the rule was created (#28).
+    Only user-agent regex rules carry the risk; other rule types are untouched.
+    """
+    if rule_type != RuleType.UA or match_type != MatchType.REGEX:
+        return
+    from django.core.exceptions import ValidationError
+
+    from django_waf.services.pattern_validation import (
+        PatternValidationError,
+        validate_ua_regex_pattern,
+    )
+
+    try:
+        validate_ua_regex_pattern(pattern)
+    except PatternValidationError as exc:
+        raise ValidationError({"pattern": str(exc)}) from exc
+
+
 class BlockRule(BaseModel):
     """
     A WAF rule that triggers a block, challenge, throttle, or log action.
@@ -190,6 +213,10 @@ class BlockRule(BaseModel):
 
     def __str__(self) -> str:
         return f"[{self.action}] {self.name}"
+
+    def clean(self) -> None:
+        super().clean()
+        _validate_rule_pattern(self.rule_type, self.match_type, self.pattern)
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +349,10 @@ class AllowRule(BaseModel):
 
     def __str__(self) -> str:
         return f"[allow] {self.name}"
+
+    def clean(self) -> None:
+        super().clean()
+        _validate_rule_pattern(self.rule_type, self.match_type, self.pattern)
 
 
 # ---------------------------------------------------------------------------

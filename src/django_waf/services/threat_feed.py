@@ -149,7 +149,6 @@ def sync_feed(
         both block and allow entries).
     """
     import httpx
-    from django.conf import settings as dj_settings
 
     from django_waf import conf
     from django_waf.enums import RuleSource
@@ -157,7 +156,7 @@ def sync_feed(
 
     url = feed_url or conf.DJANGO_WAF_FEED_URL
     threshold = min_confidence if min_confidence is not None else conf.DJANGO_WAF_FEED_MIN_CONFIDENCE
-    quarantine_allow_rules = getattr(dj_settings, "DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES", True)
+    quarantine_allow_rules = conf.DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES
 
     # No Authorization header, by design. The feed is a public read: the
     # collective threat intel is servable to every install without a key, so
