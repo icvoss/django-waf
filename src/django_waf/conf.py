@@ -571,9 +571,7 @@ DJANGO_WAF_TRUSTED_PROXIES: list[str] = getattr(settings, "DJANGO_WAF_TRUSTED_PR
 # imported inactive (is_active=False), so a compromised or mistaken feed
 # cannot open an exemption without an operator confirming it. Set False only
 # if you fully trust the feed source to publish allow rules.
-DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES: bool = getattr(
-    settings, "DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES", True
-)
+DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES: bool = getattr(settings, "DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES", True)
 
 # ---------------------------------------------------------------------------
 # nginx blocklist export validation (#31)
@@ -589,6 +587,4 @@ DJANGO_WAF_NGINX_VALIDATE: bool = getattr(settings, "DJANGO_WAF_NGINX_VALIDATE",
 # The command run to validate the candidate configuration. Defaults to a
 # plain syntax check; override if nginx is not on PATH or needs a specific
 # prefix (e.g. ["sudo", "nginx", "-t"]).
-DJANGO_WAF_NGINX_TEST_COMMAND: list[str] = getattr(
-    settings, "DJANGO_WAF_NGINX_TEST_COMMAND", ["nginx", "-t"]
-)
+DJANGO_WAF_NGINX_TEST_COMMAND: list[str] = getattr(settings, "DJANGO_WAF_NGINX_TEST_COMMAND", ["nginx", "-t"])
