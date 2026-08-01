@@ -24,6 +24,13 @@ def _reset_conf_module():
     current settings. This fixture ensures that regardless of test execution
     order or whether individual tests remember to reload conf, every test
     starts with a conf module synchronized to the current settings.
+
+    Note: this only guarantees a clean starting state. A test that mutates
+    settings.DJANGO_WAF_* mid-test still needs its own
+    ``importlib.reload(conf_mod)`` immediately after the mutation (see the
+    pattern in test_api.py / test_middleware.py) — this fixture's reload
+    runs once at teardown, after the test body (and its assertions) have
+    already executed.
     """
     import importlib
 

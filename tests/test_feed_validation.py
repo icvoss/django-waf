@@ -389,10 +389,14 @@ class TestAllowRuleQuarantineAndRdnsConstraint:
 
     def test_quarantine_disabled_activates_allow_rule_on_create(self, db, settings):
         """With quarantine disabled via setting, a valid allow entry is active on create."""
+        import importlib
+
+        import django_waf.conf as conf_mod
         from django_waf.models import AllowRule
         from django_waf.services.threat_feed import sync_feed
 
         settings.DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES = False
+        importlib.reload(conf_mod)
 
         feed_payload = [
             {

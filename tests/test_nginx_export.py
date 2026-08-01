@@ -240,11 +240,15 @@ class TestNginxValidationAndRollback:
 
     def test_validation_disabled_activates_unconditionally_old_behaviour(self, db, tmp_path, settings):
         """DJANGO_WAF_NGINX_VALIDATE=False reproduces the pre-#31 unconditional-activate behaviour."""
+        import importlib
+
+        import django_waf.conf as conf_mod
         from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
         output_file = tmp_path / "blocklist.conf"
         output_file.write_text("# previous good config\n")
         settings.DJANGO_WAF_NGINX_VALIDATE = False
+        importlib.reload(conf_mod)
 
         BlockRuleFactory(is_active=True, rule_type="ip", match_type="exact", pattern="7.7.7.7", action="block")
 
@@ -258,11 +262,15 @@ class TestNginxValidationAndRollback:
 
     def test_custom_test_command_setting_is_used(self, db, tmp_path, settings):
         """DJANGO_WAF_NGINX_TEST_COMMAND overrides the default ['nginx', '-t']."""
+        import importlib
+
+        import django_waf.conf as conf_mod
         from django_waf.services.blocklist_generator import generate_nginx_blocklist
 
         output_file = tmp_path / "blocklist.conf"
         settings.DJANGO_WAF_NGINX_VALIDATE = True
         settings.DJANGO_WAF_NGINX_TEST_COMMAND = ["/usr/local/bin/nginx-test", "-c", "custom.conf"]
+        importlib.reload(conf_mod)
 
         with patch("django_waf.services.blocklist_generator.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stderr="")
