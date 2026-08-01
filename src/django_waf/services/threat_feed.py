@@ -51,7 +51,7 @@ def _validate_pattern(pattern: str, match_type: str) -> bool:
     """Return True if the pattern is safe to store and use for matching.
 
     Delegates to django_waf.services.pattern_validation.validate_ua_regex_pattern
-    when available (issue #28, sibling work) — the attempted import is
+    when available (issue #28, sibling work), the attempted import is
     ``from django_waf.services.pattern_validation import validate_ua_regex_pattern,
     PatternValidationError``. That function raises PatternValidationError on an
     unsafe pattern and returns None on success, rather than returning a bool,
@@ -85,7 +85,7 @@ def _fallback_validate_regex(pattern: str) -> bool:
 
     Rejects patterns with an obvious nested-quantifier shape (a classic ReDoS
     construct, e.g. ``(a+)+``) and anything over the shared length bound.
-    Not a substitute for the real validator in pattern_validation.py — this
+    Not a substitute for the real validator in pattern_validation.py, this
     exists only so threat_feed.py has defensive behaviour before that module
     lands.
     """
@@ -126,7 +126,7 @@ def sync_feed(
     other, because they live in separate tables.
 
     Rules are tagged source='feed' (BR-FEED-003). Existing rules are matched on
-    (source='feed', rule_type, pattern) — idempotent (BR-FEED-006).
+    (source='feed', rule_type, pattern), idempotent (BR-FEED-006).
     Rules absent from the feed are deactivated (BR-FEED-005).
     Emits feed_synced signal on completion.
 
@@ -184,7 +184,7 @@ def sync_feed(
         confidence = _validate_confidence(entry)
         if confidence is None:
             logger.warning(
-                "django-waf: feed entry skipped — confidence does not parse as a float: %r",
+                "django-waf: feed entry skipped, confidence does not parse as a float: %r",
                 entry.get("confidence"),
             )
             skipped += 1
@@ -200,7 +200,7 @@ def sync_feed(
             continue
 
         if rule_type not in _KNOWN_RULE_TYPES:
-            logger.warning("django-waf: feed entry skipped — unknown rule_type %r", rule_type)
+            logger.warning("django-waf: feed entry skipped, unknown rule_type %r", rule_type)
             skipped += 1
             continue
 
@@ -208,12 +208,12 @@ def sync_feed(
         match_type = entry.get("match_type", "exact")
 
         if match_type not in _KNOWN_MATCH_TYPES:
-            logger.warning("django-waf: feed entry skipped — unknown match_type %r", match_type)
+            logger.warning("django-waf: feed entry skipped, unknown match_type %r", match_type)
             skipped += 1
             continue
 
         if not _validate_pattern(pattern, match_type):
-            logger.warning("django-waf: feed entry skipped — pattern failed safety validation: %r", pattern[:80])
+            logger.warning("django-waf: feed entry skipped, pattern failed safety validation: %r", pattern[:80])
             skipped += 1
             continue
 
@@ -235,7 +235,7 @@ def sync_feed(
             rdns_pattern = entry.get("rdns_pattern", "")
             if not entry.get("verify_rdns", False) or not rdns_pattern:
                 logger.warning(
-                    "django-waf: feed allow entry skipped — verify_rdns must be true with a "
+                    "django-waf: feed allow entry skipped, verify_rdns must be true with a "
                     "non-empty rdns_pattern (rule_type=%r pattern=%r)",
                     rule_type,
                     pattern[:80],
@@ -310,7 +310,7 @@ def sync_feed(
             # default-BLOCKED behaviour (rule_engine.py:598-604). Skip the
             # entry instead of storing an action the engine cannot
             # interpret safely.
-            logger.warning("django-waf: feed entry skipped — unknown action %r", action)
+            logger.warning("django-waf: feed entry skipped, unknown action %r", action)
             skipped += 1
             continue
 
@@ -375,7 +375,7 @@ def sync_feed(
         logger.exception("django-waf: failed to emit feed_synced signal")
 
     logger.info(
-        "django-waf: feed sync complete — created=%d updated=%d expired=%d skipped=%d",
+        "django-waf: feed sync complete, created=%d updated=%d expired=%d skipped=%d",
         created,
         updated,
         expired,
@@ -394,7 +394,7 @@ def build_telemetry_payload(period_start, period_end) -> dict:
 
     Per BR-TEL-002: no full IPs, no paths, no user identifiers. UA strings are
     SHA-256 hashed. IPs are truncated to /24 subnets (IPv4) or /48 subnets
-    (IPv6) — a full IPv6 address must never appear in the payload.
+    (IPv6), a full IPv6 address must never appear in the payload.
 
     Args:
         period_start: datetime of the reporting period start.
@@ -500,7 +500,7 @@ def submit_telemetry(payload: dict, report_url: str | None = None) -> bool:
             logger.info("django-waf: telemetry submitted successfully to %s", url)
             return True
         logger.warning(
-            "django-waf: telemetry submission failed — status %d from %s",
+            "django-waf: telemetry submission failed, status %d from %s",
             response.status_code,
             url,
         )
@@ -514,7 +514,7 @@ def get_or_create_install_id() -> str:
     """Return the stable install_id UUID, creating it on first call.
 
     Storage priority:
-    1. Django cache (warm path — avoids I/O on subsequent calls)
+    1. Django cache (warm path, avoids I/O on subsequent calls)
     2. Filesystem file at ``~/.django_waf_install_id`` (stable across restarts)
     3. Generate a new UUID and persist to the file
 

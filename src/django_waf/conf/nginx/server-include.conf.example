@@ -1,14 +1,14 @@
-# django-waf reference nginx wiring — per-location enforcement snippet (#31)
+# django-waf reference nginx wiring, per-location enforcement snippet (#31)
 #
 # The variables $waf_block_ip, $waf_block_ua, $waf_throttle_ip, and
 # $waf_throttle_ua (declared by http-include.conf.example) are inert on
 # their own. This snippet is the enforcement half: paste it into every
 # server{} or location{} block you want the WAF's nginx-level fast path to
-# cover. django-waf never edits your server{} blocks for you — copy this
+# cover. django-waf never edits your server{} blocks for you, copy this
 # in by hand, once, to each block that needs it (this is deliberate: which
 # server blocks are public-facing, and which nginx features are already in
 # use there, is a decision the package cannot safely make on an operator's
-# behalf — see README.md's nginx Integration section for the full
+# behalf, see README.md's nginx Integration section for the full
 # rationale for shipping this as a reference rather than an auto-applied
 # include).
 #
@@ -63,7 +63,7 @@
 #   }
 #
 # The if-blocks above are deliberately minimal (nginx's `if` is famously
-# limited in what it can safely do — see the nginx "If is Evil" wiki page).
+# limited in what it can safely do, see the nginx "If is Evil" wiki page).
 # Two independent checks, each returning immediately, avoids every pitfall
 # that comes from combining `if` with other directives in the same block.
 

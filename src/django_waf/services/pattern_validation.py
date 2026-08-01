@@ -22,7 +22,7 @@ Consumers: ``django_waf.admin`` (``BlockRuleAdminForm.clean_pattern`` /
 validation of feed-sourced patterns) are expected to call the same
 function so a catastrophic pattern is rejected regardless of entry point;
 those two call sites are not wired up by this change because this module
-does not own ``models.py`` or ``threat_feed.py`` — see the implementation
+does not own ``models.py`` or ``threat_feed.py``, see the implementation
 report for this follow-up.
 """
 
@@ -62,7 +62,7 @@ _NESTED_QUANTIFIER_RE = re.compile(
 # other classic shape: (a|a)+, (a|ab)+, and similar. Detecting genuine
 # branch overlap in general is undecidable in the general case; this catches
 # the common textbook shape of a quantified alternation group, which is a
-# strong enough signal to warrant rejection — legitimate UA patterns rarely
+# strong enough signal to warrant rejection, legitimate UA patterns rarely
 # need a quantified alternation group at all.
 _QUANTIFIED_ALTERNATION_RE = re.compile(
     r"""

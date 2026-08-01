@@ -1,4 +1,4 @@
-# django-waf reference nginx wiring — http{} scope include (#31)
+# django-waf reference nginx wiring, http{} scope include (#31)
 #
 # django-waf is an export utility, not an auto-enforcing package: it writes
 # the file below (map/geo variable declarations) and can reload nginx, but
@@ -6,7 +6,7 @@
 # the enforcement snippet (server-include.conf.example, alongside this
 # file) by hand, once, and django-waf keeps the generated variables fresh
 # on the schedule configured for the generate_blocklist task (every 5
-# minutes by default — BR-BL-004).
+# minutes by default, BR-BL-004).
 #
 # WHERE THIS GOES
 # ----------------
@@ -14,7 +14,7 @@
 # level, never inside a server{} or location{} block. Drop this file (or
 # its contents) into your http{}-scope include directory, typically
 # /etc/nginx/conf.d/ on most distributions. Do not paste this into a
-# server{} block — nginx will refuse to start.
+# server{} block, nginx will refuse to start.
 #
 #   /etc/nginx/nginx.conf
 #   http {
@@ -44,7 +44,7 @@
 #          include /var/lib/django-waf/blocklist.conf;
 #
 #      This indirection means the generated file itself never needs to
-#      live under /etc/nginx/ at all — only this one static include line
+#      live under /etc/nginx/ at all, only this one static include line
 #      does, and it never changes.
 #
 # WHAT THE GENERATED FILE DECLARES
@@ -52,12 +52,12 @@
 # generate_nginx_blocklist() (django_waf/services/blocklist_generator.py)
 # writes four variables from active BlockRules (BR-BL-001, BR-BL-005):
 #
-#   $waf_block_ip      geo  — 1 for an IP/CIDR rule with action=block
-#   $waf_block_ua       map — 1 for a UA rule with action=block
-#   $waf_throttle_ip    geo — 1 for an IP/CIDR rule with action=throttle
-#   $waf_throttle_ua    map — 1 for a UA rule with action=throttle
+#   $waf_block_ip      geo , 1 for an IP/CIDR rule with action=block
+#   $waf_block_ua       map, 1 for a UA rule with action=block
+#   $waf_throttle_ip    geo, 1 for an IP/CIDR rule with action=throttle
+#   $waf_throttle_ua    map, 1 for a UA rule with action=throttle
 #
-# Declaring these variables does nothing on its own — nginx does not act
+# Declaring these variables does nothing on its own, nginx does not act
 # on a $waf_block_ip value of 1 unless a server{} or location{} block
 # checks it. See server-include.conf.example for the enforcement half.
 

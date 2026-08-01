@@ -17,7 +17,7 @@ proxy lets any client spoof its IP by sending its own XFF header.
 ``DJANGO_WAF_TRUSTED_PROXIES`` (a list of CIDR strings, default empty) is the
 hardened path: the header is only honoured when ``REMOTE_ADDR`` itself is
 inside one of the configured proxy ranges, and even then only the rightmost
-hop that is *not itself* a trusted proxy is taken — the standard walk for a
+hop that is *not itself* a trusted proxy is taken, the standard walk for a
 chain of trusted reverse proxies, each of which appends the previous hop's
 address to the header.
 
@@ -30,7 +30,7 @@ migrated to ``DJANGO_WAF_TRUSTED_PROXIES``. Every resolution taken via that
 path logs a warning so it is visible in operational logs; a proper
 system-check warning (a new ``django_waf.W0xx`` code) belongs in
 ``checks.py`` and is not added here because this module does not own that
-file — see the implementation report for this follow-up.
+file, see the implementation report for this follow-up.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def resolve_client_ip(request) -> str:
        ``REMOTE_ADDR``.
     2. Otherwise, if ``DJANGO_WAF_TRUST_X_FORWARDED_FOR`` is set (legacy
        opt-in) and the header is present, return the leftmost entry
-       unconditionally (spoofable — kept only for backwards compatibility;
+       unconditionally (spoofable, kept only for backwards compatibility;
        logs a warning on every use).
     3. Otherwise, return ``REMOTE_ADDR`` (empty string if absent).
 
@@ -83,7 +83,7 @@ def resolve_client_ip(request) -> str:
                 logger.warning(
                     "django-waf: trusting the leftmost X-Forwarded-For entry "
                     "without a configured trusted proxy (DJANGO_WAF_TRUSTED_PROXIES "
-                    "is empty) — this value is client-controlled and spoofable. "
+                    "is empty), this value is client-controlled and spoofable. "
                     "Configure DJANGO_WAF_TRUSTED_PROXIES to use the hardened, "
                     "right-to-left trusted-hop resolution instead."
                 )
