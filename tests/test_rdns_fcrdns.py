@@ -28,6 +28,7 @@ pre-existing _verify_rdns tests there used).
 from __future__ import annotations
 
 import socket
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,6 +46,13 @@ def _make_redis() -> MagicMock:
     redis.delete.return_value = 1
     redis.incr.return_value = 1
     redis.zcount.return_value = 0
+    # Configure the rate-limiter pipeline shape (see test_retry_after.py)
+    # so an AllowRule miss that falls through to check_rate_limit doesn't
+    # hit a bare, unconfigured MagicMock at `count > threshold`.
+    now = time.time()
+    pipeline = MagicMock()
+    pipeline.execute.return_value = [1, 0, 1, [(str(now), now)], True]
+    redis.pipeline.return_value = pipeline
     return redis
 
 
