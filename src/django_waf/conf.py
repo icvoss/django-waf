@@ -588,3 +588,53 @@ DJANGO_WAF_NGINX_VALIDATE: bool = getattr(settings, "DJANGO_WAF_NGINX_VALIDATE",
 # plain syntax check; override if nginx is not on PATH or needs a specific
 # prefix (e.g. ["sudo", "nginx", "-t"]).
 DJANGO_WAF_NGINX_TEST_COMMAND: list[str] = getattr(settings, "DJANGO_WAF_NGINX_TEST_COMMAND", ["nginx", "-t"])
+
+# ---------------------------------------------------------------------------
+# Trusted-user cookie (#23)
+# ---------------------------------------------------------------------------
+# A signed, WAF-owned cookie that carries "this request is from a trusted
+# (staff) user" independently of request.user, so the staff/superuser bypass
+# (BR-RATE-003, django_waf.middleware._is_staff_user) works even when
+# WafMiddleware runs before django.contrib.auth.middleware.AuthenticationMiddleware
+# -- the security-first ordering the WAF's own README recommends, and the
+# ordering django_waf.checks.check_middleware_ordering (django_waf.W004) has
+# historically warned against. See docs/DESIGN-trusted-user-cookie.md and
+# django_waf.services.trusted_user_service, which mirrors
+# django_waf.services.site_password_service's TimestampSigner pattern.
+
+# Master switch. Off by default (opt-in): existing sites see no behaviour
+# change, and no stray cookie can grant the bypass, until a project both
+# enables this setting and wires the login receiver (see
+# django_waf.receivers / DjangoWafConfig.ready()). Read live (not cached) by
+# django_waf.services.trusted_user_service.is_feature_enabled() so tests can
+# toggle it with patch.object without a module reload.
+DJANGO_WAF_TRUSTED_COOKIE_ENABLED: bool = getattr(settings, "DJANGO_WAF_TRUSTED_COOKIE_ENABLED", False)
+
+# Which users the login receiver issues the cookie to. "staff" (default)
+# limits the bypass to the same population the pre-existing request.user
+# check already trusted (is_staff or is_superuser); "authenticated" widens
+# it to any logged-in user, which broadens the bypass and weakens the WAF
+# for that population, so it is an explicit opt-in, not the default. Any
+# other value is treated as "staff" by the receiver (fails to the narrower,
+# safer population) and is flagged by a system check
+# (django_waf.checks.check_trusted_cookie_trust_level, django_waf.W006).
+DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL: str = getattr(settings, "DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL", "staff")
+
+# Cookie lifetime in seconds. Default 3600 (1 hour) -- deliberately SHORT.
+# Unlike the site-password verified cookie (a low-value "is this visitor
+# allowed to see the site at all" flag with a 12-hour default), this cookie
+# grants a security-relevant bypass of WAF evaluation, so a stolen cookie is
+# more valuable to an attacker and the exposure window is kept tight. The
+# cookie also binds to the client IP (see trusted_user_service), which
+# further limits a stolen cookie's value but does not eliminate it entirely
+# on shared/NAT'd networks, hence the short TTL as the primary control.
+DJANGO_WAF_TRUSTED_COOKIE_TTL: int = getattr(settings, "DJANGO_WAF_TRUSTED_COOKIE_TTL", 3600)
+
+# Domain for the trusted-user cookie. Defaults to None, which means
+# trusted_user_service.set_trusted_cookie() falls back to
+# settings.SESSION_COOKIE_DOMAIN at call time -- the same fallback
+# convention as DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN, so a site that
+# already sets SESSION_COOKIE_DOMAIN for subdomain coverage gets the same
+# coverage on this cookie without configuring it twice. Set explicitly only
+# when this cookie's subdomain scope must differ from the session cookie's.
+DJANGO_WAF_TRUSTED_COOKIE_DOMAIN: str | None = getattr(settings, "DJANGO_WAF_TRUSTED_COOKIE_DOMAIN", None)

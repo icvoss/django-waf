@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Signed trusted-user cookie so the staff bypass works before
+  `AuthenticationMiddleware` (#23).** The staff/superuser rate-limit bypass
+  (BR-RATE-003) read `request.user`, which is only populated once
+  `AuthenticationMiddleware` has run — so the bypass silently failed on any
+  deployment that (correctly, for security-first ordering) placed
+  `WafMiddleware` before auth, and `django_waf.W004` warned about the
+  ordering with no fix beyond moving the WAF later, which trades away its
+  early-rejection value. New opt-in setting
+  `DJANGO_WAF_TRUSTED_COOKIE_ENABLED` (default `False`) turns on a
+  WAF-owned, IP-bound, short-TTL signed cookie
+  (`django_waf.services.trusted_user_service`, mirroring the existing
+  site-password cookie's `TimestampSigner` pattern) set on login via a new
+  opt-in `user_logged_in` receiver
+  (`django_waf.receivers.set_trusted_cookie_flag_on_login`, wired from
+  `DjangoWafConfig.ready()`). `_is_staff_user` now checks this cookie
+  first, falling back to `request.user` unchanged. When the feature is
+  enabled, `django_waf.W004` is no longer raised — the bypass no longer
+  depends on middleware order. A new setting,
+  `DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL` (default `"staff"`, or
+  `"authenticated"`), controls which logged-in users receive the cookie;
+  an invalid value is warned about by the new `django_waf.W006` check and
+  falls back to `"staff"`. Feature is off by default: existing sites see
+  no behaviour change. See `docs/DESIGN-trusted-user-cookie.md`.
+
 ## [1.7.0] - 2026-08-01
 
 The P2/P3 hardening pass from the 2026-08-01 issue triage: six defects and

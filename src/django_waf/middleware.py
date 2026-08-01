@@ -66,18 +66,18 @@ class WafMiddleware:
 
         # BR-EVAL-002: master kill switch
         if not conf.DJANGO_WAF_ENABLED:
-            return self.get_response(request)
+            return self._get_response(request)
 
         # BR-EVAL-001: exempt paths — prefix match
         path = request.path_info
 
         for prefix in conf.DJANGO_WAF_EXEMPT_PATHS:
             if path.startswith(prefix):
-                return self.get_response(request)
+                return self._get_response(request)
 
         # BR-EVAL-001: exempt hosts — exact or subdomain match
         if conf.DJANGO_WAF_EXEMPT_HOSTS and _is_exempt_host(request, conf.DJANGO_WAF_EXEMPT_HOSTS):
-            return self.get_response(request)
+            return self._get_response(request)
 
         # BR-SP-008: site password gate — after the enabled/exempt/health
         # short-circuits above, before country-block/threat evaluation
@@ -98,7 +98,7 @@ class WafMiddleware:
         # Extract client IP — fail-open if unavailable
         ip_address = _extract_ip(request)
         if not ip_address:
-            return self.get_response(request)
+            return self._get_response(request)
         user_agent = request.META.get("HTTP_USER_AGENT", "")
 
         # Country blocking — fail-open on any GeoIP error or missing database.
@@ -109,12 +109,12 @@ class WafMiddleware:
 
         # BR-RATE-003: staff/superuser bypass — skip WAF entirely
         if _is_staff_user(request):
-            return self.get_response(request)
+            return self._get_response(request)
 
         # Get Redis connection — fail-open if unavailable
         redis_client = _get_redis_client()
         if redis_client is None:
-            return self.get_response(request)
+            return self._get_response(request)
 
         # BR-CHAL-006: check for valid waf_pass cookie before evaluation
         try:
@@ -123,8 +123,7 @@ class WafMiddleware:
             cookie_value = request.COOKIES.get("waf_pass", "")
             if cookie_value and validate_pass_cookie(cookie_value, ip_address):
                 # Cookie is valid — pass through
-                response = self.get_response(request)
-                return response
+                return self._get_response(request)
         except Exception:
             logger.exception("django-waf: error validating waf_pass cookie")
 
@@ -144,7 +143,7 @@ class WafMiddleware:
         except Exception:
             # Fail-open: if evaluation raises, pass the request through
             logger.exception("django-waf: evaluation error — failing open")
-            return self.get_response(request)
+            return self._get_response(request)
 
         # Build and return verdict-specific response
         response = self._handle_verdict(
@@ -165,6 +164,36 @@ class WafMiddleware:
             path=path,
             response_code=response.status_code,
         )
+
+        return response
+
+    def _get_response(self, request):
+        """Call ``get_response(request)`` and apply the trusted-user-cookie
+        response hook (#23) before returning.
+
+        ``django.contrib.auth.signals.user_logged_in`` fires during login
+        processing and only gives us ``request``, not the response the
+        login view is about to return -- so the cookie cannot be set from
+        the signal receiver directly. Instead, the receiver
+        (``django_waf.receivers.set_trusted_cookie_flag_on_login``) stashes
+        a flag on the request (``request._waf_set_trusted_cookie``); every
+        call to ``get_response`` in this middleware routes through this
+        method so that flag is checked and the cookie is set on whatever
+        response the view produced, wherever in ``__call__`` that happened.
+
+        A no-op when the flag is absent (the overwhelming majority of
+        requests, and every request when the feature is disabled — the
+        receiver that sets the flag is itself only connected when
+        ``DJANGO_WAF_TRUSTED_COOKIE_ENABLED`` is True, see
+        ``DjangoWafConfig.ready()``), so this changes nothing about the
+        response path for sites that don't use the feature.
+        """
+        response = self.get_response(request)
+
+        if getattr(request, "_waf_set_trusted_cookie", False):
+            from django_waf.services.trusted_user_service import set_trusted_cookie
+
+            set_trusted_cookie(response, request)
 
         return response
 
@@ -375,7 +404,7 @@ class WafMiddleware:
             # path to prevent infinite redirect loops. BLOCKED and THROTTLED
             # verdicts still apply — only the redirect is suppressed.
             if path.startswith(challenge_path) or path.startswith(verify_path):
-                return self.get_response(request)
+                return self._get_response(request)
 
             # Increment unsolved-challenge counter for escalation tracking
             try:
@@ -388,7 +417,7 @@ class WafMiddleware:
             return HttpResponseRedirect(challenge_url)
 
         # ALLOWED, PASSED, LOGGED — pass through to the view
-        return self.get_response(request)
+        return self._get_response(request)
 
     def _log_request(self, request, result, ip_address, user_agent, path, response_code):
         from django_waf import conf
@@ -508,10 +537,24 @@ def _is_exempt_host(request, exempt_hosts) -> bool:
 
 
 def _is_staff_user(request) -> bool:
-    """Return True if the request is from an authenticated staff or superuser.
+    """Return True if the request is from a trusted staff or superuser.
 
-    Per BR-RATE-003.
+    Per BR-RATE-003. Prefers the signed trusted-user cookie (#23,
+    ``django_waf.services.trusted_user_service.has_valid_trusted_cookie``)
+    so the bypass works even when ``WafMiddleware`` runs before
+    ``django.contrib.auth.middleware.AuthenticationMiddleware`` and
+    ``request.user`` is not yet available. Falls back to the original
+    ``request.user`` check so the bypass keeps working unchanged when the
+    WAF *is* placed after auth, or when the cookie feature is disabled
+    (``has_valid_trusted_cookie`` is then a guaranteed no-op, so this
+    fallback is the only path exercised — behaviour is unchanged from
+    before #23).
     """
+    from django_waf.services.trusted_user_service import has_valid_trusted_cookie
+
+    if has_valid_trusted_cookie(request):
+        return True
+
     return (
         hasattr(request, "user")
         and request.user.is_authenticated

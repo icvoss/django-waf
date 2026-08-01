@@ -37,6 +37,12 @@ def _run_feed_url_scheme_check():
     return check_feed_url_scheme(app_configs=None)
 
 
+def _run_trusted_cookie_trust_level_check():
+    from django_waf.checks import check_trusted_cookie_trust_level
+
+    return check_trusted_cookie_trust_level(app_configs=None)
+
+
 class TestChallengeDifficultyCheck:
     def test_recommended_defaults_produce_no_messages(self):
         import django_waf.conf as conf_mod
@@ -236,3 +242,87 @@ class TestMiddlewareOrderingCheck:
 
         assert len(messages) == 1
         assert messages[0].id == "django_waf.W004"
+
+    def test_suppressed_when_trusted_cookie_feature_enabled(self):
+        """#23: with DJANGO_WAF_TRUSTED_COOKIE_ENABLED True, the staff
+        bypass no longer depends on middleware order, so W004 must not
+        fire even for the exact bad ordering that triggers it above."""
+        import django_waf.conf as conf_mod
+
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django_waf.middleware.WafMiddleware",
+            "django.contrib.sessions.middleware.SessionMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+        ]
+
+        with (
+            override_settings(MIDDLEWARE=middleware),
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_ENABLED", True),
+        ):
+            assert _run_middleware_ordering_check() == []
+
+    def test_still_warns_when_feature_off_and_order_wrong(self):
+        """Unchanged behaviour when the feature is off (the default)."""
+        import django_waf.conf as conf_mod
+
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django_waf.middleware.WafMiddleware",
+            "django.contrib.sessions.middleware.SessionMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+        ]
+
+        with (
+            override_settings(MIDDLEWARE=middleware),
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_ENABLED", False),
+        ):
+            messages = _run_middleware_ordering_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W004"
+
+
+class TestTrustedCookieTrustLevelCheck:
+    """W006 — warns when DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL is neither
+    "staff" nor "authenticated" while the feature is enabled."""
+
+    def test_staff_produces_no_messages(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL", "staff"),
+        ):
+            assert _run_trusted_cookie_trust_level_check() == []
+
+    def test_authenticated_produces_no_messages(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL", "authenticated"),
+        ):
+            assert _run_trusted_cookie_trust_level_check() == []
+
+    def test_invalid_value_emits_w006_warning(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL", "everyone"),
+        ):
+            messages = _run_trusted_cookie_trust_level_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W006"
+        assert "everyone" in messages[0].message
+
+    def test_invalid_value_silent_when_feature_disabled(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_ENABLED", False),
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL", "everyone"),
+        ):
+            assert _run_trusted_cookie_trust_level_check() == []
