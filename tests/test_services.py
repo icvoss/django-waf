@@ -2978,35 +2978,76 @@ class TestReloadNginx:
 
 
 class TestVerifyRdns:
-    def test_returns_true_when_hostname_matches_pattern(self):
-        """_verify_rdns returns True when the resolved hostname matches the pattern."""
+    """_verify_rdns is forward-confirmed reverse DNS (FCrDNS) since #34 — see
+    tests/test_rdns_fcrdns.py for the full FCrDNS-specific coverage (spoofed
+    PTR denial, genuine FCrDNS allow, IPv4/IPv6, failure-cache TTLs). These
+    tests keep the lighter-weight "does the wiring still work" coverage in
+    this shared file."""
+
+    def test_returns_true_when_ptr_matches_and_forward_confirms(self):
+        """_verify_rdns returns True when the PTR hostname matches the pattern
+        AND the hostname forward-resolves back to the original IP."""
         from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
-        redis.get.return_value = None  # No cached value
+        redis.get.return_value = None  # No cached verdict
 
-        with patch(
-            "django_waf.services.rule_engine.socket.gethostbyaddr",
-            return_value=("crawl.googlebot.com", [], []),
+        with (
+            patch(
+                "django_waf.services.rule_engine.socket.gethostbyaddr",
+                return_value=("crawl.googlebot.com", [], []),
+            ),
+            patch(
+                "django_waf.services.rule_engine.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("66.249.66.1", 0))],
+            ),
         ):
             result = _verify_rdns("66.249.66.1", r"\.googlebot\.com$", redis)
 
         assert result is True
 
-    def test_returns_false_when_hostname_does_not_match(self):
-        """_verify_rdns returns False when the hostname does not match the pattern."""
+    def test_returns_false_when_hostname_does_not_match_pattern(self):
+        """A PTR hostname that doesn't match the pattern fails before any forward lookup."""
         from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
         redis.get.return_value = None
 
-        with patch("django_waf.services.rule_engine.socket.gethostbyaddr", return_value=("evil.example.com", [], [])):
+        with (
+            patch("django_waf.services.rule_engine.socket.gethostbyaddr", return_value=("evil.example.com", [], [])),
+            patch("django_waf.services.rule_engine.socket.getaddrinfo") as mock_forward,
+        ):
+            result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
+
+        assert result is False
+        mock_forward.assert_not_called()
+
+    def test_returns_false_when_forward_resolution_does_not_confirm(self):
+        """Spoofed PTR: the hostname matches the pattern, but forward
+        resolution of that hostname does not include the original IP —
+        the attacker controls the PTR record but not the pattern's DNS
+        zone (#34's core fix)."""
+        from django_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = None
+
+        with (
+            patch(
+                "django_waf.services.rule_engine.socket.gethostbyaddr",
+                return_value=("spoofed.googlebot.com", [], []),
+            ),
+            patch(
+                "django_waf.services.rule_engine.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("9.9.9.9", 0))],  # not the original IP
+            ),
+        ):
             result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
 
         assert result is False
 
-    def test_returns_false_on_dns_failure(self):
-        """_verify_rdns returns False when DNS lookup fails."""
+    def test_returns_false_on_reverse_dns_failure(self):
+        """_verify_rdns returns False when the reverse (PTR) lookup fails."""
         import socket
 
         from django_waf.services.rule_engine import _verify_rdns
@@ -3019,53 +3060,131 @@ class TestVerifyRdns:
 
         assert result is False
 
-    def test_uses_cached_hostname_from_redis(self):
-        """_verify_rdns uses the cached hostname from Redis without a DNS lookup."""
-        from django_waf.services.rule_engine import _verify_rdns
+    def test_returns_false_on_forward_dns_failure(self):
+        """_verify_rdns returns False when the forward lookup fails, even
+        though the PTR hostname matched the pattern (fails closed)."""
+        import socket
 
-        redis = _make_redis()
-        redis.get.return_value = b"crawl.googlebot.com"
-
-        with patch("django_waf.services.rule_engine.socket.gethostbyaddr") as mock_dns:
-            result = _verify_rdns("66.249.66.1", r"\.googlebot\.com$", redis)
-
-        mock_dns.assert_not_called()
-        assert result is True
-
-    def test_stores_resolved_hostname_in_redis(self):
-        """_verify_rdns caches the resolved hostname in Redis with a 24-hour TTL."""
         from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
         redis.get.return_value = None
 
-        with patch("django_waf.services.rule_engine.socket.gethostbyaddr", return_value=("host.example.com", [], [])):
+        with (
+            patch(
+                "django_waf.services.rule_engine.socket.gethostbyaddr",
+                return_value=("crawl.googlebot.com", [], []),
+            ),
+            patch(
+                "django_waf.services.rule_engine.socket.getaddrinfo",
+                side_effect=socket.gaierror,
+            ),
+        ):
+            result = _verify_rdns("66.249.66.1", r"\.googlebot\.com$", redis)
+
+        assert result is False
+
+    def test_uses_cached_positive_verdict_without_dns_lookup(self):
+        """_verify_rdns uses a cached positive verdict from Redis without
+        performing either DNS lookup."""
+        from django_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = b"1"
+
+        with (
+            patch("django_waf.services.rule_engine.socket.gethostbyaddr") as mock_reverse,
+            patch("django_waf.services.rule_engine.socket.getaddrinfo") as mock_forward,
+        ):
+            result = _verify_rdns("66.249.66.1", r"\.googlebot\.com$", redis)
+
+        mock_reverse.assert_not_called()
+        mock_forward.assert_not_called()
+        assert result is True
+
+    def test_uses_cached_negative_verdict_without_dns_lookup(self):
+        """A cached negative verdict ("0") also short-circuits both lookups."""
+        from django_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = b"0"
+
+        with patch("django_waf.services.rule_engine.socket.gethostbyaddr") as mock_reverse:
+            result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
+
+        mock_reverse.assert_not_called()
+        assert result is False
+
+    def test_stores_positive_verdict_with_24h_ttl(self):
+        """A successful FCrDNS verification is cached for 24 hours."""
+        from django_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = None
+
+        with (
+            patch(
+                "django_waf.services.rule_engine.socket.gethostbyaddr",
+                return_value=("host.example.com", [], []),
+            ),
+            patch(
+                "django_waf.services.rule_engine.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("1.2.3.4", 0))],
+            ),
+        ):
             _verify_rdns("1.2.3.4", r"example\.com$", redis)
 
         assert redis.setex.called
         call_args = redis.setex.call_args
         assert call_args.args[1] == 86400  # 24-hour TTL
-        assert call_args.args[2] == "host.example.com"
+        assert call_args.args[2] == "1"
 
-    def test_returns_false_for_empty_cached_hostname(self):
-        """_verify_rdns returns False when the cached hostname is an empty string."""
+    def test_stores_negative_verdict_with_short_failure_ttl(self):
+        """A failed verification is cached with DJANGO_WAF_RDNS_FAILURE_CACHE_TTL,
+        not the 24-hour positive TTL."""
+        import django_waf.conf as conf_mod
         from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
-        redis.get.return_value = b""  # Cached empty hostname (prior DNS failure)
+        redis.get.return_value = None
 
-        result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_RDNS_FAILURE_CACHE_TTL", 300),
+            patch("django_waf.services.rule_engine.socket.gethostbyaddr", return_value=("evil.example.com", [], [])),
+        ):
+            _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
+
+        assert redis.setex.called
+        call_args = redis.setex.call_args
+        assert call_args.args[1] == 300
+        assert call_args.args[2] == "0"
+
+    def test_returns_false_for_empty_ptr_hostname(self):
+        """An empty PTR hostname (successful lookup, empty result) fails
+        before any forward lookup."""
+        from django_waf.services.rule_engine import _verify_rdns
+
+        redis = _make_redis()
+        redis.get.return_value = None
+
+        with (
+            patch("django_waf.services.rule_engine.socket.gethostbyaddr", return_value=("", [], [])),
+            patch("django_waf.services.rule_engine.socket.getaddrinfo") as mock_forward,
+        ):
+            result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
 
         assert result is False
+        mock_forward.assert_not_called()
 
     def test_returns_false_for_invalid_rdns_regex(self):
         """_verify_rdns returns False gracefully when rdns_pattern is an invalid regex."""
         from django_waf.services.rule_engine import _verify_rdns
 
         redis = _make_redis()
-        redis.get.return_value = b"host.example.com"
+        redis.get.return_value = None
 
-        result = _verify_rdns("1.2.3.4", "[invalid(regex", redis)
+        with patch("django_waf.services.rule_engine.socket.gethostbyaddr", return_value=("host.example.com", [], [])):
+            result = _verify_rdns("1.2.3.4", "[invalid(regex", redis)
 
         assert result is False
 
@@ -3868,68 +3987,65 @@ class TestRuleEngineHelpers:
         # Must not raise
         _record_rule_hit("rule-123", redis)
 
-    # ------------------------------------------------------------------ _verify_rdns
+    # ------------------------------------------------------------------ _resolve_and_confirm_rdns
+    #
+    # _verify_rdns's own cache-hit/cache-miss/TTL behaviour is covered by
+    # TestVerifyRdns above and tests/test_rdns_fcrdns.py. These tests cover
+    # the split-out pure-resolution helper directly (no caching involved).
 
-    def test_verify_rdns_cache_miss_resolves_and_caches(self):
-        from django_waf.services.rule_engine import _verify_rdns
+    def test_resolve_and_confirm_matches_and_confirms(self):
+        from django_waf.services.rule_engine import _resolve_and_confirm_rdns
 
-        redis = MagicMock()
-        redis.get.return_value = None  # cache miss
+        with (
+            patch(
+                "django_waf.services.rule_engine.socket.gethostbyaddr",
+                return_value=("crawl-1-2-3-4.googlebot.com", [], []),
+            ),
+            patch(
+                "django_waf.services.rule_engine.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("1.2.3.4", 0))],
+            ),
+        ):
+            assert _resolve_and_confirm_rdns("1.2.3.4", r"\.googlebot\.com$") is True
+
+    def test_resolve_and_confirm_reverse_lookup_failure(self):
+        from django_waf.services.rule_engine import _resolve_and_confirm_rdns
+
+        with patch("django_waf.services.rule_engine.socket.gethostbyaddr", side_effect=OSError("no ptr")):
+            assert _resolve_and_confirm_rdns("203.0.113.1", r"\.googlebot\.com$") is False
+
+    def test_resolve_and_confirm_empty_hostname(self):
+        from django_waf.services.rule_engine import _resolve_and_confirm_rdns
+
+        with patch("django_waf.services.rule_engine.socket.gethostbyaddr", return_value=("", [], [])):
+            assert _resolve_and_confirm_rdns("203.0.113.1", r"\.googlebot\.com$") is False
+
+    def test_resolve_and_confirm_invalid_pattern(self):
+        """An invalid rDNS regex pattern is swallowed and returns False."""
+        from django_waf.services.rule_engine import _resolve_and_confirm_rdns
 
         with patch(
             "django_waf.services.rule_engine.socket.gethostbyaddr",
-            return_value=("crawl-1-2-3-4.googlebot.com", [], []),
+            return_value=("something.example.com", [], []),
         ):
-            result = _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis)
+            assert _resolve_and_confirm_rdns("1.2.3.4", "[unclosed") is False
 
-        assert result is True
-        redis.setex.assert_called_once()
+    def test_resolve_and_confirm_forward_mismatch_fails(self):
+        """PTR matches the pattern, but the forward-resolved set does not
+        include the original IP — the spoofed-PTR case #34 exists to catch."""
+        from django_waf.services.rule_engine import _resolve_and_confirm_rdns
 
-    def test_verify_rdns_cache_hit_uses_cached_hostname(self):
-        from django_waf.services.rule_engine import _verify_rdns
-
-        redis = MagicMock()
-        redis.get.return_value = "bingbot-5-6-7-8.search.msn.com"
-
-        result = _verify_rdns("5.6.7.8", r"\.search\.msn\.com$", redis)
-
-        assert result is True
-        # No socket call — cached
-        redis.setex.assert_not_called()
-
-    def test_verify_rdns_cache_hit_bytes_value(self):
-        """A bytes-valued cache entry is decoded before matching."""
-        from django_waf.services.rule_engine import _verify_rdns
-
-        redis = MagicMock()
-        redis.get.return_value = b"crawl-1-2-3-4.googlebot.com"
-
-        assert _verify_rdns("1.2.3.4", r"\.googlebot\.com$", redis) is True
-
-    def test_verify_rdns_resolution_failure_returns_false(self):
-        from django_waf.services.rule_engine import _verify_rdns
-
-        redis = MagicMock()
-        redis.get.return_value = None
-
-        with patch("django_waf.services.rule_engine.socket.gethostbyaddr", side_effect=OSError("no ptr")):
-            assert _verify_rdns("203.0.113.1", r"\.googlebot\.com$", redis) is False
-
-    def test_verify_rdns_no_hostname_returns_false(self):
-        """Empty hostname (cached) short-circuits to False."""
-        from django_waf.services.rule_engine import _verify_rdns
-
-        redis = MagicMock()
-        redis.get.return_value = ""
-        assert _verify_rdns("203.0.113.1", r"\.googlebot\.com$", redis) is False
-
-    def test_verify_rdns_invalid_pattern_returns_false(self):
-        """An invalid rDNS regex pattern is swallowed and returns False."""
-        from django_waf.services.rule_engine import _verify_rdns
-
-        redis = MagicMock()
-        redis.get.return_value = "something.example.com"
-        assert _verify_rdns("1.2.3.4", "[unclosed", redis) is False
+        with (
+            patch(
+                "django_waf.services.rule_engine.socket.gethostbyaddr",
+                return_value=("bingbot-5-6-7-8.search.msn.com", [], []),
+            ),
+            patch(
+                "django_waf.services.rule_engine.socket.getaddrinfo",
+                return_value=[(2, 1, 6, "", ("203.0.113.99", 0))],
+            ),
+        ):
+            assert _resolve_and_confirm_rdns("5.6.7.8", r"\.search\.msn\.com$") is False
 
     # ------------------------------------------------------------------ _action_to_verdict
 

@@ -54,9 +54,18 @@ class RuleCache(NamedTuple):
 _RULES_VERSION_KEY = "waf:rules:version"
 _RULES_CACHE_KEY = "waf:rules:cache:{version}"
 _BLOCKED_IP_KEY = "waf:blocked:{ip}"
-_BOT_RDNS_KEY = "waf:bot_rdns:{ip}"
+# Forward-confirmed rDNS (FCrDNS) verified-verdict cache (#34). Keyed on both
+# ip and rdns_pattern_hash: a single IP can legitimately be checked against
+# more than one AllowRule's rdns_pattern (e.g. a Googlebot pattern and a
+# Bingbot pattern both tried against the same request), and the verdict is a
+# function of both. The pattern is hashed (not embedded raw) so the key
+# stays a bounded length regardless of pattern content.
+_BOT_FCRDNS_KEY = "waf:bot_fcrdns:{ip}:{pattern_hash}"
 _STATS_KEY = "waf:stats:today"
 _CACHE_TTL = 600  # 10 minutes
+# Positive FCrDNS verifications are cached for 24 hours — PTR/forward DNS
+# records for legitimate crawler infrastructure change rarely.
+_FCRDNS_POSITIVE_CACHE_TTL = 86400
 
 _REBUILD_LOCK_KEY = "waf:rule_cache:lock"
 _REBUILD_LOCK_TTL = 5  # seconds
@@ -592,37 +601,108 @@ def _match_cidr(ip_address: str, cidr_pattern: str) -> bool:
 
 
 def _verify_rdns(ip_address: str, rdns_pattern: str, redis_client) -> bool:
-    """Verify that the IP's reverse DNS hostname matches rdns_pattern.
+    """Verify the IP via forward-confirmed reverse DNS (FCrDNS) (#34).
 
-    Results are cached in Redis for 24 hours (BR-EVAL-004).
+    A bare PTR (reverse-DNS) lookup is not proof of identity: an attacker
+    who controls the PTR record of their own IP (any cloud VM with settable
+    rDNS) can make ``socket.gethostbyaddr`` return a hostname that matches
+    ``rdns_pattern`` (e.g. anything ending ``.googlebot.com``) without being
+    Google at all. Forward confirmation closes that gap: after the PTR
+    hostname matches the pattern, the hostname is forward-resolved
+    (``socket.getaddrinfo``, both address families) and the check only
+    passes if the *original* IP appears among the forward-resolved
+    addresses — proving whoever controls ``rdns_pattern``'s DNS zone (e.g.
+    Google, for ``*.googlebot.com``) also vouches for this IP, not just
+    whoever controls the PTR record of the IP itself.
+
+    The final verified verdict (not the raw hostname) is cached in Redis,
+    keyed on both ip and rdns_pattern (hashed) since a single IP can
+    legitimately be checked against more than one AllowRule's pattern.
+    Positive verdicts cache for 24 hours; negative verdicts (pattern
+    mismatch, forward-resolution mismatch, or any DNS error on either
+    lookup) cache for DJANGO_WAF_RDNS_FAILURE_CACHE_TTL (default 5 minutes)
+    so a transient resolver outage does not suppress a legitimate crawler's
+    AllowRule match for a full day per IP.
+
+    Any DNS error — on the reverse lookup or the forward lookup — fails
+    closed (returns False).
 
     Args:
-        ip_address: IP to reverse-lookup.
-        rdns_pattern: Regex the resolved hostname must match.
+        ip_address: IP to reverse-lookup and confirm.
+        rdns_pattern: Regex the resolved PTR hostname must match.
         redis_client: Redis client for caching.
 
     Returns:
-        True if rDNS resolves and hostname matches the pattern.
+        True only if the PTR hostname matches rdns_pattern AND the
+        hostname's forward DNS resolution includes ip_address.
     """
-    cache_key = _BOT_RDNS_KEY.format(ip=ip_address)
-    cached_hostname = redis_client.get(cache_key)
+    from django_waf import conf
 
-    if cached_hostname is None:
-        try:
-            hostname = socket.gethostbyaddr(ip_address)[0]
-        except (socket.herror, socket.gaierror, OSError):
-            hostname = ""
-        redis_client.setex(cache_key, 86400, hostname)
-    else:
-        hostname = cached_hostname if isinstance(cached_hostname, str) else cached_hostname.decode()
+    cache_key = _fcrdns_cache_key(ip_address, rdns_pattern)
+    cached_verdict = redis_client.get(cache_key)
+    if cached_verdict is not None:
+        verdict_str = cached_verdict if isinstance(cached_verdict, str) else cached_verdict.decode()
+        return verdict_str == "1"
+
+    verdict = _resolve_and_confirm_rdns(ip_address, rdns_pattern)
+
+    ttl = _FCRDNS_POSITIVE_CACHE_TTL if verdict else conf.DJANGO_WAF_RDNS_FAILURE_CACHE_TTL
+    redis_client.setex(cache_key, ttl, "1" if verdict else "0")
+    return verdict
+
+
+def _fcrdns_cache_key(ip_address: str, rdns_pattern: str) -> str:
+    """Return the FCrDNS verdict cache key for an (ip, pattern) pair.
+
+    Not a security use — just a stable, bounded-length key fragment derived
+    from the pattern string, mirroring the same hashing approach used for
+    per-path rate-limit keys in rate_limiter.py.
+    """
+    import hashlib
+
+    pattern_hash = hashlib.sha1(rdns_pattern.encode(), usedforsecurity=False).hexdigest()[:12]
+    return _BOT_FCRDNS_KEY.format(ip=ip_address, pattern_hash=pattern_hash)
+
+
+def _resolve_and_confirm_rdns(ip_address: str, rdns_pattern: str) -> bool:
+    """Perform the actual reverse + forward DNS resolution and comparison.
+
+    No caching here — callers (``_verify_rdns``) own the cache. Split out
+    so the two concerns (DNS resolution vs. verdict caching) can be tested
+    independently.
+    """
+    try:
+        hostname = socket.gethostbyaddr(ip_address)[0]
+    except (socket.herror, socket.gaierror, OSError):
+        return False  # reverse lookup failed — fail closed
 
     if not hostname:
         return False
 
     try:
-        return bool(re.search(rdns_pattern, hostname, re.IGNORECASE))
+        if not re.search(rdns_pattern, hostname, re.IGNORECASE):
+            return False
     except re.error:
         return False
+
+    try:
+        forward_addresses = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
+    except (socket.gaierror, OSError):
+        return False  # forward lookup failed — fail closed
+
+    try:
+        target = ipaddress.ip_address(ip_address)
+    except ValueError:
+        return False
+
+    for candidate in forward_addresses:
+        try:
+            if ipaddress.ip_address(candidate) == target:
+                return True
+        except ValueError:
+            continue
+
+    return False
 
 
 def _action_to_verdict(action: str) -> str:
