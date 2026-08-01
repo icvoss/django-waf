@@ -36,7 +36,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("[dry-run] Analysing anomalies — no rules will be created."))
 
         try:
-            results = run_all_detectors(window_minutes=window_minutes)
+            results = run_all_detectors(window_minutes=window_minutes, dry_run=dry_run)
         except Exception as exc:
             raise CommandError(f"Anomaly detection failed: {exc}") from exc
 

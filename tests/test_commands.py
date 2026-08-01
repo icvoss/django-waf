@@ -161,7 +161,7 @@ class TestDetectAnomaliesCommand:
             out = StringIO()
             call_command("django_waf_detect_anomalies", "--dry-run", stdout=out)
 
-        mock_detect.assert_called_once_with(window_minutes=None)
+        mock_detect.assert_called_once_with(window_minutes=None, dry_run=True)
         output = out.getvalue()
         assert "dry-run" in output
         assert "would create" in output
@@ -177,7 +177,7 @@ class TestDetectAnomaliesCommand:
             out = StringIO()
             call_command("django_waf_detect_anomalies", stdout=out)
 
-        mock_detect.assert_called_once_with(window_minutes=None)
+        mock_detect.assert_called_once_with(window_minutes=None, dry_run=False)
         output = out.getvalue()
         assert "created" in output
         assert "3 anomaly rule(s)" in output
@@ -190,7 +190,7 @@ class TestDetectAnomaliesCommand:
         with patch("django_waf.services.anomaly_detector.run_all_detectors", mock_detect):
             call_command("django_waf_detect_anomalies", "--window-minutes=10")
 
-        mock_detect.assert_called_once_with(window_minutes=10)
+        mock_detect.assert_called_once_with(window_minutes=10, dry_run=False)
 
     @pytest.mark.django_db
     def test_no_anomalies_detected_message(self):
@@ -223,7 +223,7 @@ class TestDetectAnomaliesCommand:
             out = StringIO()
             call_command("django_waf_detect_anomalies", "--dry-run", "--window-minutes=20", stdout=out)
 
-        mock_detect.assert_called_once_with(window_minutes=20)
+        mock_detect.assert_called_once_with(window_minutes=20, dry_run=True)
         assert "dry-run" in out.getvalue()
 
     @pytest.mark.django_db
