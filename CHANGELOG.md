@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **New `docs/THREAT-MODEL.md` (#36).** django-waf is marketed and packaged
+  as a WAF; read literally that implies payload inspection (SQLi, XSS,
+  OWASP Core Rule Set-class coverage), which this package does not do. The
+  new document is a verified capability matrix (in scope: bot detection,
+  rate limiting, PoW challenges, reputation scoring, the form-defence
+  chain; out of scope: payload inspection, upload scanning, volumetric
+  DDoS), the trust boundaries (Redis, the opt-in threat feed, middleware
+  ordering), and an honest accounting of the automatic-enforcement safety
+  controls: what the schema already supports (provenance, confidence, TTL
+  fields; a post-hoc dashboard review path; a per-invocation dry-run mode)
+  against what it does not (no detector runs observe-only by default,
+  auto-generated rules carry no evidence in their `confidence`/`notes`
+  fields, review happens after enforcement rather than before it, no
+  aggregate false-positive-proxy metric exists). Four follow-on
+  implementation issues (#45, #46, #47, #48) are filed for the gaps this
+  document identifies rather than folded into this documentation pass. The
+  README now links to it and states the payload-inspection boundary
+  up front.
+
 ### Fixed
 
 - **The non-Redis cache fallback was broken: six Redis-only calls raised on
