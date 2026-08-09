@@ -1061,14 +1061,22 @@ class TestMiddlewareHelpers:
         with patch("django_redis.get_redis_connection", return_value=fake_conn):
             assert _get_redis_client() is fake_conn
 
-    def test_get_redis_client_falls_back_to_django_cache(self):
-        """When django-redis fails, falls back to django.core.cache."""
+    def test_get_redis_client_fails_open_to_none(self):
+        """When the configured cache is not a Redis backend, resolution fails open to None.
+
+        Superseded by #44 (tests/test_redis_fallback.py is the crux suite for
+        this contract): the pre-fix behaviour asserted here used to fall back
+        to django.core.cache.cache, an object with no Redis-only methods, so
+        callers several frames downstream raised AttributeError. Post-fix,
+        django_waf.services.redis_client.get_redis_client() is the single
+        resolution point and returns a real Redis client or None, never a
+        non-Redis stand-in.
+        """
         from django_waf.middleware import _get_redis_client
 
-        with patch("django_redis.get_redis_connection", side_effect=RuntimeError("no redis")):
-            client = _get_redis_client()
-            # Should return the Django cache instance
-            assert client is not None
+        client = _get_redis_client()
+
+        assert client is None
 
     def test_emit_request_blocked_sends_signal_with_verdict(self):
         """_emit_request_blocked sends the request_blocked signal with verdict from result.

@@ -38,6 +38,7 @@ from django_waf.enums import RuleAction, RuleType
 from django_waf.middleware import WafMiddleware
 from django_waf.models import BlockRule
 from django_waf.services.redis_client import get_redis_client, is_redis_backend
+from django_waf.testing.fixtures import waf_redis_mock  # noqa: F401 (used as a pytest fixture)
 
 # ---------------------------------------------------------------------------
 # The crux: the WAF must actually BLOCK when Redis is genuinely available,
