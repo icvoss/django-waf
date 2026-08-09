@@ -56,6 +56,16 @@ that reports healthy while blocking nothing is worse than one that refuses
 to start, and this check exists so an operator catches the misconfiguration
 at ``manage.py check`` rather than discovering it from a stream of
 per-request log lines.
+
+The leftmost-XFF check (``django_waf.W007``) warns when
+``DJANGO_WAF_TRUST_X_FORWARDED_FOR`` is enabled and
+``DJANGO_WAF_TRUSTED_PROXIES`` is empty (#42), the configuration under
+which ``client_ip.resolve_client_ip`` (BR-EVAL-008) falls back to trusting
+the leftmost ``X-Forwarded-For`` entry unconditionally: exactly the hop a
+client controls, and therefore spoofable by design. The resolver already
+logs a warning on every such request; this check surfaces the same risk
+once, at boot, so it is not only discoverable by noticing a per-request log
+line.
 """
 
 from __future__ import annotations
@@ -356,5 +366,44 @@ def check_redis_backend(app_configs, **kwargs):
                 "that is."
             ),
             id="django_waf.E004",
+        )
+    ]
+
+
+@register()
+def check_legacy_xff_trust(app_configs, **kwargs):
+    """Warn (``django_waf.W007``) when ``DJANGO_WAF_TRUST_X_FORWARDED_FOR``
+    is enabled with no ``DJANGO_WAF_TRUSTED_PROXIES`` configured (#42).
+
+    Under this combination, ``client_ip.resolve_client_ip`` (BR-EVAL-008)
+    falls back to trusting the leftmost ``X-Forwarded-For`` entry
+    unconditionally: exactly the entry a client controls, and therefore
+    spoofable by design. The resolver already logs a warning on every
+    request that takes this path; this check surfaces the same
+    configuration risk once, at boot.
+    """
+    from django_waf import conf
+
+    if not conf.DJANGO_WAF_TRUST_X_FORWARDED_FOR:
+        return []
+
+    if conf.DJANGO_WAF_TRUSTED_PROXIES:
+        return []
+
+    return [
+        Warning(
+            "DJANGO_WAF_TRUST_X_FORWARDED_FOR is True and "
+            "DJANGO_WAF_TRUSTED_PROXIES is empty: the client-IP resolver "
+            "is trusting the leftmost X-Forwarded-For entry unconditionally, "
+            "which is exactly the entry a client controls and can spoof to "
+            "choose its own block or rate-limit identity.",
+            hint=(
+                "Set DJANGO_WAF_TRUSTED_PROXIES to the CIDR ranges of your "
+                "actual reverse proxies so the resolver walks "
+                "X-Forwarded-For from a trusted boundary instead, or set "
+                "DJANGO_WAF_TRUST_X_FORWARDED_FOR = False if you do not sit "
+                "behind a proxy that sets this header."
+            ),
+            id="django_waf.W007",
         )
     ]

@@ -40,6 +40,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   misconfiguration at `manage.py check` rather than only discovering it
   from a stream of per-request log lines.
 
+### Added
+
+- New system check **`django_waf.W007`** (#42): warns at boot when
+  `DJANGO_WAF_TRUST_X_FORWARDED_FOR` is enabled and
+  `DJANGO_WAF_TRUSTED_PROXIES` is empty, the configuration under which
+  `client_ip.resolve_client_ip` (BR-EVAL-008) falls back to trusting the
+  leftmost `X-Forwarded-For` entry unconditionally: exactly the hop a
+  client controls, and therefore spoofable by design. The resolver already
+  logged a warning on every such request; this surfaces the same risk once,
+  at boot.
+
 ## [1.8.0] - 2026-08-01
 
 A single opt-in feature closing the last item from the 2026-08-01 triage: the
