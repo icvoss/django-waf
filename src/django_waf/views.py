@@ -75,20 +75,19 @@ def _get_ip(request: HttpRequest) -> str:
 
 
 def _get_redis_client():
+    """Return a Redis client instance, or None if Redis is unavailable.
+
+    Thin wrapper over ``django_waf.services.redis_client.get_redis_client``
+    (#44), kept so existing call sites and test patches within this module
+    (``django_waf.testing.fixtures.waf_redis_mock``) don't need to change.
+    Never falls back to a non-Redis cache object: see that module for why a
+    fake Redis client is worse than None here, it lets Redis-only calls
+    (``setex``, ``delete``, and so on in this module) raise deep inside a
+    view instead of the caller taking a clean, single fail-open decision.
     """
-    Return a Redis client, preferring django-redis.
-    Falls back to django.core.cache if django-redis is not installed.
-    """
-    try:
-        from django_redis import get_redis_connection  # type: ignore[import]
+    from django_waf.services.redis_client import get_redis_client
 
-        from django_waf import conf
-
-        return get_redis_connection(conf.DJANGO_WAF_REDIS_ALIAS)
-    except (ImportError, Exception):
-        from django.core.cache import cache
-
-        return cache
+    return get_redis_client()
 
 
 def _validate_next_url(request: HttpRequest, next_param: str | None) -> str:
@@ -169,6 +168,13 @@ class ChallengeView(NoIndexResponseMixin, TemplateView):
         ip = _get_ip(request)
         next_url = _validate_next_url(request, request.GET.get("next"))
         redis_client = _get_redis_client()
+        if redis_client is None:
+            # This view is only reached via a middleware redirect that
+            # itself required a working Redis client (#44): a direct hit
+            # with Redis unavailable is a misconfigured deployment or a
+            # stale bookmark, not the normal path. Fail explicitly rather
+            # than raise AttributeError deep inside issue_challenge().
+            return HttpResponse(_("This site is temporarily unavailable."), status=503)
         user_agent = request.META.get("HTTP_USER_AGENT", "")
 
         challenge_token = issue_challenge(ip, redis_client, user_agent=user_agent)
@@ -255,6 +261,10 @@ class VerifyView(NoIndexResponseMixin, View):
         ip = _get_ip(request)
         next_url = _validate_next_url(request, next_param)
         redis_client = _get_redis_client()
+        if redis_client is None:
+            # See ChallengeView.get: a direct hit on /waf/verify/ with Redis
+            # unavailable is a misconfiguration, not the normal path (#44).
+            return JsonResponse({"error": _("This site is temporarily unavailable.")}, status=503)
 
         try:
             verify_challenge_solution(token, nonce, ip, redis_client)

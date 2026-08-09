@@ -214,25 +214,21 @@ def _order_defences(names: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _default_redis_factory():
-    """Return the package-wide Redis client (or None on failure).
+    """Return the package-wide Redis client, or None on failure.
 
     The factory shape (callable returning client) matches what
     individual defences expect, so we can swap it for tests without
     monkey-patching the conf module.
+
+    Thin wrapper over ``django_waf.services.redis_client.get_redis_client``
+    (#44): never falls back to a non-Redis cache object, since a defence
+    calling a Redis-only command against a plain Django cache object would
+    raise deep inside the form-protection chain instead of the caller
+    taking a single clean fail-open decision.
     """
-    from django_waf import conf
+    from django_waf.services.redis_client import get_redis_client
 
-    try:
-        from django_redis import get_redis_connection
-
-        return get_redis_connection(conf.DJANGO_WAF_REDIS_ALIAS)
-    except Exception:
-        try:
-            from django.core.cache import cache
-
-            return cache
-        except Exception:
-            return None
+    return get_redis_client()
 
 
 # ---------------------------------------------------------------------------

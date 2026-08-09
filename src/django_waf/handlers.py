@@ -31,8 +31,12 @@ def _get_cache():
     """
     Return the configured cache backend for WAF operations.
 
-    Prefers django-redis (which supports atomic INCR) but falls back to
-    Django's default cache so the package works without django-redis in tests.
+    Unlike ``django_waf.services.redis_client.get_redis_client`` (#44), this
+    is intentionally allowed to fall back to the plain Django cache API,
+    because every call site below only ever calls ``incr``/``set``, both of
+    which the Django cache API implements directly. That is the one part of
+    #44's advertised fallback that was already genuinely safe: this
+    function's contract does not change.
     """
     from django.conf import settings
 
@@ -41,7 +45,10 @@ def _get_cache():
         from django_redis import get_redis_connection  # type: ignore[import-untyped]
 
         return get_redis_connection(alias)
-    except ImportError:
+    except (NotImplementedError, ImportError):
+        # NotImplementedError: alias is configured but not django-redis
+        # backed (e.g. LocMemCache), safe to fall back to here, unlike
+        # the Redis-only callers in middleware.py/views.py/rule_engine.py.
         from django.core.cache import caches
 
         return caches[alias]
