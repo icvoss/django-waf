@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **New `docs/THREAT-MODEL.md` (#36).** django-waf is marketed and packaged
+  as a WAF; read literally that implies payload inspection (SQLi, XSS,
+  OWASP Core Rule Set-class coverage), which this package does not do. The
+  new document is a verified capability matrix (in scope: bot detection,
+  rate limiting, PoW challenges, reputation scoring, the form-defence
+  chain; out of scope: payload inspection, upload scanning, volumetric
+  DDoS), the trust boundaries (Redis, the opt-in threat feed, middleware
+  ordering), and an honest accounting of the automatic-enforcement safety
+  controls: what the schema already supports (provenance, confidence, TTL
+  fields; a post-hoc dashboard review path; a per-invocation dry-run mode)
+  against what it does not (no detector runs observe-only by default,
+  auto-generated rules carry no evidence in their `confidence`/`notes`
+  fields, review happens after enforcement rather than before it, no
+  aggregate false-positive-proxy metric exists). Four follow-on
+  implementation issues (#45, #46, #47, #48) are filed for the gaps this
+  document identifies rather than folded into this documentation pass. The
+  README now links to it and states the payload-inspection boundary
+  up front.
+
+### Fixed
+
+- **The non-Redis cache fallback was broken: six Redis-only calls raised on
+  `LocMemCache` and the WAF silently failed open (#44).** Three
+  near-identical `_get_redis_client()`/`_default_redis_factory()`
+  implementations (`middleware.py`, `views.py`,
+  `forms/protection.py`) caught `django_redis.get_redis_connection()`
+  raising `NotImplementedError` (the configured cache alias is not a
+  django-redis backend, the common case for `LocMemCache` under
+  `DEBUG=True`) and fell back to returning `django.core.cache.cache`
+  itself. That object has no `setex`, no incr-with-init, no pipeline, and
+  no sorted-set support, so Redis-only calls in `rule_engine.py`,
+  `rate_limiter.py`, and elsewhere raised `AttributeError` several frames
+  later, caught by the middleware's outermost handler, which failed the
+  whole WAF open per BR-EVAL-007: it evaluated no rules at all, on any
+  project whose cache backend was not Redis, while looking from a plain
+  200 response exactly like a healthy pass. New
+  `django_waf.services.redis_client.get_redis_client()` is now the single
+  resolution point: it returns a real Redis client or `None`, never a
+  non-Redis object standing in for one. BR-EVAL-007's existing fail-open
+  policy for a genuine runtime Redis outage is unchanged and still applies;
+  what changes is that a *misconfigured* backend (the wrong kind of cache
+  configured, not a working Redis that is merely unreachable right now) is
+  now surfaced.
+- New system check **`django_waf.E004`** (Error): fires at boot when
+  `DJANGO_WAF_REDIS_ALIAS` is not configured as a `django_redis.cache.RedisCache`
+  backend, since rule evaluation, rate limiting, and challenge state have
+  no safe equivalent on a generic Django cache backend. A security control
+  that reports healthy while blocking nothing is worse than one that
+  refuses to start; this check exists so an operator catches the
+  misconfiguration at `manage.py check` rather than only discovering it
+  from a stream of per-request log lines.
+
+### Added
+
+- New system check **`django_waf.W007`** (#42): warns at boot when
+  `DJANGO_WAF_TRUST_X_FORWARDED_FOR` is enabled and
+  `DJANGO_WAF_TRUSTED_PROXIES` is empty, the configuration under which
+  `client_ip.resolve_client_ip` (BR-EVAL-008) falls back to trusting the
+  leftmost `X-Forwarded-For` entry unconditionally: exactly the hop a
+  client controls, and therefore spoofable by design. The resolver already
+  logged a warning on every such request; this surfaces the same risk once,
+  at boot.
+
 ## [1.8.0] - 2026-08-01
 
 A single opt-in feature closing the last item from the 2026-08-01 triage: the

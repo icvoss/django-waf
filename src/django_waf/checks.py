@@ -44,6 +44,28 @@ The trust-level check (``django_waf.W006``) warns when
 (``django_waf.services.trusted_user_service.get_trust_level`` coerces an
 unrecognised value to ``"staff"``), so this is a Warning about an
 ineffective setting, not an Error about a lockout.
+
+The Redis backend check (``django_waf.E004``) errors when
+``DJANGO_WAF_REDIS_ALIAS`` is not configured as a ``django-redis`` cache
+backend (#44). Rule evaluation, rate limiting, and challenge state have no
+safe equivalent on a generic Django cache backend (rate limiting alone uses
+Redis sorted sets and pipelines), so a misconfigured alias means the WAF
+fails open (BR-EVAL-007) for every single request, silently, from process
+start. This is an Error, not a Warning, deliberately: a security control
+that reports healthy while blocking nothing is worse than one that refuses
+to start, and this check exists so an operator catches the misconfiguration
+at ``manage.py check`` rather than discovering it from a stream of
+per-request log lines.
+
+The leftmost-XFF check (``django_waf.W007``) warns when
+``DJANGO_WAF_TRUST_X_FORWARDED_FOR`` is enabled and
+``DJANGO_WAF_TRUSTED_PROXIES`` is empty (#42), the configuration under
+which ``client_ip.resolve_client_ip`` (BR-EVAL-008) falls back to trusting
+the leftmost ``X-Forwarded-For`` entry unconditionally: exactly the hop a
+client controls, and therefore spoofable by design. The resolver already
+logs a warning on every such request; this check surfaces the same risk
+once, at boot, so it is not only discoverable by noticing a per-request log
+line.
 """
 
 from __future__ import annotations
@@ -307,5 +329,81 @@ def check_trusted_cookie_trust_level(app_configs, **kwargs):
             "population) rather than honouring this value.",
             hint='Set DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL to "staff" or "authenticated".',
             id="django_waf.W006",
+        )
+    ]
+
+
+@register()
+def check_redis_backend(app_configs, **kwargs):
+    """Error (``django_waf.E004``) when ``DJANGO_WAF_REDIS_ALIAS`` is not a
+    django-redis cache backend (#44).
+
+    Only inspects ``settings.CACHES``, never opens a connection: this check
+    must be cheap and side-effect-free like every other check in this
+    module, and must not be confused with a live Redis health check (a
+    correctly configured backend that is merely unreachable right now is
+    the outage BR-EVAL-007 already handles at runtime, not a misconfigured
+    one this check should flag).
+    """
+    from django_waf import conf
+    from django_waf.services.redis_client import is_redis_backend
+
+    if is_redis_backend(conf.DJANGO_WAF_REDIS_ALIAS):
+        return []
+
+    return [
+        Error(
+            f"DJANGO_WAF_REDIS_ALIAS={conf.DJANGO_WAF_REDIS_ALIAS!r} is not "
+            "configured as a django-redis cache backend. The WAF has no "
+            "safe fallback for rule evaluation, rate limiting, or "
+            "challenge state on a generic Django cache backend, and will "
+            "fail open (pass every request through without evaluation) "
+            "for the lifetime of this process.",
+            hint=(
+                f"Set CACHES[{conf.DJANGO_WAF_REDIS_ALIAS!r}]['BACKEND'] to "
+                "'django_redis.cache.RedisCache' pointing at a real Redis "
+                "instance, or point DJANGO_WAF_REDIS_ALIAS at a cache alias "
+                "that is."
+            ),
+            id="django_waf.E004",
+        )
+    ]
+
+
+@register()
+def check_legacy_xff_trust(app_configs, **kwargs):
+    """Warn (``django_waf.W007``) when ``DJANGO_WAF_TRUST_X_FORWARDED_FOR``
+    is enabled with no ``DJANGO_WAF_TRUSTED_PROXIES`` configured (#42).
+
+    Under this combination, ``client_ip.resolve_client_ip`` (BR-EVAL-008)
+    falls back to trusting the leftmost ``X-Forwarded-For`` entry
+    unconditionally: exactly the entry a client controls, and therefore
+    spoofable by design. The resolver already logs a warning on every
+    request that takes this path; this check surfaces the same
+    configuration risk once, at boot.
+    """
+    from django_waf import conf
+
+    if not conf.DJANGO_WAF_TRUST_X_FORWARDED_FOR:
+        return []
+
+    if conf.DJANGO_WAF_TRUSTED_PROXIES:
+        return []
+
+    return [
+        Warning(
+            "DJANGO_WAF_TRUST_X_FORWARDED_FOR is True and "
+            "DJANGO_WAF_TRUSTED_PROXIES is empty: the client-IP resolver "
+            "is trusting the leftmost X-Forwarded-For entry unconditionally, "
+            "which is exactly the entry a client controls and can spoof to "
+            "choose its own block or rate-limit identity.",
+            hint=(
+                "Set DJANGO_WAF_TRUSTED_PROXIES to the CIDR ranges of your "
+                "actual reverse proxies so the resolver walks "
+                "X-Forwarded-For from a trusted boundary instead, or set "
+                "DJANGO_WAF_TRUST_X_FORWARDED_FOR = False if you do not sit "
+                "behind a proxy that sets this header."
+            ),
+            id="django_waf.W007",
         )
     ]

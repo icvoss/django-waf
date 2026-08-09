@@ -43,6 +43,12 @@ def _run_trusted_cookie_trust_level_check():
     return check_trusted_cookie_trust_level(app_configs=None)
 
 
+def _run_legacy_xff_trust_check():
+    from django_waf.checks import check_legacy_xff_trust
+
+    return check_legacy_xff_trust(app_configs=None)
+
+
 class TestChallengeDifficultyCheck:
     def test_recommended_defaults_produce_no_messages(self):
         import django_waf.conf as conf_mod
@@ -326,3 +332,50 @@ class TestTrustedCookieTrustLevelCheck:
             patch.object(conf_mod, "DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL", "everyone"),
         ):
             assert _run_trusted_cookie_trust_level_check() == []
+
+
+class TestLegacyXffTrustCheck:
+    """W007 warns when DJANGO_WAF_TRUST_X_FORWARDED_FOR is enabled with no
+    DJANGO_WAF_TRUSTED_PROXIES configured (#42)."""
+
+    def test_disabled_produces_no_messages(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_TRUST_X_FORWARDED_FOR", False),
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_PROXIES", []),
+        ):
+            assert _run_legacy_xff_trust_check() == []
+
+    def test_enabled_with_trusted_proxies_produces_no_messages(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_TRUST_X_FORWARDED_FOR", True),
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_PROXIES", ["10.0.0.0/8"]),
+        ):
+            assert _run_legacy_xff_trust_check() == []
+
+    def test_enabled_with_no_trusted_proxies_emits_w007_warning(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_TRUST_X_FORWARDED_FOR", True),
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_PROXIES", []),
+        ):
+            messages = _run_legacy_xff_trust_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W007"
+
+    def test_disabled_with_no_trusted_proxies_is_silent(self):
+        """The default combination (both settings at their defaults) must
+        not warn: this check only fires when the spoofable legacy path is
+        actually reachable."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_TRUST_X_FORWARDED_FOR", False),
+            patch.object(conf_mod, "DJANGO_WAF_TRUSTED_PROXIES", []),
+        ):
+            assert _run_legacy_xff_trust_check() == []

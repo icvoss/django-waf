@@ -11,6 +11,13 @@ user-agent anomaly scoring, JS proof-of-work challenges, path-based threat
 scoring, nginx blocklist generation, and collective threat feed integration,
 all configurable without a reverse-proxy vendor.
 
+This is bot detection and anti-abuse tooling, not a payload-inspecting
+firewall: it does not scan request bodies for SQL injection, XSS, or other
+OWASP Core Rule Set-class attacks. See [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)
+for the full capability matrix, trust boundaries, and the current state of
+automatic-enforcement safety controls (evidence, confidence, and review
+path) before relying on this package as a site's only defence layer.
+
 ## Features
 
 - **Rate limiting**: sliding-window per-IP limits (burst, per-minute, per-5-min)

@@ -563,31 +563,22 @@ def _is_staff_user(request) -> bool:
 
 
 def _get_redis_client():
-    """Return a Redis client instance.
+    """Return a Redis client instance, or None if Redis is unavailable.
 
-    Tries django-redis's get_redis_connection first; falls back to the default
-    Django cache. Returns None if Redis is unavailable (fail-open policy).
+    Thin wrapper over ``django_waf.services.redis_client.get_redis_client``
+    (#44), kept so existing call sites and test patches within this module
+    (and ``django_waf.testing.fixtures.waf_redis_mock``) don't need to
+    change. See that module for why this never falls back to a non-Redis
+    cache object: a WAF that appears to keep evaluating requests using a
+    fake Redis client fails several frames deeper with an unhandled
+    AttributeError, which the middleware's outer handler then catches and
+    fails the whole WAF open, silently. Returning None here instead makes
+    every existing "if redis_client is None: fail open" call site in this
+    module (BR-EVAL-007) trigger deterministically instead.
     """
-    from django_waf import conf
+    from django_waf.services.redis_client import get_redis_client
 
-    try:
-        from django_redis import get_redis_connection
-
-        return get_redis_connection(conf.DJANGO_WAF_REDIS_ALIAS)
-    except Exception:
-        pass
-
-    try:
-        from django.core.cache import cache
-
-        # For non-redis cache backends this returns the cache object — callers
-        # that need Redis-specific commands will raise and be caught.
-        return cache
-    except Exception:
-        pass
-
-    logger.warning("django-waf: Redis unavailable — failing open")
-    return None
+    return get_redis_client()
 
 
 def _emit_request_blocked(result, ip_address: str, user_agent: str, path: str) -> None:
