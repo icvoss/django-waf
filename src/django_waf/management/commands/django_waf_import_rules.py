@@ -42,7 +42,7 @@ class Command(BaseCommand):
         from django.db import transaction
         from django.utils.dateparse import parse_datetime
 
-        from django_waf.enums import RuleSource
+        from django_waf.enums import ReviewStatus, RuleSource
         from django_waf.models import AllowRule, BlockRule
 
         file_path: str = options["file"]
@@ -115,6 +115,12 @@ class Command(BaseCommand):
                     feed_first_seen=feed_first_seen,
                     feed_reporters=entry.get("feed_reporters", 0),
                     notes=entry.get("notes", ""),
+                    # An imported rule is always source=admin (see module
+                    # docstring), so it is never queued for review by this
+                    # command: not_applicable is correct here and matches
+                    # the model default, not a re-tagging of the entry's
+                    # original review_status.
+                    review_status=entry.get("review_status", ReviewStatus.NOT_APPLICABLE),
                 )
                 created += 1
                 existing_block_keys.add(key)

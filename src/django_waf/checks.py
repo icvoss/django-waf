@@ -66,6 +66,16 @@ client controls, and therefore spoofable by design. The resolver already
 logs a warning on every such request; this check surfaces the same risk
 once, at boot, so it is not only discoverable by noticing a per-request log
 line.
+
+The observe-only detector-name check (``django_waf.W008``) warns when
+``DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS`` (BR-ANOM-008, #45) names a
+value that does not match any of the five anomaly detector function names.
+The setting is checked against
+``django_waf.services.anomaly_detector.DETECTOR_NAMES``, the same constant
+``_get_or_create_auto_rule`` reads to decide observe-only status, so a
+detector rename cannot silently desync the two: a typo or a stale name from
+a renamed detector would otherwise mean the operator believes a detector is
+running observe-only when it is, in fact, enforcing.
 """
 
 from __future__ import annotations
@@ -405,5 +415,35 @@ def check_legacy_xff_trust(app_configs, **kwargs):
                 "behind a proxy that sets this header."
             ),
             id="django_waf.W007",
+        )
+    ]
+
+
+@register()
+def check_observe_only_detector_names(app_configs, **kwargs):
+    """Warn (``django_waf.W008``) when ``DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS``
+    names a value that is not a known anomaly detector function name (#45).
+
+    Validated against ``anomaly_detector.DETECTOR_NAMES``, the single source
+    of truth also used by ``_get_or_create_auto_rule`` to decide observe-only
+    status, so this check and the runtime behaviour it validates cannot
+    desync if a detector is ever renamed.
+    """
+    from django_waf import conf
+    from django_waf.services.anomaly_detector import DETECTOR_NAMES
+
+    unknown = [name for name in conf.DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS if name not in DETECTOR_NAMES]
+    if not unknown:
+        return []
+
+    known = ", ".join(sorted(DETECTOR_NAMES))
+    return [
+        Warning(
+            f"DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS names an unrecognised "
+            f"detector: {unknown!r}. It will never match a real detector run, "
+            "so no detector will actually be forced into observe-only mode "
+            "for this entry.",
+            hint=f"Known detector names are: {known}.",
+            id="django_waf.W008",
         )
     ]

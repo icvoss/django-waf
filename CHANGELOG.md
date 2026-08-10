@@ -5,6 +5,67 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A standing per-detector observe-only mode, distinct from dry-run
+  (#45).** `DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS` names anomaly
+  detector functions (e.g. `["detect_cloud_spray"]`) that must always
+  create a quarantined `BlockRule` (inactive, pending review) regardless of
+  the package-wide quarantine setting, so an operator can build trust in
+  one detector's output without quarantining every detector's rules. This
+  is a standing configuration, unlike the existing per-invocation
+  `dry_run` flag, which suppresses every write unconditionally and takes
+  precedence over this setting. An unrecognised detector name is caught at
+  boot by the new `django_waf.W008` system check, validated against a
+  single source of truth also used by the quarantine decision itself, so a
+  detector rename cannot silently desync the setting from the functions it
+  names.
+- **Auto-generated rules now carry the evidence that triggered them
+  (#46).** Every anomaly detector computes a per-detector confidence score
+  (via a new shared `_scaled_confidence` helper, scaling from how far the
+  observed value clears its threshold, floored at 0.50 and capped strictly
+  below the hand-authored/feed default of 1.00) and renders the same
+  evidence dict already sent with the `anomaly_detected` signal into the
+  rule's `notes` field as human-readable `key: value` lines. A reviewer on
+  the dashboard's Anomalies panel can now see the request counts, score,
+  and window that triggered detection without cross-referencing logs.
+- **Auto-generated rules can be quarantined pending review before they
+  enforce (#47).** `DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES`, default
+  `False`, creates a newly-detected auto-generated `BlockRule` inactive and
+  pending review rather than enforcing immediately. The default is
+  deliberately not a mirror of the equivalent threat-feed setting (default
+  `True`): every existing deployment already relies on an auto-generated
+  rule enforcing immediately, and flipping the default would silently stop
+  enforcement on upgrade with no code change required. Confirming a
+  quarantined rule via the dashboard now also activates it (previously
+  confirmation only promoted the rule's source and cleared its expiry,
+  which had no effect if the rule was never deactivated in the first
+  place); rejecting one records the rejection. A re-detection of the same
+  rule by a later detector run can never silently undo either decision:
+  once a rule is confirmed or rejected, the detector's write path refreshes
+  only its expiry.
+- **Auto-generated rule outcomes are now tracked and surfaced (#48).**
+  `BlockRule` gains `review_status` (not applicable, pending, confirmed,
+  rejected, or expired unreviewed) and `reviewed_at`. A new
+  `anomaly_detector.auto_rule_review_outcomes` service function returns a
+  live, zero-filled count per status over a configurable window, surfaced
+  on the dashboard's Anomalies panel as the honest false-positive proxy
+  the previous challenge-solve-rate metric could not provide. `expire_rules`
+  now also sweeps auto-generated rules still pending review whose expiry
+  has passed, independently of whether they were ever activated, so a
+  quarantined rule nobody reviews is marked expired unreviewed rather than
+  sitting pending forever.
+
+### Changed
+
+- The dashboard's Anomalies panel now orders pending-review rules first,
+  shows each rule's confidence and review status, surfaces its evidence
+  (`notes`) as a title attribute, and only offers Confirm/Reject on rules
+  that are actually reviewable (pending, or not-applicable rules created
+  under the pre-#47 enforce-then-review default).
+
 ## [1.8.1] - 2026-08-09
 
 ### Documentation

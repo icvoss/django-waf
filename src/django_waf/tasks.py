@@ -268,25 +268,58 @@ def expire_rules() -> dict:
     """Deactivate BlockRules and AllowRules whose expires_at has passed.
 
     Sets is_active=False. Does not delete rules (BR-LIFE-001). Covers both
-    rule tables (#25) — an expired AllowRule left active would otherwise
+    rule tables (#25): an expired AllowRule left active would otherwise
     keep bypassing every WAF check indefinitely. After bulk update,
     manually increments the Redis rule version key to invalidate the cache
     since bulk update() does not trigger post_save signals.
 
+    Per BR-ANOM-010 (#48), also sweeps auto-generated BlockRules still
+    review_status=PENDING whose expires_at has passed, independently of
+    is_active: BlockRuleManager.expired() only ever matches is_active=True
+    rows, so a quarantined (is_active=False) rule that nobody reviews would
+    otherwise sit PENDING forever and never reach expired_unreviewed. This
+    sweep runs as a separate update() against a review_status-scoped
+    queryset, so it catches a PENDING rule whether the BlockRule sweep above
+    just deactivated it (still active when this task started) or it was
+    already quarantined (is_active=False from the moment it was created):
+    both cases end this task with is_active=False (from either this task's
+    own BlockRule sweep or the original quarantine) and
+    review_status=EXPIRED_UNREVIEWED.
+
     Returns:
         Dict with keys: expired_block_count, expired_allow_count,
-        expired_count (total, kept for backwards compatibility).
+        expired_count (total, kept for backwards compatibility),
+        expired_unreviewed_count.
 
     Scheduled: every 30 minutes (BR-LIFE-002).
     """
+    from django_waf.enums import ReviewStatus, RuleSource
     from django_waf.models import AllowRule, BlockRule
 
+    # Ordering note: this BlockRule deactivation and the review-status sweep
+    # below touch different fields (is_active vs review_status) via
+    # independent update() calls, so their relative order does not affect
+    # correctness. Running deactivation first keeps the log line's counts
+    # readable in the order an operator thinks about them (rules turned
+    # off, then rules flagged unreviewed).
     expired_block_count = BlockRule.objects.expired().update(is_active=False)
     expired_allow_count = AllowRule.objects.expired().update(is_active=False)
     total = expired_block_count + expired_allow_count
 
+    expired_unreviewed_count = BlockRule.objects.filter(
+        source=RuleSource.AUTO,
+        review_status=ReviewStatus.PENDING,
+        expires_at__lte=timezone.now(),
+    ).update(review_status=ReviewStatus.EXPIRED_UNREVIEWED)
+
     if total > 0:
-        # bulk update() bypasses signals — manually invalidate the rule cache
+        # bulk update() bypasses signals: manually invalidate the rule cache.
+        # A review_status-only change (expired_unreviewed_count) does not,
+        # by itself, affect evaluation: is_active is what the rule cache and
+        # rule_engine key off, and BlockRuleManager.active() already
+        # excludes quarantined (is_active=False) rows regardless of
+        # review_status. So cache invalidation is gated on `total`
+        # (is_active changes) only, not on expired_unreviewed_count.
         try:
             _invalidate_rule_cache_redis()
         except Exception:
@@ -298,10 +331,17 @@ def expire_rules() -> dict:
             expired_allow_count,
         )
 
+    if expired_unreviewed_count > 0:
+        logger.info(
+            "django-waf: marked %d auto-generated BlockRule(s) expired_unreviewed",
+            expired_unreviewed_count,
+        )
+
     return {
         "expired_block_count": expired_block_count,
         "expired_allow_count": expired_allow_count,
         "expired_count": total,
+        "expired_unreviewed_count": expired_unreviewed_count,
     }
 
 

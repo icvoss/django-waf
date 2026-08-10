@@ -217,6 +217,16 @@ without any feed.
 | `DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS` | `24` | Hours before auto-generated rules expire |
 | `DJANGO_WAF_SUSPICIOUS_PATH_PATTERNS` | `[r"\.env", r"wp-config\.php", ...]` | Regex patterns for suspicious paths (credential probes, config files); matched paths add `DJANGO_WAF_SUSPICIOUS_PATH_SCORE` to the anomaly score |
 | `DJANGO_WAF_SUSPICIOUS_PATH_SCORE` | `3.0` | Score added per suspicious path match |
+| `DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES` | `False` | When `True`, a newly-created auto-generated rule is created inactive and `pending` review rather than enforcing immediately (BR-ANOM-007). Default `False` deliberately, not a mirror of the threat-feed equivalent: flipping it would silently stop enforcement on every existing deployment on upgrade |
+| `DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS` | `[]` | Detector function names (e.g. `["detect_cloud_spray"]`) that always create quarantined rules regardless of the setting above, for building trust in one detector without quarantining all of them (BR-ANOM-008). An unrecognised name is flagged by `django_waf.W008` at boot |
+
+Auto-generated rules that are created quarantined, or that a detector in
+`DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS` creates, appear in the
+dashboard's Anomalies panel with `review_status=pending`. A superuser
+confirms (promotes to a permanent, enforcing rule) or rejects (deactivates)
+them from there; unreviewed quarantined rules that expire are marked
+`expired_unreviewed` rather than left `pending` forever. See
+`docs/THREAT-MODEL.md` section 4 for the full approval-queue design.
 
 ### Logging
 

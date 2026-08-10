@@ -107,95 +107,96 @@ promise.
 
 The acceptance criteria for this issue ask whether automatic enforcement
 retains evidence, confidence, TTL, and provenance, whether detectors
-support observe-only rollout, and whether outcomes are exposed. The honest
-answer, checked against `services/anomaly_detector.py` as of this pass, is
-partial: the schema already has the right shape, but the detectors that
-populate it do not use most of it.
+support observe-only rollout, and whether outcomes are exposed. As of the
+approve-before-enforce cluster (#45/#46/#47/#48), checked against
+`services/anomaly_detector.py`, `tasks.py`, and `views.py`, the schema and
+the detectors are now aligned: every gap this document previously
+identified is closed, gated behind two settings that default to the
+pre-#45 behaviour for existing deployments.
 
 ### What exists today
 
-- **The schema already carries provenance, confidence, and TTL fields.**
+- **The schema carries provenance, confidence, TTL, and review fields.**
   `BlockRule` has `source` (`admin`/`auto`/`feed`), `confidence`
-  (`DecimalField`), `expires_at`, `hit_count`, `last_hit_at`, and `notes`
-  (`models.py`). An auto-generated rule is tagged `source=auto` and expires
-  after `DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS` (or the escalation-specific TTL
-  for challenge-escalation blocks), so nothing an automatic detector
-  creates is permanent by default (BR-LIFE-001).
-- **A review path exists, after the fact.** The staff dashboard's
-  "Anomalies" panel (`views.DashboardAnomalyPanel`) lists auto-generated
-  `BlockRule`s created in the last 48 hours; a superuser can confirm
-  (promote to a permanent `source=admin` rule) or reject (deactivate) via
-  `DashboardAnomalyConfirmView`/`DashboardAnomalyRejectView`
-  (`views.py:611-656`). This is enforce-then-review, not
-  approve-before-enforcement: the rule is already live (challenging or
-  blocking real traffic) by the time a human sees it.
+  (`DecimalField`), `expires_at`, `hit_count`, `last_hit_at`, `notes`, and
+  now `review_status`/`reviewed_at` (`models.py`, BR-ANOM-010). An
+  auto-generated rule is tagged `source=auto` and expires after
+  `DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS` (or the escalation-specific TTL for
+  challenge-escalation blocks), so nothing an automatic detector creates is
+  permanent by default (BR-LIFE-001).
+- **A standing per-detector observe-only mode exists, distinct from
+  dry-run.** `DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS` (BR-ANOM-008)
+  names detector functions that always create a quarantined rule
+  (`is_active=False`, `review_status=pending`) regardless of the
+  package-wide quarantine setting, so an operator can build trust in one
+  detector's output without quarantining every detector's rules. An
+  unrecognised name is caught at boot by `django_waf.W008`, validated
+  against `anomaly_detector.DETECTOR_NAMES`, the single source of truth
+  also read by the quarantine decision itself, so a detector rename cannot
+  silently desync the setting from the functions it names.
+- **A package-wide quarantine setting exists.**
+  `DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES` (BR-ANOM-007), default
+  `False`, quarantines every newly-created auto-generated rule when set.
+  The default is deliberately not a mirror of BR-FEED-008's equivalent
+  (default `True`): every existing deployment already relies on an
+  auto-generated rule enforcing immediately, and flipping this default
+  would silently stop enforcement on upgrade with no code change on the
+  consumer's side.
+- **Auto-generated rules carry the evidence that triggered them.**
+  `_get_or_create_auto_rule` now accepts `confidence` and `evidence`
+  keyword arguments (BR-ANOM-009); every one of the five detectors passes
+  its own per-detector confidence (computed by the shared
+  `_scaled_confidence` helper from how far the observed value clears its
+  threshold, floored at 0.50 and capped below 0.99) and the same evidence
+  dict already built for the `anomaly_detected` signal, rendered into
+  `notes` as one `key: value` line per entry. A reviewer on the dashboard's
+  Anomalies panel sees the request counts, score, and window that
+  triggered detection without cross-referencing logs.
+- **Approve-before-enforce is a real queue, not enforce-then-review.**
+  When quarantine or observe-only applies, a newly-created rule is
+  `is_active=False` from the moment it is written: the rule engine's
+  `active()` queryset excludes it, so it never challenges or blocks real
+  traffic until a superuser confirms it via `DashboardAnomalyConfirmView`
+  (which also activates it and sets `review_status=confirmed`) or rejects
+  it via `DashboardAnomalyRejectView` (`review_status=rejected`). A later
+  detector run matching the same rule can never silently undo either
+  decision: the re-detection guard in `_get_or_create_auto_rule` omits
+  `is_active`/`review_status` from the write once a rule is `confirmed` or
+  `rejected`, refreshing only `expires_at`.
+- **An outcome metric exists.** `anomaly_detector.auto_rule_review_outcomes`
+  is a live `GROUP BY review_status` query over auto-generated rules in a
+  configurable window (default 7 days), zero-filled across every
+  `ReviewStatus` bucket, surfaced on the dashboard's Anomalies panel. A
+  quarantined rule nobody reviews before it expires is caught by
+  `expire_rules`' independent `review_status=pending` sweep (BR-ANOM-010),
+  which does not rely on `BlockRuleManager.expired()`'s `is_active=True`
+  filter, so it also catches a rule that was never activated.
+- **A dry-run mode exists for manual detector invocation, unconditional
+  and taking precedence over the two settings above.** From 1.7.0,
+  `run_all_detectors(dry_run=True)` and the `django_waf_detect_anomalies
+  --dry-run` command flag genuinely suppress every write (BR-ANOM-006).
+  Per BR-ANOM-008, dry-run's no-writes contract is unconditional: it
+  suppresses writes regardless of quarantine or observe-only status.
 - **Log-only exists as an enum value the rule engine honours.**
   `RuleAction.LOG_ONLY` (`enums.py:13`) is a real, evaluated action for
   manually-authored `BlockRule`s (BR-BL-005 excludes it from the nginx
-  export; the middleware still applies it at the application layer).
-- **A dry-run mode exists for manual detector invocation.** From 1.7.0,
-  `run_all_detectors(dry_run=True)` and the `django_waf_detect_anomalies
-  --dry-run` command flag genuinely suppress every write (BR-ANOM-006).
-  This is a per-invocation safety valve for an operator testing detector
-  behaviour, not a standing configuration a detector runs under
-  continuously.
-- **The closest existing proxy for a false-positive signal is the
-  challenge solve rate.** `IPReputationAdmin` (`admin.py:424-425`) computes
-  `challenge_success_rate` (passes over total challenges) per IP. It is a
-  proxy, not a purpose-built false-positive metric: it conflates "solved
-  the PoW" with "was not a false positive", which are not the same claim
-  for every verdict type (a `BlockRule` block, for instance, is never
-  challenged at all, so it never contributes to this rate).
+  export; the middleware still applies it at the application layer). This
+  is distinct from observe-only: a `LOG_ONLY` rule is active and evaluated
+  on every request; an observe-only detector's rule is not active at all.
+- **The challenge solve rate remains a secondary proxy for false
+  positives.** `IPReputationAdmin` (`admin.py`) computes
+  `challenge_success_rate` (passes over total challenges) per IP. It still
+  conflates "solved the PoW" with "was not a false positive", and a
+  `BlockRule` block is never challenged at all, so `auto_rule_review_outcomes`
+  above is the more direct signal for auto-generated rules specifically.
 
-### What does not exist today (gaps this document surfaces, not fixes)
+### What operators must still opt into
 
-- **No detector runs in a standing observe-only mode.** Every anomaly
-  detector hardcodes its action: `detect_ua_rotation`, `detect_subnet_burst`,
-  and `detect_cloud_spray` create `action=RuleAction.CHALLENGE`
-  (`anomaly_detector.py:76, 142, 455`); `detect_challenge_farms` and
-  `detect_unsolved_challenges` create `action=RuleAction.BLOCK`
-  (`anomaly_detector.py:196, 336`). Every one of these is created
-  `is_active=True` (`anomaly_detector.py:614`), so
-  it enforces from the moment it is written, before any human sees it. The
-  `dry_run` flag above is the only way to run a detector without writing
-  anything, and it is an all-or-nothing per-invocation switch, not a
-  per-detector "log only, do not enforce" standing policy.
-- **Auto-generated rules carry none of the evidence fields the schema
-  already has room for.** `_get_or_create_auto_rule`'s `defaults` dict
-  sets `name`, `match_type`, `is_active`, and `expires_at` only
-  (`anomaly_detector.py:611-616`); it never sets `confidence` (so every
-  auto rule silently inherits the model default, `1.00`, the same value a
-  hand-authored admin rule would carry) and never sets `notes` (so the
-  only human-readable evidence for why a rule fired lives in the rule's
-  `name` string and a transient `anomaly_detected` signal payload that is
-  not persisted anywhere a later reviewer can read). A reviewer looking at
-  the dashboard's Anomalies panel sees a rule and a creation timestamp,
-  not the request counts, score, or window that triggered it.
-- **No aggregate outcome metric is exposed anywhere.** The dashboard shows
-  today's verdict counts (`DashboardStatsPanel`) and top-blocked IPs
-  (`DashboardTopBlockedPanel`), but nothing answers "of the rules an
-  automatic detector created this week, how many were confirmed versus
-  rejected versus left un-reviewed and simply expired". That number would
-  be the honest false-positive proxy this package is missing.
-
-### Follow-on work (tracked separately, not part of this documentation pass)
-
-Per the triage plan for #36, closing the gaps above is implementation
-work, scoped here and filed as separate issues so this documentation pass
-does not silently expand into a feature build:
-
-1. Give each detector an independent `dry_run`-equivalent standing mode
-   (observe-only per detector, not only per manual invocation), so an
-   operator can run detection with zero enforcement until they trust it.
-2. Populate `confidence` and `notes` on every auto-generated rule with the
-   evidence that triggered it (request counts, score, window), using the
-   fields the schema already has.
-3. Turn the dashboard's Anomalies panel into an approval queue for a
-   configurable subset of detectors (quarantined like feed-sourced allow
-   rules, BR-FEED-008, rather than enforce-then-review by default).
-4. Add a confirmed/rejected/expired-unreviewed outcome metric, surfaced on
-   the dashboard, as the real false-positive proxy this document
-   identifies as missing.
+Both `DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES` and
+`DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS` default to the pre-#45
+enforce-then-review behaviour: an existing deployment sees no change in
+enforcement until it sets one of them. Approve-before-enforce is available,
+not automatic.
 
 ---
 
@@ -204,11 +205,14 @@ does not silently expand into a feature build:
 django-waf is an in-process Django anti-abuse and bot-management system:
 rate limiting, PoW challenges, IP/UA/CIDR rules, reputation scoring, an
 opt-in collective threat feed, and a form-defence chain, all built and
-verified against source. It is not a payload-inspecting firewall, has no
-DDoS mitigation, and its automatic-enforcement detectors currently act
-before any human reviews them, with the review path itself running
-after enforcement rather than before it. Any positioning or sales
-conversation should lead with what section 2 lists as built, name the
-gaps in section 4 rather than let a prospective buyer discover them, and
-treat "WAF" as the category label the market searches for, not a literal
-capability claim this document cannot back up.
+verified against source. It is not a payload-inspecting firewall and has
+no DDoS mitigation. Its automatic-enforcement detectors enforce
+immediately by default, matching every deployment's behaviour before this
+document's follow-on work, but an operator can now opt a detector, or every
+detector, into approve-before-enforce (quarantine on creation, review via
+the dashboard, an outcome metric, and per-detector observe-only), closing
+the gap this document originally identified. Any positioning or sales
+conversation should lead with what section 2 lists as built, describe the
+approve-before-enforce controls in section 4 as opt-in rather than
+standing behaviour, and treat "WAF" as the category label the market
+searches for, not a literal capability claim this document cannot back up.

@@ -49,6 +49,12 @@ def _run_legacy_xff_trust_check():
     return check_legacy_xff_trust(app_configs=None)
 
 
+def _run_observe_only_detector_names_check():
+    from django_waf.checks import check_observe_only_detector_names
+
+    return check_observe_only_detector_names(app_configs=None)
+
+
 class TestChallengeDifficultyCheck:
     def test_recommended_defaults_produce_no_messages(self):
         import django_waf.conf as conf_mod
@@ -379,3 +385,29 @@ class TestLegacyXffTrustCheck:
             patch.object(conf_mod, "DJANGO_WAF_TRUSTED_PROXIES", []),
         ):
             assert _run_legacy_xff_trust_check() == []
+
+
+class TestObserveOnlyDetectorNamesCheck:
+    """W008 warns when DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS names an
+    unrecognised detector (#45)."""
+
+    def test_empty_default_is_silent(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS", []):
+            assert _run_observe_only_detector_names_check() == []
+
+    def test_valid_detector_name_is_silent(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS", ["detect_cloud_spray"]):
+            assert _run_observe_only_detector_names_check() == []
+
+    def test_unknown_detector_name_emits_w008_warning(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS", ["detect_typo_name"]):
+            messages = _run_observe_only_detector_names_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W008"

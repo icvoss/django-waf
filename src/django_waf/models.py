@@ -14,6 +14,7 @@ from django_waf.enums import (
     ChallengeStatus,
     MatchType,
     RequestLogSource,
+    ReviewStatus,
     RuleAction,
     RuleSource,
     RuleType,
@@ -191,6 +192,27 @@ class BlockRule(BaseModel):
     notes = models.TextField(
         blank=True,
         verbose_name=_("notes"),
+        help_text=_(
+            "Populated for feed-sourced rules today. Auto-generated rules populate this with a "
+            "human-readable rendering of the detection evidence (BR-ANOM-009)."
+        ),
+    )
+    review_status = models.CharField(
+        max_length=20,
+        choices=ReviewStatus.choices,
+        default=ReviewStatus.NOT_APPLICABLE,
+        db_index=True,
+        verbose_name=_("review status"),
+        help_text=_(
+            "Review state for an auto-generated rule (BR-ANOM-010). Stays 'not applicable' for "
+            "admin and feed rules, and for auto rules that were never queued for review."
+        ),
+    )
+    reviewed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_("reviewed at"),
+        help_text=_("Set when review_status transitions to confirmed or rejected."),
     )
 
     objects = BlockRuleManager()
@@ -209,6 +231,7 @@ class BlockRule(BaseModel):
                 condition=Q(is_active=True),
                 name="django_waf_br_exp_active_idx",
             ),
+            models.Index(fields=["source", "review_status"], name="django_waf_br_review_idx"),
         ]
 
     def __str__(self) -> str:

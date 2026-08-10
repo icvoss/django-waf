@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 from datetime import timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
 from django.db import transaction
 from django.utils import timezone
@@ -22,6 +23,22 @@ logger = logging.getLogger("django_waf.anomaly_detector")
 # botnet that spoofs a static bare-origin referer to defeat the missing-referer
 # check must therefore be treated the same as a missing referer (issue #24).
 BARE_ORIGIN_REFERER_RE = r"^https?://[^/]+$"
+
+# Single source of truth for the five detector function names, so
+# DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS (BR-ANOM-008) and the boot-time
+# check that validates it (checks.check_observe_only_detector_names,
+# django_waf.W008) cannot desync if a detector is ever renamed. Each
+# detector passes its own __name__-matching entry as detector_name to
+# _get_or_create_auto_rule.
+DETECTOR_NAMES = frozenset(
+    {
+        "detect_ua_rotation",
+        "detect_subnet_burst",
+        "detect_challenge_farms",
+        "detect_unsolved_challenges",
+        "detect_cloud_spray",
+    }
+)
 
 
 def detect_ua_rotation(
@@ -68,6 +85,12 @@ def detect_ua_rotation(
 
     for row in qs:
         ip = row["ip_address"]
+        details = {"distinct_ua_count": row["distinct_ua_count"], "window_minutes": window_minutes}
+        confidence = _scaled_confidence(
+            observed=row["distinct_ua_count"],
+            threshold=effective_threshold,
+            span=effective_threshold * 2,
+        )
         rule, created = _get_or_create_auto_rule(
             name=f"Auto: UA rotation from {ip}",
             rule_type=RuleType.IP,
@@ -76,6 +99,9 @@ def detect_ua_rotation(
             action=RuleAction.CHALLENGE,
             expiry=expiry,
             dry_run=dry_run,
+            detector_name="detect_ua_rotation",
+            confidence=confidence,
+            evidence=details,
         )
         if created:
             created_rules.append(rule)
@@ -83,7 +109,7 @@ def detect_ua_rotation(
                 _emit_anomaly_signal(
                     rule=rule,
                     anomaly_type=AnomalyType.UA_ROTATION,
-                    details={"distinct_ua_count": row["distinct_ua_count"], "window_minutes": window_minutes},
+                    details=details,
                 )
                 logger.info("django-waf: auto-created UA rotation rule for %s", ip)
 
@@ -134,6 +160,12 @@ def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list
         if count <= burst_threshold:
             continue
 
+        details = {"count": count, "mean": mean_count, "threshold": burst_threshold}
+        confidence = _scaled_confidence(
+            observed=count,
+            threshold=burst_threshold,
+            span=burst_threshold * 2,
+        )
         rule, created = _get_or_create_auto_rule(
             name=f"Auto: subnet burst from {subnet}",
             rule_type=RuleType.CIDR,
@@ -142,6 +174,9 @@ def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list
             action=RuleAction.CHALLENGE,
             expiry=expiry,
             dry_run=dry_run,
+            detector_name="detect_subnet_burst",
+            confidence=confidence,
+            evidence=details,
         )
         if created:
             created_rules.append(rule)
@@ -149,7 +184,7 @@ def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list
                 _emit_anomaly_signal(
                     rule=rule,
                     anomaly_type=AnomalyType.SUBNET_FLOOD,
-                    details={"count": count, "mean": mean_count, "threshold": burst_threshold},
+                    details=details,
                 )
                 logger.info("django-waf: auto-created subnet burst rule for %s (count=%d)", subnet, count)
 
@@ -187,6 +222,11 @@ def detect_challenge_farms(window_hours: int = 24, dry_run: bool = False) -> lis
 
     for rep in suspects:
         ip = rep.ip_address
+        details = {
+            "challenge_failures": rep.challenge_failures,
+            "challenge_passes": rep.challenge_passes,
+        }
+        confidence = _scaled_confidence(observed=rep.challenge_failures, threshold=10, span=20)
 
         rule, created = _get_or_create_auto_rule(
             name=f"Auto: challenge farm from {ip}",
@@ -196,6 +236,9 @@ def detect_challenge_farms(window_hours: int = 24, dry_run: bool = False) -> lis
             action=RuleAction.BLOCK,
             expiry=expiry,
             dry_run=dry_run,
+            detector_name="detect_challenge_farms",
+            confidence=confidence,
+            evidence=details,
         )
         if created:
             created_rules.append(rule)
@@ -203,10 +246,7 @@ def detect_challenge_farms(window_hours: int = 24, dry_run: bool = False) -> lis
                 _emit_anomaly_signal(
                     rule=rule,
                     anomaly_type=AnomalyType.CHALLENGE_FARM,
-                    details={
-                        "challenge_failures": rep.challenge_failures,
-                        "challenge_passes": rep.challenge_passes,
-                    },
+                    details=details,
                 )
                 logger.info("django-waf: auto-created challenge farm rule for %s", ip)
 
@@ -325,8 +365,21 @@ def detect_unsolved_challenges(
             continue
 
         empty_count = empty_referer_counts.get(ip, 0)
-        if empty_count / non_root_count < referer_ratio:
+        empty_referer_ratio = empty_count / non_root_count
+        if empty_referer_ratio < referer_ratio:
             continue
+
+        details = {
+            "challenged_count": row["challenged_count"],
+            "empty_referer_ratio": round(empty_referer_ratio, 2),
+            "non_root_requests": non_root_count,
+            "window_minutes": window_minutes,
+        }
+        confidence = _scaled_confidence(
+            observed=empty_referer_ratio,
+            threshold=referer_ratio,
+            span=1 - referer_ratio,
+        )
 
         rule, created = _get_or_create_auto_rule(
             name=f"Auto: unsolved challenges from {ip}",
@@ -336,6 +389,9 @@ def detect_unsolved_challenges(
             action=RuleAction.BLOCK,
             expiry=expiry,
             dry_run=dry_run,
+            detector_name="detect_unsolved_challenges",
+            confidence=confidence,
+            evidence=details,
         )
         if created:
             created_rules.append(rule)
@@ -343,18 +399,13 @@ def detect_unsolved_challenges(
                 _emit_anomaly_signal(
                     rule=rule,
                     anomaly_type=AnomalyType.UNSOLVED_CHALLENGE,
-                    details={
-                        "challenged_count": row["challenged_count"],
-                        "empty_referer_ratio": round(empty_count / non_root_count, 2),
-                        "non_root_requests": non_root_count,
-                        "window_minutes": window_minutes,
-                    },
+                    details=details,
                 )
                 logger.info(
                     "django-waf: auto-created unsolved challenge rule for %s (challenged=%d, referer_empty=%.0f%%)",
                     ip,
                     row["challenged_count"],
-                    (empty_count / non_root_count) * 100,
+                    empty_referer_ratio * 100,
                 )
 
     return created_rules
@@ -447,6 +498,15 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
             if count < 2:
                 continue
 
+            details = {
+                "subnet": subnet,
+                "ip_count": count,
+                "total_spray_ips": len(suspicious_ips),
+                "user_agent": ua[:200],
+                "window_minutes": window_minutes,
+            }
+            confidence = _scaled_confidence(observed=count, threshold=min_ips, span=min_ips * 2)
+
             rule, created = _get_or_create_auto_rule(
                 name=f"Auto: cloud spray from {subnet} ({count} IPs, UA: {ua[:40]})",
                 rule_type=RuleType.CIDR,
@@ -455,6 +515,9 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
                 action=RuleAction.CHALLENGE,
                 expiry=expiry,
                 dry_run=dry_run,
+                detector_name="detect_cloud_spray",
+                confidence=confidence,
+                evidence=details,
             )
             if created:
                 created_rules.append(rule)
@@ -462,13 +525,7 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
                     _emit_anomaly_signal(
                         rule=rule,
                         anomaly_type=AnomalyType.CLOUD_SPRAY,
-                        details={
-                            "subnet": subnet,
-                            "ip_count": count,
-                            "total_spray_ips": len(suspicious_ips),
-                            "user_agent": ua[:200],
-                            "window_minutes": window_minutes,
-                        },
+                        details=details,
                     )
                     logger.info(
                         "django-waf: auto-created cloud spray rule for %s (%d IPs)",
@@ -537,6 +594,53 @@ def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) 
     }
 
 
+def auto_rule_review_outcomes(window_hours: int = 168) -> dict:
+    """Return the confirmed/rejected/expired-unreviewed outcome counts (BR-ANOM-010).
+
+    A live GROUP BY over BlockRule, not a separate aggregate table (per the
+    ratified spec decision, CHK-OPEN-005): review_status is queried directly,
+    so there is nothing to keep in sync. Every ReviewStatus bucket is present
+    and zero-filled even when no rows fall into it.
+
+    ``not_applicable`` rules were never queued for review (BR-ANOM-007): they
+    are counted in their own bucket, never folded into ``pending``, so the
+    metric does not misrepresent a rule nobody was ever asked to review as
+    one still awaiting a decision.
+
+    Args:
+        window_hours: How far back, in hours, to look at BlockRule.created_at.
+            Default 168 (7 days).
+
+    Returns:
+        Dict with keys "pending", "confirmed", "rejected",
+        "expired_unreviewed", "not_applicable", and "total".
+    """
+    from django.db.models import Count
+
+    from django_waf.enums import ReviewStatus, RuleSource
+    from django_waf.models import BlockRule
+
+    window_start = timezone.now() - timedelta(hours=window_hours)
+    rows = (
+        BlockRule.objects.filter(source=RuleSource.AUTO, created_at__gte=window_start)
+        .values("review_status")
+        .annotate(count=Count("id"))
+    )
+
+    counts = dict.fromkeys(ReviewStatus.values, 0)
+    for row in rows:
+        counts[row["review_status"]] = row["count"]
+
+    return {
+        "pending": counts[ReviewStatus.PENDING],
+        "confirmed": counts[ReviewStatus.CONFIRMED],
+        "rejected": counts[ReviewStatus.REJECTED],
+        "expired_unreviewed": counts[ReviewStatus.EXPIRED_UNREVIEWED],
+        "not_applicable": counts[ReviewStatus.NOT_APPLICABLE],
+        "total": sum(counts.values()),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -567,6 +671,45 @@ def _get_subnet_prefix(ip: str) -> str:
     return str(ipaddress.ip_network(f"{ip}/{prefix_length}", strict=False))
 
 
+def _scaled_confidence(observed: float, threshold: float, span: float) -> Decimal:
+    """Compute an auto-generated rule's confidence from how far it clears a threshold.
+
+    Implements the shared shape of every per-detector confidence formula in
+    03-services.md section 7: ``min(0.99, 0.5 + (observed - threshold) / span)``,
+    floored at 0.5 (a detection that only just clears its threshold is a
+    coin-flip signal, not a confident one). The 0.99 figure is an asymptotic
+    ceiling, never an achievable value: after quantisation to two decimal
+    places the result is capped so it never reaches 0.99, which would
+    otherwise be reachable for a wide-enough margin and make an
+    auto-generated rule's confidence indistinguishable from the 1.00
+    hand-authored/feed default (BR-ANOM-009).
+
+    Args:
+        observed: The value the detector measured (e.g. distinct UA count).
+        threshold: The threshold the detector compares against.
+        span: The denominator that scales the margin. Guarded against zero
+            or negative values (falls back to 1.0) so a misconfigured
+            threshold cannot raise ZeroDivisionError or invert the scale.
+
+    Returns:
+        A Decimal quantised to 2 decimal places (matching the model field's
+        ``DecimalField(max_digits=3, decimal_places=2)``), in the range
+        [0.50, 0.99) - the formula approaches but never reaches 0.99
+        (03-services.md section 7), so an unbounded margin cannot produce a
+        value indistinguishable from the 0.99 ceiling itself.
+    """
+    safe_span = span if span > 0 else 1.0
+    raw = 0.5 + (observed - threshold) / safe_span
+    # Cap strictly below 0.99 after quantisation: min(raw, 0.99) alone can
+    # round-trip to exactly 0.99 for a wide-enough margin (e.g. 0.985 rounds
+    # up under ROUND_HALF_UP), which would violate the "never reaches 0.99"
+    # guarantee that keeps an auto-generated rule's confidence always
+    # distinguishable from the 1.00 hand-authored/feed default (BR-ANOM-009).
+    # 0.984 is the largest two-decimal-safe value that quantises to 0.98.
+    clamped = min(0.984, max(0.5, raw))
+    return Decimal(str(clamped)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 def _get_or_create_auto_rule(
     *,
     name: str,
@@ -576,12 +719,16 @@ def _get_or_create_auto_rule(
     action: str,
     expiry,
     dry_run: bool = False,
+    detector_name: str = "",
+    confidence: Decimal | None = None,
+    evidence: dict | None = None,
 ) -> tuple:
     """Create or refresh an auto-generated BlockRule, avoiding duplicates.
 
     Uses update_or_create keyed on (rule_type, pattern, source=AUTO, action)
     so concurrent detector runs cannot create duplicates. If the rule already
-    exists, its expiry and is_active flag are refreshed.
+    exists, its expiry and is_active flag are refreshed, subject to the
+    re-detection guard below.
 
     If duplicate rows already exist (created before this function existed, or
     via a race condition), catches MultipleObjectsReturned, deduplicates by
@@ -594,6 +741,31 @@ def _get_or_create_auto_rule(
     would report (``False`` if a matching auto rule is already active,
     ``True`` otherwise), so command/task output describing "would create N
     rules" matches what a subsequent non-dry-run invocation would actually do.
+    Dry-run's no-writes contract is unconditional (BR-ANOM-006) and takes
+    precedence over quarantine/observe-only, which only have an observable
+    effect on a non-dry-run invocation.
+
+    Quarantine decision (BR-ANOM-007, BR-ANOM-008): a newly-created rule is
+    quarantined, is_active=False and review_status=PENDING, when either
+    DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES is True or ``detector_name`` is
+    listed in DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS. Otherwise it is
+    created enforcing, is_active=True and review_status=NOT_APPLICABLE,
+    exactly as before this rule existed.
+
+    Evidence (BR-ANOM-009): when ``confidence`` is given, it is stored on
+    the rule. When ``evidence`` is given, it is rendered as a human-readable
+    ``notes`` value (one "key: value" line per entry), the same dict already
+    built for the anomaly_detected signal. Neither key is touched when the
+    corresponding argument is omitted, so a caller not yet passing them sees
+    unchanged behaviour.
+
+    Re-detection guard (BR-ANOM-007, mirrors threat_feed.sync_feed's
+    survive-later-syncs guarantee for feed-sourced allow rules): before
+    writing, the existing row's review_status (if any) is read. When it is
+    already CONFIRMED or REJECTED, is_active and review_status are left out
+    of ``defaults`` entirely, so a later detector run refreshes only
+    expires_at (and the evidence fields) and can never silently undo an
+    operator's decision.
 
     Returns:
         (rule, created) tuple. ``rule`` is unsaved (``rule._state.adding is
@@ -602,8 +774,14 @@ def _get_or_create_auto_rule(
         ``default=uuid.uuid4``, so Django generates the UUID at
         instantiation regardless of whether the instance is ever saved.
     """
-    from django_waf.enums import RuleSource
+    from django_waf import conf
+    from django_waf.enums import ReviewStatus, RuleSource
     from django_waf.models import BlockRule
+
+    quarantine = conf.DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES
+    observe_only = conf.DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS
+    is_active_on_create = not (quarantine or detector_name in observe_only)
+    review_status_on_create = ReviewStatus.NOT_APPLICABLE if is_active_on_create else ReviewStatus.PENDING
 
     lookup = {
         "rule_type": rule_type,
@@ -614,9 +792,14 @@ def _get_or_create_auto_rule(
     defaults = {
         "name": name,
         "match_type": match_type,
-        "is_active": True,
+        "is_active": is_active_on_create,
+        "review_status": review_status_on_create,
         "expires_at": expiry,
     }
+    if confidence is not None:
+        defaults["confidence"] = confidence
+    if evidence is not None:
+        defaults["notes"] = "\n".join(f"{key}: {value}" for key, value in evidence.items())
 
     if dry_run:
         existing = BlockRule.objects.filter(**lookup).first()
@@ -626,18 +809,45 @@ def _get_or_create_auto_rule(
 
     try:
         with transaction.atomic():
-            rule, created = BlockRule.objects.update_or_create(**lookup, defaults=defaults)
+            rule, created = _update_or_create_auto_rule(lookup, defaults)
         return rule, created
     except BlockRule.MultipleObjectsReturned:
         logger.warning(
-            "django-waf: duplicate BlockRule rows for %s/%s — deduplicating",
+            "django-waf: duplicate BlockRule rows for %s/%s, deduplicating",
             rule_type,
             pattern,
         )
         _deduplicate_block_rules(**lookup)
         with transaction.atomic():
-            rule, created = BlockRule.objects.update_or_create(**lookup, defaults=defaults)
+            rule, created = _update_or_create_auto_rule(lookup, defaults)
         return rule, created
+
+
+def _update_or_create_auto_rule(lookup: dict, defaults: dict) -> tuple:
+    """Read-before-write wrapper around BlockRule.objects.update_or_create.
+
+    A plain single-shot update_or_create would let a later detector run
+    silently undo an operator's review decision: BR-ANOM-007 requires that
+    once an auto-generated rule's review_status is CONFIRMED or REJECTED, a
+    re-detection of the same (rule_type, pattern, source=AUTO, action) must
+    refresh only expires_at (and the evidence fields), leaving is_active and
+    review_status exactly as the operator last set them. This mirrors
+    threat_feed.sync_feed's equivalent guarantee for feed-sourced allow
+    rules (services/threat_feed.py).
+
+    Must run inside the same transaction.atomic() block as its caller so the
+    read and the write are consistent.
+    """
+    from django_waf.enums import ReviewStatus
+    from django_waf.models import BlockRule
+
+    existing = BlockRule.objects.filter(**lookup).select_for_update().first()
+    write_defaults = dict(defaults)
+    if existing is not None and existing.review_status in (ReviewStatus.CONFIRMED, ReviewStatus.REJECTED):
+        write_defaults.pop("is_active", None)
+        write_defaults.pop("review_status", None)
+
+    return BlockRule.objects.update_or_create(**lookup, defaults=write_defaults)
 
 
 def _deduplicate_block_rules(**lookup) -> int:
