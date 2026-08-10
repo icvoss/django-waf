@@ -607,6 +607,11 @@ def auto_rule_review_outcomes(window_hours: int = 168) -> dict:
     metric does not misrepresent a rule nobody was ever asked to review as
     one still awaiting a decision.
 
+    The window matches a rule that is either still ``source=auto`` or carries
+    any review status other than ``not_applicable``. Confirming a rule
+    promotes it to ``source=admin``, so filtering on source alone would empty
+    the ``confirmed`` bucket permanently (django-waf #56).
+
     Args:
         window_hours: How far back, in hours, to look at BlockRule.created_at.
             Default 168 (7 days).
@@ -615,14 +620,27 @@ def auto_rule_review_outcomes(window_hours: int = 168) -> dict:
         Dict with keys "pending", "confirmed", "rejected",
         "expired_unreviewed", "not_applicable", and "total".
     """
-    from django.db.models import Count
+    from django.db.models import Count, Q
 
     from django_waf.enums import ReviewStatus, RuleSource
     from django_waf.models import BlockRule
 
     window_start = timezone.now() - timedelta(hours=window_hours)
+    # Match on provenance OR review state, not on source alone. A confirmed
+    # rule is promoted to source=ADMIN by DashboardAnomalyConfirmView (which
+    # is what stops it reappearing in the review queue and stops the detector
+    # re-matching it on its source=AUTO lookup key), so a source=AUTO-only
+    # filter would drop every rule out of this metric at the exact moment it
+    # was confirmed, leaving the confirmed bucket permanently empty and the
+    # metric reporting only the outcomes nobody approved.
+    #
+    # Widening on review_status rather than source is precise rather than
+    # loose: review_status only ever leaves NOT_APPLICABLE for a rule an
+    # anomaly detector created, so no hand-authored or feed-sourced rule can
+    # enter the count through this arm.
+    reviewed = ~Q(review_status=ReviewStatus.NOT_APPLICABLE)
     rows = (
-        BlockRule.objects.filter(source=RuleSource.AUTO, created_at__gte=window_start)
+        BlockRule.objects.filter(Q(source=RuleSource.AUTO) | reviewed, created_at__gte=window_start)
         .values("review_status")
         .annotate(count=Count("id"))
     )

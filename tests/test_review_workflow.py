@@ -470,3 +470,91 @@ class TestAutoRuleReviewOutcomes:
         outcomes = auto_rule_review_outcomes()
 
         assert outcomes["total"] == 0
+
+    def test_hand_authored_admin_rule_still_excluded_after_widened_filter(self):
+        """django-waf#56 regression guard: widening the filter to catch a
+        confirmed (now source=ADMIN) rule must not sweep in an unrelated
+        hand-authored admin rule that was never touched by the review
+        workflow. A plain BlockRuleFactory() row (source=ADMIN,
+        review_status=NOT_APPLICABLE) must stay out of every bucket."""
+        from django_waf.services.anomaly_detector import auto_rule_review_outcomes
+
+        BlockRuleFactory()
+
+        outcomes = auto_rule_review_outcomes()
+
+        assert outcomes["total"] == 0
+        assert outcomes["confirmed"] == 0
+        assert outcomes["not_applicable"] == 0
+
+    def test_confirmed_rule_counted_in_confirmed_bucket_via_real_confirm_path(self, client: Client, settings):
+        """django-waf#56: confirming a rule through the real
+        DashboardAnomalyConfirmView promotes it to source=ADMIN. Against the
+        pre-fix source=AUTO-only filter this rule would vanish from the
+        metric the instant it was confirmed, permanently zeroing the
+        confirmed bucket. Must go through the real HTTP confirm path. a
+        hand-set source/review_status on a factory would not exercise the
+        promotion this bug depends on.
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import auto_rule_review_outcomes, detect_ua_rotation
+
+        settings.ROOT_URLCONF = "tests.urls"
+        superuser = _make_superuser("outcomes-confirmer")
+        client.force_login(superuser)
+
+        ip = "203.0.113.40"
+        _seed_rotating_ip(ip)
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24),
+            patch.object(conf_mod, "DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES", True),
+        ):
+            created = detect_ua_rotation(window_minutes=10, threshold=20)
+        assert len(created) == 1
+        rule_id = created[0].pk
+
+        response = client.post(f"/waf/dashboard/anomalies/{rule_id}/confirm/")
+        assert response.status_code == 200
+
+        rule = BlockRule.objects.get(pk=rule_id)
+        assert rule.source == RuleSource.ADMIN
+        assert rule.review_status == ReviewStatus.CONFIRMED
+
+        outcomes = auto_rule_review_outcomes()
+
+        assert outcomes["confirmed"] == 1
+        assert outcomes["total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# django-waf#53: AnomalyType has no value without an emitting detector
+# ---------------------------------------------------------------------------
+
+
+class TestAnomalyTypeMatchesEmittingDetectors:
+    def test_burst_and_path_hammering_removed(self):
+        """django-waf#53: BURST and PATH_HAMMERING were never emitted by any
+        detector and are removed from the enum."""
+        from django_waf.enums import AnomalyType
+
+        assert not hasattr(AnomalyType, "BURST")
+        assert not hasattr(AnomalyType, "PATH_HAMMERING")
+        assert "burst" not in AnomalyType.values
+        assert "path_hammering" not in AnomalyType.values
+
+    def test_every_remaining_value_is_emitted_by_a_detector(self):
+        """Every AnomalyType value is referenced as an anomaly_type= kwarg
+        somewhere in anomaly_detector.py, i.e. some detector actually emits
+        it. Guards against the category re-drifting from its detectors."""
+        import inspect
+
+        from django_waf.enums import AnomalyType
+        from django_waf.services import anomaly_detector
+
+        source = inspect.getsource(anomaly_detector)
+
+        for member in AnomalyType:
+            assert f"AnomalyType.{member.name}" in source, (
+                f"AnomalyType.{member.name} has no emitting detector in anomaly_detector.py"
+            )
