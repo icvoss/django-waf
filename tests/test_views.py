@@ -843,6 +843,56 @@ class TestAnomalyConfirmView:
         assert rule.source == RuleSource.ADMIN
         assert rule.expires_at is None
 
+    def test_confirm_sets_review_status_confirmed_and_reviewed_at(self):
+        """BR-ANOM-010: confirming sets review_status=CONFIRMED and stamps reviewed_at."""
+        from django_waf.enums import ReviewStatus, RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
+
+        rule = BlockRuleFactory(source=RuleSource.AUTO, review_status=ReviewStatus.PENDING, reviewed_at=None)
+        client = Client()
+        superuser = User.objects.create_user(
+            username="superconfreview",
+            email="superconfreview@example.com",
+            password="pass",
+            is_staff=True,
+            is_superuser=True,
+        )
+        client.force_login(superuser)
+
+        response = client.post(f"/waf/dashboard/anomalies/{rule.id}/confirm/")
+
+        assert response.status_code == 200
+        rule.refresh_from_db()
+        assert rule.review_status == ReviewStatus.CONFIRMED
+        assert rule.reviewed_at is not None
+
+    def test_confirm_activates_a_quarantined_rule(self):
+        """BR-ANOM-007: confirming a quarantined (is_active=False) rule must
+        also activate it, not just promote/change its review status."""
+        from django_waf.enums import ReviewStatus, RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
+
+        rule = BlockRuleFactory(
+            source=RuleSource.AUTO,
+            review_status=ReviewStatus.PENDING,
+            is_active=False,
+        )
+        client = Client()
+        superuser = User.objects.create_user(
+            username="superconfactivate",
+            email="superconfactivate@example.com",
+            password="pass",
+            is_staff=True,
+            is_superuser=True,
+        )
+        client.force_login(superuser)
+
+        response = client.post(f"/waf/dashboard/anomalies/{rule.id}/confirm/")
+
+        assert response.status_code == 200
+        rule.refresh_from_db()
+        assert rule.is_active is True
+
 
 class TestAnomalyRejectView:
     """POST /dashboard/anomalies/<id>/reject/ deactivates a rule."""
@@ -887,3 +937,26 @@ class TestAnomalyRejectView:
         response = client.post(f"/waf/dashboard/anomalies/{rule.id}/reject/")
 
         assert response.content == b""
+
+    def test_reject_sets_review_status_rejected_and_reviewed_at(self):
+        """BR-ANOM-010: rejecting sets review_status=REJECTED and stamps reviewed_at."""
+        from django_waf.enums import ReviewStatus, RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
+
+        rule = BlockRuleFactory(source=RuleSource.AUTO, review_status=ReviewStatus.PENDING, reviewed_at=None)
+        client = Client()
+        superuser = User.objects.create_user(
+            username="superrejreview",
+            email="superrejreview@example.com",
+            password="pass",
+            is_staff=True,
+            is_superuser=True,
+        )
+        client.force_login(superuser)
+
+        response = client.post(f"/waf/dashboard/anomalies/{rule.id}/reject/")
+
+        assert response.status_code == 200
+        rule.refresh_from_db()
+        assert rule.review_status == ReviewStatus.REJECTED
+        assert rule.reviewed_at is not None

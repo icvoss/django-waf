@@ -39,6 +39,24 @@ class RuleSource(models.TextChoices):
     FEED = "feed", _("Threat feed")
 
 
+class ReviewStatus(models.TextChoices):
+    """Review state for an auto-generated ``BlockRule`` (BR-ANOM-010, #48).
+
+    Only meaningful for ``source=auto`` rows. ``admin`` and ``feed`` rows
+    are created, and stay, ``not_applicable``: they have no review workflow.
+    An auto-generated rule stays ``not_applicable`` too when it is created
+    enforcing (quarantine off, detector not observe-only, the pre-#47
+    default): it was never queued for review, so ``pending`` would
+    misrepresent it as awaiting a decision nobody was ever going to make.
+    """
+
+    NOT_APPLICABLE = "not_applicable", _("Not applicable")
+    PENDING = "pending", _("Pending review")
+    CONFIRMED = "confirmed", _("Confirmed")
+    REJECTED = "rejected", _("Rejected")
+    EXPIRED_UNREVIEWED = "expired_unreviewed", _("Expired unreviewed")
+
+
 class Verdict(models.TextChoices):
     """The outcome recorded for a logged request."""
 

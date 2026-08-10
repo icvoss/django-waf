@@ -101,6 +101,8 @@ def _serialise_block_rule(rule) -> dict:
         "feed_first_seen": rule.feed_first_seen.isoformat() if rule.feed_first_seen else None,
         "feed_reporters": rule.feed_reporters,
         "notes": rule.notes,
+        "review_status": rule.review_status,
+        "reviewed_at": rule.reviewed_at.isoformat() if rule.reviewed_at else None,
     }
 
 

@@ -30,6 +30,7 @@ class BlockRuleSerializer(serializers.ModelSerializer):
             "hit_count",
             "last_hit_at",
             "source",
+            "reviewed_at",
         ]
 
 

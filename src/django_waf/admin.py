@@ -122,14 +122,15 @@ class BlockRuleAdmin(admin.ModelAdmin):
         "priority",
         "is_active",
         "source",
+        "review_status",
         "hit_count",
         "expires_at",
         "confidence",
     ]
-    list_filter = ["rule_type", "action", "is_active", "source"]
+    list_filter = ["rule_type", "action", "is_active", "source", "review_status"]
     search_fields = ["name", "pattern", "notes"]
     ordering = ["priority", "name"]
-    readonly_fields = ["hit_count", "last_hit_at", "created_at", "updated_at"]
+    readonly_fields = ["hit_count", "last_hit_at", "created_at", "updated_at", "reviewed_at"]
     actions = [activate_rules, deactivate_rules, extend_expiry]
     fieldsets = [
         (
@@ -152,6 +153,12 @@ class BlockRuleAdmin(admin.ModelAdmin):
             _("Expiry"),
             {
                 "fields": ["expires_at"],
+            },
+        ),
+        (
+            _("Review"),
+            {
+                "fields": ["review_status", "reviewed_at"],
             },
         ),
         (

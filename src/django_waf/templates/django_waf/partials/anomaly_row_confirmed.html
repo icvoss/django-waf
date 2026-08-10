@@ -2,7 +2,7 @@
 {# Replaces the anomaly row after a superuser confirms (promotes) it. #}
 <tr id="anomaly-row-{{ rule.id }}" style="opacity:0.6;">
     <td>
-        <code title="{{ rule.name }}">{{ rule.pattern|truncatechars:40 }}</code>
+        <code title="{{ rule.notes|default:rule.name }}">{{ rule.pattern|truncatechars:40 }}</code>
     </td>
     <td>
         {% if rule.action == "block" %}
@@ -15,11 +15,15 @@
             <span class="badge badge-log">{{ rule.get_action_display }}</span>
         {% endif %}
     </td>
-    <td>{{ rule.created_at|date:"d M Y H:i" }}</td>
-    <td>&mdash;</td>
+    <td>{{ rule.confidence }}</td>
     <td>
         <span style="font-size:0.75rem;color:#15803d;font-weight:600;">
             &#x2713; {% trans "Confirmed" %}
         </span>
+    </td>
+    <td>{{ rule.created_at|date:"d M Y H:i" }}</td>
+    <td>&mdash;</td>
+    <td>
+        <span style="font-size:0.75rem;color:#9ca3af;">&mdash;</span>
     </td>
 </tr>

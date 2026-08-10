@@ -1,10 +1,19 @@
 {% load i18n %}
+{% if review_outcomes %}
+<p style="color:#6b7280;font-size:0.8125rem;margin:0 0 0.75rem 0;">
+    {% blocktrans trimmed with confirmed=review_outcomes.confirmed rejected=review_outcomes.rejected expired_unreviewed=review_outcomes.expired_unreviewed pending=review_outcomes.pending %}
+    Last 7 days: {{ pending }} pending, {{ confirmed }} confirmed, {{ rejected }} rejected, {{ expired_unreviewed }} expired unreviewed.
+    {% endblocktrans %}
+</p>
+{% endif %}
 {% if rules %}
 <table>
     <thead>
         <tr>
             <th>{% trans "Pattern" %}</th>
             <th>{% trans "Action" %}</th>
+            <th>{% trans "Confidence" %}</th>
+            <th>{% trans "Review" %}</th>
             <th>{% trans "Created" %}</th>
             <th>{% trans "Expires" %}</th>
             <th>{% trans "Actions" %}</th>
@@ -14,7 +23,7 @@
         {% for rule in rules %}
         <tr id="anomaly-row-{{ rule.id }}">
             <td>
-                <code title="{{ rule.name }}">{{ rule.pattern|truncatechars:40 }}</code>
+                <code title="{{ rule.notes|default:rule.name }}">{{ rule.pattern|truncatechars:40 }}</code>
             </td>
             <td>
                 {% if rule.action == "block" %}
@@ -27,6 +36,20 @@
                     <span class="badge badge-log">{{ rule.get_action_display }}</span>
                 {% endif %}
             </td>
+            <td>{{ rule.confidence }}</td>
+            <td>
+                {% if rule.review_status == "pending" %}
+                    <span class="badge badge-pending">{% trans "Pending" %}</span>
+                {% elif rule.review_status == "confirmed" %}
+                    <span style="font-size:0.75rem;color:#15803d;font-weight:600;">{% trans "Confirmed" %}</span>
+                {% elif rule.review_status == "rejected" %}
+                    <span style="font-size:0.75rem;color:#b91c1c;font-weight:600;">{% trans "Rejected" %}</span>
+                {% elif rule.review_status == "expired_unreviewed" %}
+                    <span style="font-size:0.75rem;color:#92400e;font-weight:600;">{% trans "Expired unreviewed" %}</span>
+                {% else %}
+                    <span style="font-size:0.75rem;color:#6b7280;">{% trans "Not applicable" %}</span>
+                {% endif %}
+            </td>
             <td>{{ rule.created_at|date:"d M Y H:i" }}</td>
             <td>
                 {% if rule.expires_at %}
@@ -36,22 +59,26 @@
                 {% endif %}
             </td>
             <td>
-                {% url 'django_waf:anomaly-confirm' rule.id as confirm_url %}
-                {% url 'django_waf:anomaly-reject' rule.id as reject_url %}
-                <button class="btn btn-confirm"
-                        hx-post="{{ confirm_url }}"
-                        hx-target="#anomaly-row-{{ rule.id }}"
-                        hx-swap="outerHTML"
-                        hx-confirm="{% trans "Promote this rule to a permanent admin rule?" %}">
-                    {% trans "Confirm" %}
-                </button>
-                <button class="btn btn-reject"
-                        hx-post="{{ reject_url }}"
-                        hx-target="#anomaly-row-{{ rule.id }}"
-                        hx-swap="delete"
-                        hx-confirm="{% trans "Deactivate and dismiss this anomaly rule?" %}">
-                    {% trans "Reject" %}
-                </button>
+                {% if rule.review_status == "pending" or rule.review_status == "not_applicable" %}
+                    {% url 'django_waf:anomaly-confirm' rule.id as confirm_url %}
+                    {% url 'django_waf:anomaly-reject' rule.id as reject_url %}
+                    <button class="btn btn-confirm"
+                            hx-post="{{ confirm_url }}"
+                            hx-target="#anomaly-row-{{ rule.id }}"
+                            hx-swap="outerHTML"
+                            hx-confirm="{% trans "Promote this rule to a permanent admin rule?" %}">
+                        {% trans "Confirm" %}
+                    </button>
+                    <button class="btn btn-reject"
+                            hx-post="{{ reject_url }}"
+                            hx-target="#anomaly-row-{{ rule.id }}"
+                            hx-swap="delete"
+                            hx-confirm="{% trans "Deactivate and dismiss this anomaly rule?" %}">
+                        {% trans "Reject" %}
+                    </button>
+                {% else %}
+                    <span style="font-size:0.75rem;color:#9ca3af;">&mdash;</span>
+                {% endif %}
             </td>
         </tr>
         {% endfor %}

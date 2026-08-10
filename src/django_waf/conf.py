@@ -590,6 +590,33 @@ DJANGO_WAF_NGINX_VALIDATE: bool = getattr(settings, "DJANGO_WAF_NGINX_VALIDATE",
 DJANGO_WAF_NGINX_TEST_COMMAND: list[str] = getattr(settings, "DJANGO_WAF_NGINX_TEST_COMMAND", ["nginx", "-t"])
 
 # ---------------------------------------------------------------------------
+# Anomaly detector review-before-enforce (#45/#46/#47/#48)
+# ---------------------------------------------------------------------------
+# When True, a newly-created auto-generated BlockRule is created
+# is_active=False, review_status=PENDING, pending operator confirmation via
+# the dashboard's Anomalies panel, rather than enforcing (challenging or
+# blocking) from the moment it is written (BR-ANOM-007). The default is
+# False, deliberately NOT a mirror of DJANGO_WAF_FEED_QUARANTINE_ALLOW_RULES
+# (default True): every existing django-waf deployment already relies on an
+# auto-generated rule enforcing immediately, and flipping this default to
+# quarantine-first would silently stop enforcement on every upgrade with no
+# code change on the consumer's side. A site that wants approve-before-
+# enforce sets this explicitly.
+DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES: bool = getattr(settings, "DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES", False)
+
+# Detector function names (e.g. ["detect_cloud_spray"]) that must always
+# create quarantined rules (is_active=False, review_status=PENDING),
+# regardless of DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES above (BR-ANOM-008).
+# Lets an operator build trust in one detector's output without quarantining
+# every detector's rules. A name that does not match a known detector is
+# caught at boot by django_waf.checks.check_observe_only_detector_names
+# (django_waf.W008), so a detector rename cannot silently desync this list
+# from the functions it names.
+DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS: list[str] = getattr(
+    settings, "DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS", []
+)
+
+# ---------------------------------------------------------------------------
 # Trusted-user cookie (#23)
 # ---------------------------------------------------------------------------
 # A signed, WAF-owned cookie that carries "this request is from a trusted

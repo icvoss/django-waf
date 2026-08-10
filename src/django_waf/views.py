@@ -589,19 +589,35 @@ class DashboardAnomalyPanel(StaffRequiredMixin, TemplateView):
         try:
             from datetime import timedelta
 
+            from django.db.models import Case, IntegerField, Value, When
             from django.utils import timezone
 
-            from django_waf.enums import RuleSource
+            from django_waf.enums import ReviewStatus, RuleSource
             from django_waf.models import BlockRule
+            from django_waf.services.anomaly_detector import auto_rule_review_outcomes
 
             cutoff = timezone.now() - timedelta(hours=48)
-            ctx["rules"] = BlockRule.objects.filter(
-                source=RuleSource.AUTO,
-                created_at__gte=cutoff,
-            ).order_by("-created_at")
+            # PENDING rules surface first (they need a decision), then
+            # newest first within each review-status group.
+            ctx["rules"] = (
+                BlockRule.objects.filter(
+                    source=RuleSource.AUTO,
+                    created_at__gte=cutoff,
+                )
+                .annotate(
+                    _pending_first=Case(
+                        When(review_status=ReviewStatus.PENDING, then=Value(0)),
+                        default=Value(1),
+                        output_field=IntegerField(),
+                    )
+                )
+                .order_by("_pending_first", "-created_at")
+            )
+            ctx["review_outcomes"] = auto_rule_review_outcomes()
         except Exception:
             logger.warning("django-waf: could not fetch anomaly rules; degrading to empty panel")
             ctx["rules"] = []
+            ctx["review_outcomes"] = {}
         return ctx
 
 
@@ -619,14 +635,31 @@ class DashboardAnomalyConfirmView(SuperuserRequiredMixin, View):
 
     def post(self, request: HttpRequest, rule_id) -> HttpResponse:
         from django.template.loader import render_to_string
+        from django.utils import timezone
 
-        from django_waf.enums import RuleSource
+        from django_waf.enums import ReviewStatus, RuleSource
         from django_waf.models import BlockRule
 
         rule = get_object_or_404(BlockRule, id=rule_id)
+        # Confirming a quarantined rule (BR-ANOM-007) must both promote it
+        # (existing pre-#47 behaviour) and activate it: a quarantined rule
+        # is is_active=False, so leaving is_active untouched here would
+        # confirm the rule for review purposes while it kept not enforcing.
         rule.source = RuleSource.ADMIN
         rule.expires_at = None
-        rule.save(update_fields=["source", "expires_at", "updated_at"])
+        rule.is_active = True
+        rule.review_status = ReviewStatus.CONFIRMED
+        rule.reviewed_at = timezone.now()
+        rule.save(
+            update_fields=[
+                "source",
+                "expires_at",
+                "is_active",
+                "review_status",
+                "reviewed_at",
+                "updated_at",
+            ]
+        )
 
         html = render_to_string(
             "django_waf/partials/anomaly_row_confirmed.html",
@@ -649,11 +682,16 @@ class DashboardAnomalyRejectView(SuperuserRequiredMixin, View):
     """
 
     def post(self, request: HttpRequest, rule_id) -> HttpResponse:
+        from django.utils import timezone
+
+        from django_waf.enums import ReviewStatus
         from django_waf.models import BlockRule
 
         rule = get_object_or_404(BlockRule, id=rule_id)
         rule.is_active = False
-        rule.save(update_fields=["is_active", "updated_at"])
+        rule.review_status = ReviewStatus.REJECTED
+        rule.reviewed_at = timezone.now()
+        rule.save(update_fields=["is_active", "review_status", "reviewed_at", "updated_at"])
 
         return HttpResponse("")
 

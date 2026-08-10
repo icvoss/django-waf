@@ -12,6 +12,7 @@ from django.utils import timezone
 from django_waf.enums import (
     ChallengeStatus,
     MatchType,
+    ReviewStatus,
     RuleAction,
     RuleSource,
     RuleType,
@@ -41,6 +42,8 @@ class BlockRuleFactory(factory.django.DjangoModelFactory):
     feed_first_seen = None
     feed_reporters = 0
     notes = ""
+    review_status = ReviewStatus.NOT_APPLICABLE
+    reviewed_at = None
 
     class Meta:
         model = "django_waf.BlockRule"

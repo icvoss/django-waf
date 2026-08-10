@@ -107,6 +107,7 @@ class TestBlockRuleAdminFormPatternValidation:
             "hit_count": "0",
             "feed_reporters": "0",
             "notes": "",
+            "review_status": "not_applicable",
         }
         data.update(overrides)
         return data
