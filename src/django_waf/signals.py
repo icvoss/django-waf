@@ -7,8 +7,11 @@ from django.dispatch import Signal
 # Provides: instance, created (for saves) / instance (for deletes)
 rule_saved = Signal()
 
-# Fired when the anomaly scorer detects suspicious behaviour from an IP.
-# Provides: ip_address, anomaly_type, score, details
+# Fired when an anomaly detector creates a rule for suspicious behaviour.
+# Provides: rule (the BlockRule created), anomaly_type, details
+# The sender is the rule's model class. The offending IP or CIDR is the
+# rule's own pattern, and the evidence that triggered detection is in
+# details (and, since 1.9.0, mirrored onto the rule's notes field).
 anomaly_detected = Signal()
 
 # Fired when a proof-of-work challenge is issued to a client.

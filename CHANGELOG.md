@@ -5,7 +5,7 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.9.0] - 2026-08-10
 
 ### Added
 
@@ -57,6 +57,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has passed, independently of whether they were ever activated, so a
   quarantined rule nobody reviews is marked expired unreviewed rather than
   sitting pending forever.
+
+### Fixed
+
+- **The `anomaly_detected` signal's documented payload now matches what the
+  code actually sends (#52).** `signals.py` described the signal as
+  providing `ip_address`, `anomaly_type`, `score`, and `details`, but the
+  only call site sends `rule`, `anomaly_type`, and `details`: a receiver
+  written against the documented payload raised `KeyError` on `ip_address`
+  or `score`. The comment is corrected to describe the real payload rather
+  than the code changed to match the comment, since the sent payload is the
+  one any existing receiver is already written against. The offending IP or
+  CIDR is available as the rule's own `pattern`.
 
 ### Changed
 
