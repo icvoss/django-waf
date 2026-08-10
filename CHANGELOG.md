@@ -5,6 +5,39 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The confirmed/rejected outcome metric no longer empties its own
+  `confirmed` bucket (#56).** `auto_rule_review_outcomes` filtered on
+  `source=auto`, but confirming a rule promotes it to `source=admin` (which
+  is what stops it reappearing in the review queue and stops the detector
+  re-matching it on its `source=auto` lookup key), so every rule left the
+  metric at the exact moment it was confirmed. The `confirmed` bucket was
+  therefore permanently zero, and the metric reported only the outcomes
+  nobody approved: precisely inverting what BR-ANOM-010 exists to show. The
+  window now matches a rule that is either still `source=auto` or carries
+  any review status other than `not_applicable`. Widening on review status
+  rather than source is precise rather than loose, since `review_status`
+  only ever leaves `not_applicable` for a rule an anomaly detector created,
+  so no hand-authored or feed-sourced rule can enter the count.
+
+### Removed
+
+- **`AnomalyType.BURST` and `AnomalyType.PATH_HAMMERING` (#53).** Neither
+  was emitted by any detector, so both advertised a category that could
+  never have members: in a security tool that reads as "the detector exists
+  and is quiet" rather than "it was never built", and any per-anomaly-type
+  breakdown carried two permanently empty rows. Both behaviours are already
+  covered elsewhere and were never detector-shaped: per-second burst by
+  `DJANGO_WAF_RATE_LIMIT_BURST` in the rate limiter, and path hammering by
+  `DJANGO_WAF_SUSPICIOUS_PATH_PATTERNS` scoring. No data migration is
+  needed, because no model field stores an `AnomalyType`: the enum travels
+  only as an `anomaly_detected` signal kwarg. This is technically breaking
+  for any consumer that references either constant by name, which is why it
+  is called out here rather than folded into a patch.
+
 ## [1.9.0] - 2026-08-10
 
 ### Added

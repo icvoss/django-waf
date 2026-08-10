@@ -78,12 +78,19 @@ class ChallengeStatus(models.TextChoices):
 
 
 class AnomalyType(models.TextChoices):
-    """The category of anomaly detected by the scoring engine."""
+    """The category of anomaly detected by the scoring engine.
+
+    Every value here is emitted by a detector in
+    ``services/anomaly_detector.py`` and travels only as an
+    ``anomaly_detected`` signal kwarg; no model field stores an
+    ``AnomalyType``. Adding a value without a detector that sends it makes
+    the WAF advertise a category that can never have members, which reads to
+    an operator as "that detector exists and is quiet" rather than "it was
+    never built" (django-waf #53).
+    """
 
     UA_ROTATION = "ua_rotation", _("UA rotation")
-    BURST = "burst", _("Burst")
     SUBNET_FLOOD = "subnet_flood", _("Subnet flood")
-    PATH_HAMMERING = "path_hammering", _("Path hammering")
     CHALLENGE_FARM = "challenge_farm", _("Challenge farm")
     UNSOLVED_CHALLENGE = "unsolved_challenge", _("Unsolved challenge")
     CLOUD_SPRAY = "cloud_spray", _("Cloud spray")
