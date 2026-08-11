@@ -164,6 +164,68 @@ class TestTrustedProxiesConfigured:
 
 
 # ---------------------------------------------------------------------------
+# Trusted unix-socket peer
+# ---------------------------------------------------------------------------
+
+
+class TestTrustedUnixSocket:
+    @override_settings(DJANGO_WAF_TRUSTED_UNIX_SOCKET=False)
+    def test_empty_remote_addr_does_not_trust_xff_by_default(self):
+        _reload_conf()
+        from django_waf.services.client_ip import resolve_client_ip
+
+        request = RequestFactory().get(
+            "/",
+            REMOTE_ADDR="",
+            HTTP_X_FORWARDED_FOR="203.0.113.9",
+        )
+
+        assert resolve_client_ip(request) == ""
+
+    @override_settings(DJANGO_WAF_TRUSTED_UNIX_SOCKET=True)
+    def test_empty_remote_addr_uses_hardened_xff_walk(self):
+        _reload_conf()
+        from django_waf.services.client_ip import resolve_client_ip
+
+        request = RequestFactory().get(
+            "/",
+            REMOTE_ADDR="",
+            HTTP_X_FORWARDED_FOR="6.6.6.6, 198.51.100.7",
+        )
+
+        assert resolve_client_ip(request) == "198.51.100.7"
+
+    @override_settings(DJANGO_WAF_TRUSTED_UNIX_SOCKET=True)
+    def test_empty_remote_addr_with_no_valid_xff_remains_empty(self):
+        _reload_conf()
+        from django_waf.services.client_ip import resolve_client_ip
+
+        request = RequestFactory().get(
+            "/",
+            REMOTE_ADDR="",
+            HTTP_X_FORWARDED_FOR="not-an-ip, ",
+        )
+
+        assert resolve_client_ip(request) == ""
+
+    @override_settings(
+        DJANGO_WAF_TRUSTED_PROXIES=["10.0.0.0/8"],
+        DJANGO_WAF_TRUSTED_UNIX_SOCKET=True,
+    )
+    def test_nonempty_untrusted_remote_addr_still_ignores_xff(self):
+        _reload_conf()
+        from django_waf.services.client_ip import resolve_client_ip
+
+        request = RequestFactory().get(
+            "/",
+            REMOTE_ADDR="203.0.113.9",
+            HTTP_X_FORWARDED_FOR="198.51.100.7",
+        )
+
+        assert resolve_client_ip(request) == "203.0.113.9"
+
+
+# ---------------------------------------------------------------------------
 # Malformed / empty XFF entries
 # ---------------------------------------------------------------------------
 

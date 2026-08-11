@@ -564,6 +564,12 @@ DJANGO_WAF_CELERY_BEAT_SCHEDULE: dict = getattr(
 # internal load balancer, or the exact /32 of a single fronting proxy).
 DJANGO_WAF_TRUSTED_PROXIES: list[str] = getattr(settings, "DJANGO_WAF_TRUSTED_PROXIES", [])
 
+# Trust an empty REMOTE_ADDR from a unix-socket WSGI peer as the direct proxy
+# hop. This is deliberately opt-in: an operator must ensure that only their
+# reverse proxy can connect to the socket before the X-Forwarded-For header is
+# honoured.
+DJANGO_WAF_TRUSTED_UNIX_SOCKET: bool = getattr(settings, "DJANGO_WAF_TRUSTED_UNIX_SOCKET", False)
+
 # ---------------------------------------------------------------------------
 # Threat-feed import constraints (#33)
 # ---------------------------------------------------------------------------

@@ -150,6 +150,8 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | `DJANGO_WAF_EXEMPT_PATHS` | `["/static/", "/media/", "/health/", "/favicon.ico"]` | URL prefixes that bypass WAF evaluation entirely |
 | `DJANGO_WAF_EXEMPT_HOSTS` | `[]` | Hostnames that bypass WAF evaluation entirely. Exact match, or a leading-dot entry (`.example.com`) matching the domain and any subdomain (mirrors Django's `ALLOWED_HOSTS`). Port is stripped before matching |
 | `DJANGO_WAF_TRUST_X_FORWARDED_FOR` | `False` | Trust `X-Forwarded-For` header for client IP extraction |
+| `DJANGO_WAF_TRUSTED_PROXIES` | `[]` | CIDR ranges for direct TCP reverse proxies. When `REMOTE_ADDR` is in a configured range, resolve `X-Forwarded-For` from right to left, skipping trusted proxy hops |
+| `DJANGO_WAF_TRUSTED_UNIX_SOCKET` | `False` | Explicitly trust an empty `REMOTE_ADDR` from a unix-socket WSGI peer and use the same right-to-left `X-Forwarded-For` walk. Enable only when the socket is accessible exclusively to your reverse proxy |
 | `DJANGO_WAF_REDIS_ALIAS` | `"default"` | Django cache alias for Redis connections |
 | `DJANGO_WAF_ALLOWED_METHODS` | `None` | Allowed HTTP methods; requests with other methods receive 405 before rule evaluation. `None` allows all methods. |
 | `DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS` | `True` | Seed rDNS-verified `AllowRule` rows for major search crawlers (Googlebot, Bingbot) so a verified crawler is never served the `noindex` challenge. See [Search engine crawlers](#search-engine-crawlers). Set `False` to opt out |
