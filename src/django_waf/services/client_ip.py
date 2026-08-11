@@ -21,6 +21,12 @@ hop that is *not itself* a trusted proxy is taken, the standard walk for a
 chain of trusted reverse proxies, each of which appends the previous hop's
 address to the header.
 
+``DJANGO_WAF_TRUSTED_UNIX_SOCKET`` is a separate, explicit opt-in for a WSGI
+server reached through a unix socket, where ``REMOTE_ADDR`` is empty. It treats
+that empty direct peer as trusted and uses the same right-to-left walk. The
+operator is responsible for allowing only their reverse proxy to connect to
+the socket.
+
 The legacy ``DJANGO_WAF_TRUST_X_FORWARDED_FOR`` setting keeps working for
 backwards compatibility: with no trusted proxies configured, it falls back
 to the pre-#29 behaviour of trusting the leftmost XFF entry unconditionally.
@@ -48,12 +54,12 @@ def resolve_client_ip(request) -> str:
 
     Resolution order:
 
-    1. If ``DJANGO_WAF_TRUSTED_PROXIES`` is configured and ``REMOTE_ADDR`` is
-       within one of those CIDR ranges, walk ``X-Forwarded-For`` from the
-       right and return the first entry that is a valid IP address and is
-       not itself inside a trusted-proxy range. Malformed or empty entries
-       are skipped. If nothing valid remains after the walk, fall back to
-       ``REMOTE_ADDR``.
+    1. If ``REMOTE_ADDR`` is within ``DJANGO_WAF_TRUSTED_PROXIES``, or it is
+       empty and ``DJANGO_WAF_TRUSTED_UNIX_SOCKET`` is enabled, walk
+       ``X-Forwarded-For`` from the right and return the first entry that is
+       a valid IP address and is not itself inside a trusted-proxy range.
+       Malformed or empty entries are skipped. If nothing valid remains after
+       the walk, fall back to ``REMOTE_ADDR``.
     2. Otherwise, if ``DJANGO_WAF_TRUST_X_FORWARDED_FOR`` is set (legacy
        opt-in) and the header is present, return the leftmost entry
        unconditionally (spoofable, kept only for backwards compatibility;
@@ -67,8 +73,9 @@ def resolve_client_ip(request) -> str:
 
     remote_addr = request.META.get("REMOTE_ADDR", "") or ""
     trusted_proxies = conf.DJANGO_WAF_TRUSTED_PROXIES
+    trusted_unix_socket = conf.DJANGO_WAF_TRUSTED_UNIX_SOCKET and not remote_addr
 
-    if trusted_proxies and _is_trusted_proxy(remote_addr, trusted_proxies):
+    if _is_trusted_proxy(remote_addr, trusted_proxies) or trusted_unix_socket:
         forwarded_for = request.META.get("HTTP_X_FORWARDED_FOR", "")
         resolved = _resolve_from_forwarded_chain(forwarded_for, trusted_proxies)
         if resolved:

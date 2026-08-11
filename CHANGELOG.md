@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Trusted-proxy client IP resolution now supports unix-socket WSGI binds
+  (#62).** `DJANGO_WAF_TRUSTED_UNIX_SOCKET`, default `False`, explicitly
+  treats an empty `REMOTE_ADDR` as the trusted direct hop and applies the
+  existing right-to-left, validated `X-Forwarded-For` walk. It must be enabled
+  only when the unix socket is accessible exclusively to the reverse proxy;
+  non-empty peers remain subject to `DJANGO_WAF_TRUSTED_PROXIES` CIDR checks.
+
 - Removed the default `ordering = ["-created_at"]` from the bundled
   abstract `BaseModel` (ADR-066): a default ordering on a shared abstract
   base defeats `values()`/`values_list()` combined with `distinct()` in
