@@ -400,6 +400,19 @@ def aggregate_threat_signals():
     generate_feed_snapshot()
 ```
 
+> **Caveat (values()/distinct() ordering trap):** the
+> `reports.values('installation_id').distinct().count()` line above is safe
+> only because it terminates in `.count()`. If `ThreatReport` (or any model
+> this is adapted for) carries a `Meta.ordering`, Django appends the
+> ordering column(s) to the SELECT before `DISTINCT` is applied, so a
+> `.values(...).distinct()` chain that is iterated, counted per row, or
+> copied elsewhere without `.count()` can silently return one row per
+> distinct `(value, ordering_column)` pair rather than one row per distinct
+> value. Call `.order_by()` before `.distinct()` to clear any inherited
+> ordering whenever the result is consumed as anything other than a plain
+> `.count()`. See `django_waf.services.anomaly_detector.detect_unsolved_challenges`
+> for a real occurrence of this trap (#59).
+
 ### 2.4 Deduplication
 
 Same threat reported by 50 sites vs one site:

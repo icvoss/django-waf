@@ -3639,6 +3639,43 @@ class TestDetectUnsolvedChallenges:
         assert len(rules) == 0
 
     @pytest.mark.django_db
+    def test_skips_ip_with_solved_challenge_across_varied_issued_at(self):
+        """A solved-challenge IP is skipped even when its tokens' issued_at
+        values differ (#59 regression).
+
+        ChallengeToken.Meta.ordering = ["-issued_at"] makes Django append
+        issued_at to the SELECT unless order_by() clears it before
+        distinct(). With identical issued_at values (the prior fixture)
+        DISTINCT still collapses to one row per IP and hides that defect.
+        Varying issued_at across rows for a single IP is what proves the
+        ordering column no longer corrupts the distinct membership check.
+        """
+        from django_waf.models import ChallengeToken
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        ip = "10.0.0.11"
+        now = timezone.now()
+        for _ in range(4):
+            RequestLogFactory(
+                ip_address=ip,
+                verdict=Verdict.CHALLENGED,
+                path="/page",
+                referer="",
+                timestamp=now,
+            )
+
+        # issued_at is auto_now_add, so create multiple solved tokens for the
+        # same IP, then use a queryset update() (which bypasses auto_now_add,
+        # unlike save()) to force distinct issued_at values across rows.
+        tokens = [ChallengeTokenFactory(ip_address=ip, status=ChallengeStatus.SOLVED) for _ in range(3)]
+        for offset, token in enumerate(tokens):
+            ChallengeToken.objects.filter(pk=token.pk).update(issued_at=now - timezone.timedelta(minutes=offset))
+
+        rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
+
+        assert len(rules) == 0
+
+    @pytest.mark.django_db
     def test_wired_into_run_all_detectors(self):
         """run_all_detectors includes unsolved_challenge_rules in its output."""
         from django_waf.services.anomaly_detector import run_all_detectors

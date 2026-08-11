@@ -318,12 +318,17 @@ def detect_unsolved_challenges(
     )
 
     # Prefetch all IPs with solved challenges in one query (fixes N+1)
+    # order_by() clears ChallengeToken.Meta.ordering (-issued_at) before
+    # distinct(): without it, Django appends issued_at to the SELECT, so
+    # DISTINCT applies to (ip_address, issued_at) and this returns one row
+    # per solved token rather than one row per IP (#59).
     challenged_ip_list = [row["ip_address"] for row in challenged_ips]
     solved_ips = set(
         ChallengeToken.objects.filter(
             ip_address__in=challenged_ip_list,
             status=ChallengeStatus.SOLVED,
         )
+        .order_by()
         .values_list("ip_address", flat=True)
         .distinct()
     )
