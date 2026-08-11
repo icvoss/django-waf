@@ -5,6 +5,19 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Removed the default `ordering = ["-created_at"]` from the bundled
+  abstract `BaseModel` (ADR-066): a default ordering on a shared abstract
+  base defeats `values()`/`values_list()` combined with `distinct()` in
+  every inheriting model. Every concrete model in this package
+  (`BlockRule`, `AllowRule`, `RequestLog`, `IPReputation`,
+  `ChallengeToken`) already declares its own explicit `ordering`, so this
+  is a no-op for effective query behaviour and generates no migration.
+  (#60)
+
 ## [1.9.1] - 2026-08-10
 
 ### Fixed
