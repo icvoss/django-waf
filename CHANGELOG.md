@@ -5,6 +5,13 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Django 6.1 added to the CI test matrix** and declared via the
+  `Framework :: Django :: 6.1` classifier.
+
 ## [1.10.0] - 2026-08-11
 
 ### Fixed
