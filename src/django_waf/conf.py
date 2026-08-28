@@ -384,7 +384,13 @@ DJANGO_WAF_SCORE_THRESHOLD_LOG: float = getattr(settings, "DJANGO_WAF_SCORE_THRE
 DJANGO_WAF_SCORE_THRESHOLD_CHALLENGE: float = getattr(settings, "DJANGO_WAF_SCORE_THRESHOLD_CHALLENGE", 5.0)
 DJANGO_WAF_SCORE_THRESHOLD_BLOCK: float = getattr(settings, "DJANGO_WAF_SCORE_THRESHOLD_BLOCK", 7.0)
 
-# Number of unanswered challenges before auto-escalating from challenge to block.
+# Number of challenges from a single IP before auto-escalating from
+# challenge to block. From 2.0.0, this counts challenges issued to a
+# client whose HTTP fingerprint is classified "bot" (BR-FP-001) regardless
+# of whether the client goes on to solve the proof-of-work: a datacentre
+# CPU solves hashcash almost for free, so a bot that solves every challenge
+# no longer resets the count to zero. For every other fingerprint verdict,
+# a solved challenge still resets the count, unchanged from before 2.0.0.
 DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD: int = getattr(settings, "DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD", 10)
 
 # Score added per suspicious path match.

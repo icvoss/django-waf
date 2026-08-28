@@ -196,6 +196,163 @@ class TestSolveResetsEscalationCounter:
 
 
 @pytest.mark.django_db
+class TestBotFingerprintEscalatesDespiteSolvedChallenges:
+    """Core regression for the fix: a bot-fingerprinted client that solves
+    every challenge (waf:solved is set) must still reach the escalation
+    threshold and get BLOCKED. Fails against the pre-fix code, where a
+    solved challenge always cleared waf:challenged:{ip} to 0 regardless of
+    fingerprint, so the threshold was never reached (the production
+    incident: ~37,700 events, 3,044 CHALLENGED, zero BLOCKED)."""
+
+    def test_bot_fingerprint_solved_challenges_still_escalate_to_blocked(self):
+        BlockRuleFactory(
+            is_active=True,
+            rule_type=RuleType.IP,
+            match_type="exact",
+            pattern="20.20.20.20",
+            action=RuleAction.CHALLENGE,
+        )
+
+        redis = _make_redis()
+
+        def _get(key):
+            if key == "waf:challenged:20.20.20.20":
+                return b"10"
+            if key == "waf:solved:20.20.20.20":
+                # Every challenge was solved, at negligible cost on a
+                # datacentre CPU for a JS-executing botnet.
+                return b"1"
+            return None
+
+        redis.get.side_effect = _get
+
+        with (
+            override_settings(DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD=10, DJANGO_WAF_ESCALATION_BLOCK_TTL=3600),
+            patch("django_waf.services.fingerprint.classify_fingerprint", return_value="bot"),
+        ):
+            result = evaluate_request(
+                ip_address="20.20.20.20",
+                user_agent="Mozilla/5.0",
+                path="/",
+                method="GET",
+                redis_client=redis,
+            )
+
+        assert result.verdict == Verdict.BLOCKED
+        assert result.action == RuleAction.BLOCK
+        auto_rules = BlockRule.objects.filter(pattern="20.20.20.20", source=RuleSource.AUTO)
+        assert auto_rules.count() == 1
+        # The challenged-count key must never have been cleared for a bot
+        # fingerprint (other unrelated keys, e.g. the rebuild lock, may
+        # still legitimately be deleted elsewhere in the request path).
+        deleted_keys = {call.args[0] for call in redis.delete.call_args_list}
+        assert "waf:challenged:20.20.20.20" not in deleted_keys
+
+
+@pytest.mark.django_db
+class TestNonBotFingerprintSolveStillClearsCounter:
+    """Proves the fix did not break the safety valve for real users: a
+    non-bot fingerprint that solves a challenge still has its counter
+    cleared and is not escalated, even at what would otherwise be the
+    escalation threshold."""
+
+    def test_browser_fingerprint_solved_challenge_is_not_escalated(self):
+        BlockRuleFactory(
+            is_active=True,
+            rule_type=RuleType.IP,
+            match_type="exact",
+            pattern="21.21.21.21",
+            action=RuleAction.CHALLENGE,
+        )
+
+        redis = _make_redis()
+
+        def _get(key):
+            if key == "waf:challenged:21.21.21.21":
+                return b"10"
+            if key == "waf:solved:21.21.21.21":
+                return b"1"
+            return None
+
+        redis.get.side_effect = _get
+
+        with (
+            override_settings(DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD=10),
+            patch("django_waf.services.fingerprint.classify_fingerprint", return_value="browser"),
+        ):
+            result = evaluate_request(
+                ip_address="21.21.21.21",
+                user_agent="Mozilla/5.0",
+                path="/",
+                method="GET",
+                redis_client=redis,
+            )
+
+        assert result.verdict == Verdict.CHALLENGED
+        redis.delete.assert_any_call("waf:challenged:21.21.21.21")
+        assert not BlockRule.objects.filter(pattern="21.21.21.21", source=RuleSource.AUTO).exists()
+
+
+@pytest.mark.django_db
+class TestEscalationHonoursOperatorReviewDecision:
+    """_create_escalation_rule must route through the same CONFIRMED/REJECTED
+    review guard every other auto-rule path uses (BR-ANOM-007), not call
+    BlockRule.objects.update_or_create directly. Before the fix, escalation
+    bypassed the guard entirely and could silently resurrect a rejected rule
+    as an active block."""
+
+    def test_rejected_auto_rule_is_not_resurrected_by_escalation(self):
+        """An operator-REJECTED rule (is_active=False) stays inactive after
+        _create_escalation_rule fires for the same IP. Fails against the old
+        direct update_or_create call, which had no review-status guard and
+        would flip is_active back to True."""
+        from django_waf.enums import ReviewStatus
+        from django_waf.services.rule_engine import _create_escalation_rule
+
+        rejected = BlockRuleFactory(
+            is_active=False,
+            rule_type=RuleType.IP,
+            match_type="exact",
+            pattern="22.22.22.22",
+            action=RuleAction.BLOCK,
+            source=RuleSource.AUTO,
+            review_status=ReviewStatus.REJECTED,
+        )
+
+        _create_escalation_rule("22.22.22.22")
+
+        rejected.refresh_from_db()
+        assert rejected.is_active is False
+        assert rejected.review_status == ReviewStatus.REJECTED
+        assert BlockRule.objects.filter(pattern="22.22.22.22", source=RuleSource.AUTO).count() == 1
+
+    def test_confirmed_auto_rule_keeps_review_state_through_escalation(self):
+        """An operator-CONFIRMED rule keeps is_active=True/CONFIRMED when the
+        same IP re-escalates; only expiry-bearing fields may refresh."""
+        from django_waf.enums import ReviewStatus
+        from django_waf.services.rule_engine import _create_escalation_rule
+
+        confirmed = BlockRuleFactory(
+            is_active=True,
+            rule_type=RuleType.IP,
+            match_type="exact",
+            pattern="23.23.23.23",
+            action=RuleAction.BLOCK,
+            source=RuleSource.AUTO,
+            review_status=ReviewStatus.CONFIRMED,
+        )
+        original_expires_at = confirmed.expires_at
+
+        _create_escalation_rule("23.23.23.23")
+
+        confirmed.refresh_from_db()
+        assert confirmed.is_active is True
+        assert confirmed.review_status == ReviewStatus.CONFIRMED
+        assert confirmed.expires_at != original_expires_at
+        assert BlockRule.objects.filter(pattern="23.23.23.23", source=RuleSource.AUTO).count() == 1
+
+
+@pytest.mark.django_db
 class TestGateHonoursSolvedFlag:
     def test_gate_treats_solved_ip_as_below_threshold(self):
         """Once waf:solved:{ip} is set (by VerifyView on success), the gate's

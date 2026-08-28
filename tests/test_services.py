@@ -4284,6 +4284,32 @@ class TestRuleEngineHelpers:
         assert _get_unsolved_challenge_count("203.0.113.1", redis) == 0
         redis.delete.assert_called_once_with("waf:challenged:203.0.113.1")
 
+    def test_get_unsolved_challenge_count_bot_fingerprint_ignores_solved_flag(self):
+        """A 'bot' fingerprint_verdict returns the count as-is, without ever
+        consulting the solved flag: a datacentre CPU solves the hashcash
+        proof-of-work almost for free, so 'solved' must not mean 'legitimate'
+        for a fingerprint-classified bot (BR-FP-001)."""
+        from django_waf.services.rule_engine import _get_unsolved_challenge_count
+
+        redis = MagicMock()
+        # Only the challenged counter should be read: the solved flag must
+        # never even be consulted for a bot fingerprint.
+        redis.get.side_effect = [b"5"]
+        assert _get_unsolved_challenge_count("203.0.113.2", redis, fingerprint_verdict="bot") == 5
+        redis.delete.assert_not_called()
+        redis.get.assert_called_once_with("waf:challenged:203.0.113.2")
+
+    def test_get_unsolved_challenge_count_non_bot_fingerprint_still_clears_on_solve(self):
+        """A non-bot fingerprint_verdict (e.g. 'browser') preserves the
+        pre-fix safety valve: a solved challenge still clears the counter,
+        so a real user is not penalised for having been challenged."""
+        from django_waf.services.rule_engine import _get_unsolved_challenge_count
+
+        redis = MagicMock()
+        redis.get.side_effect = [b"5", b"1"]  # challenged count, solved flag
+        assert _get_unsolved_challenge_count("203.0.113.3", redis, fingerprint_verdict="browser") == 0
+        redis.delete.assert_called_once_with("waf:challenged:203.0.113.3")
+
     def test_get_unsolved_challenge_count_swallows_exception(self):
         from django_waf.services.rule_engine import _get_unsolved_challenge_count
 

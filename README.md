@@ -29,8 +29,11 @@ path) before relying on this package as a site's only defence layer.
   `PUT`, `PATCH`, `DELETE`) before rule evaluation
 - **JS proof-of-work challenges**: hashcash-style SHA-256 challenges for
   suspicious clients (no CAPTCHAs, no third-party dependencies)
-- **Challenge auto-escalation**: repeat offenders who exceed the unsolved-challenge
-  threshold are automatically blocked for a configurable TTL
+- **Challenge auto-escalation**: repeat offenders who exceed the challenge
+  threshold are automatically blocked for a configurable TTL. A client whose
+  HTTP fingerprint classifies as a bot counts towards the threshold even
+  when it solves every challenge, since a datacentre CPU solves the
+  proof-of-work almost for free
 - **No-referer challenge trigger**: optionally challenge direct-navigation requests
   lacking a `Referer` header
 - **GeoIP country code population**: attach ISO country codes to request log
@@ -177,7 +180,7 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | `DJANGO_WAF_CHALLENGE_COOKIE_TTL` | `86400` | Seconds a solved-challenge cookie remains valid |
 | `DJANGO_WAF_CHALLENGE_NO_REFERER` | `False` | Challenge requests that have no `Referer` header |
 | `DJANGO_WAF_NO_REFERER_EXEMPT_PATHS` | `["/", "/search/", "/robots.txt", "/sitemap.xml", "/favicon.ico"]` | Paths exempt from the no-referer challenge (only evaluated when `DJANGO_WAF_CHALLENGE_NO_REFERER` is `True`) |
-| `DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD` | `10` | Number of unsolved challenges before auto-escalating to a block |
+| `DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD` | `10` | Number of challenges before auto-escalating to a block (bot-fingerprinted clients count even when solved) |
 | `DJANGO_WAF_ESCALATION_BLOCK_TTL` | `3600` | TTL in seconds for escalation blocks |
 
 ### Search engine crawlers
@@ -607,8 +610,10 @@ The middleware evaluates requests in this order:
 8. **Path scoring (always) + UA scoring (after 10 requests)**: anomaly score
    accumulates from suspicious paths and UA heuristics; score thresholds determine
    the verdict (log / challenge / block)
-9. **Challenge escalation**: IPs exceeding the unsolved-challenge threshold are
-   auto-blocked for `DJANGO_WAF_ESCALATION_BLOCK_TTL` seconds
+9. **Challenge escalation**: IPs exceeding the challenge threshold are
+   auto-blocked for `DJANGO_WAF_ESCALATION_BLOCK_TTL` seconds. A solved
+   challenge resets the count unless the client's fingerprint classifies
+   as a bot, in which case it still counts
 10. **Verdict dispatch**: response rendered (allow / block / challenge / throttle),
     sampled logging written, and WAF signal emitted
 

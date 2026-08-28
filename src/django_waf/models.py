@@ -61,7 +61,21 @@ class BlockRuleManager(models.Manager):
         return self.filter(is_active=True).filter(not_expired).order_by("priority")
 
     def for_nginx(self) -> models.QuerySet:
-        """Return active IP/CIDR/UA block or throttle rules suitable for nginx export."""
+        """Return active IP/CIDR/UA block or throttle rules suitable for nginx export.
+
+        Deliberately excludes ``action=challenge`` rules (BR-BL-005 excludes
+        log_only for the same reason): nginx cannot serve or verify a JS
+        proof-of-work, so a CHALLENGE rule can only be enforced by
+        WafMiddleware, not at the edge. detect_ua_rotation,
+        detect_subnet_burst, and detect_cloud_spray all auto-create
+        CHALLENGE rules on first detection (a deliberately weaker verdict
+        for a weak signal, see anomaly_detector.py), so their output is
+        middleware-only until repeated triggering escalates the IP to a
+        BLOCK rule (rule_engine._create_escalation_rule), at which point it
+        starts appearing here. An operator relying solely on the nginx
+        blocklist for enforcement will not see these rules at the edge
+        until that promotion happens.
+        """
         return self.active().filter(
             rule_type__in=[RuleType.IP, RuleType.CIDR, RuleType.UA],
             action__in=[RuleAction.BLOCK, RuleAction.THROTTLE],

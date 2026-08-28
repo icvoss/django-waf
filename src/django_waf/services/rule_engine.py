@@ -328,6 +328,13 @@ def evaluate_request(
     new request returns its own challenge verdict before evaluation ever
     reaches the old end-of-function escalation check.
 
+    The HTTP fingerprint verdict (BR-FP-001) is computed once, up front, and
+    threaded into every ``_gate_challenge_or_escalate`` call: escalation
+    counts a challenge towards the threshold for a fingerprint-classified
+    bot regardless of whether it goes on to solve the proof-of-work, since a
+    datacentre CPU solves hashcash almost for free (see
+    ``_get_unsolved_challenge_count``).
+
     Args:
         ip_address: Client IP address string.
         user_agent: Raw User-Agent header string.
@@ -340,8 +347,11 @@ def evaluate_request(
     """
     from django_waf import conf
     from django_waf.enums import RuleAction, Verdict
+    from django_waf.services.fingerprint import classify_fingerprint
     from django_waf.services.rate_limiter import check_rate_limit, get_request_count
     from django_waf.services.ua_analyser import score_user_agent
+
+    fingerprint_verdict = classify_fingerprint(user_agent, request_meta or {})
 
     cache = load_rule_cache(redis_client)
 
@@ -395,7 +405,7 @@ def evaluate_request(
             anomaly_score=None,
         )
         if verdict == Verdict.CHALLENGED:
-            return _gate_challenge_or_escalate(ip_address, redis_client, block_eval_result)
+            return _gate_challenge_or_escalate(ip_address, redis_client, block_eval_result, fingerprint_verdict)
         return block_eval_result
 
     # Step 7: Rate limits
@@ -424,6 +434,7 @@ def evaluate_request(
                     matched_rule_type="",
                     anomaly_score=None,
                 ),
+                fingerprint_verdict,
             )
 
     # Step 9: Path scoring — always evaluated (no volume threshold).
@@ -464,6 +475,7 @@ def evaluate_request(
                     matched_rule_type="",
                     anomaly_score=total_score,
                 ),
+                fingerprint_verdict,
             )
         return EvaluationResult(
             verdict=verdict,
@@ -827,6 +839,7 @@ def _gate_challenge_or_escalate(
     ip_address: str,
     redis_client,
     challenge_result: EvaluationResult,
+    fingerprint_verdict: str = "",
 ) -> EvaluationResult:
     """Single escalation gate — called before returning ANY challenge verdict.
 
@@ -839,7 +852,7 @@ def _gate_challenge_or_escalate(
     challenge verdict through this one gate first makes escalation reachable
     regardless of which path produced the challenge.
 
-    If the IP's unsolved-challenge count has reached
+    If the IP's challenge count has reached
     DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD, creates (or reuses) a
     persistent auto BlockRule and returns a BLOCKED verdict referencing it
     instead of the challenge verdict. Otherwise returns challenge_result
@@ -850,6 +863,11 @@ def _gate_challenge_or_escalate(
         redis_client: Configured Redis client instance.
         challenge_result: The CHALLENGED EvaluationResult that would
             otherwise be returned.
+        fingerprint_verdict: BR-FP-001's classify_fingerprint result for
+            this request (browser, bot, suspicious, or unknown). Passed
+            through to _get_unsolved_challenge_count so a
+            fingerprint-classified bot's solved challenges still count
+            towards escalation (see that function's docstring).
 
     Returns:
         A BLOCKED EvaluationResult when escalation triggers, else
@@ -858,7 +876,7 @@ def _gate_challenge_or_escalate(
     from django_waf import conf
     from django_waf.enums import RuleAction, Verdict
 
-    challenged_count = _get_unsolved_challenge_count(ip_address, redis_client)
+    challenged_count = _get_unsolved_challenge_count(ip_address, redis_client, fingerprint_verdict)
     if challenged_count < conf.DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD:
         return challenge_result
 
@@ -878,18 +896,35 @@ def _gate_challenge_or_escalate(
     )
 
 
-def _get_unsolved_challenge_count(ip_address: str, redis_client) -> int:
-    """Count recent challenged verdicts for an IP with no solved ChallengeTokens.
+def _get_unsolved_challenge_count(ip_address: str, redis_client, fingerprint_verdict: str = "") -> int:
+    """Count recent challenges for an IP towards the escalation threshold.
 
-    Uses Redis counter waf:challenged:{ip} incremented by the middleware
-    on each CHALLENGED verdict. Checks Redis waf:solved:{ip} flag first
-    (set by VerifyView on successful solve), falling back to DB only on miss.
+    Uses Redis counter waf:challenged:{ip} incremented by the middleware on
+    each CHALLENGED verdict. Whether a solved challenge clears that counter
+    depends on ``fingerprint_verdict`` (BR-FP-001, computed by
+    evaluate_request from the request's own headers, independently of
+    whether the challenge gets solved):
+
+    - When fingerprint_verdict == "bot", the count is returned regardless
+      of the Redis waf:solved:{ip} flag. A JS-executing botnet solves the
+      SHA-256 proof-of-work at negligible cost on datacentre CPUs (BR-CHAL-002
+      assumes solving proves a human/real browser, which a bot with a
+      correct hashcash implementation trivially defeats), so treating
+      "solved" as "legitimate" let a botnet accumulate challenged verdicts
+      forever without ever reaching the block threshold. Verified in
+      production: ~37,700 events from a rotating-UA datacentre botnet
+      produced 3,044 challenged verdicts and zero blocks, because every one
+      of those requests both matched fingerprint_verdict == "bot" and
+      solved the challenge.
+    - For every other fingerprint_verdict, a solved challenge still clears
+      the counter to 0 exactly as before this fix: a genuine browser that
+      solves a challenge is not penalised for having been challenged.
 
     Returning 0 means "this IP has never been challenged", the same value
     a genuinely fresh IP produces. A Redis failure here is therefore not a
     neutral fail-open: it silently disables challenge escalation entirely
     for the affected IP for as long as the failure persists, since
-    ``_maybe_escalate_to_block`` never sees a count reach
+    ``_gate_challenge_or_escalate`` never sees a count reach
     DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD. A bot farm failing every
     challenge would simply never escalate to a block. Fail-open is still
     correct (BR-EVAL-007: a Redis outage must not turn every challenge into
@@ -902,6 +937,9 @@ def _get_unsolved_challenge_count(ip_address: str, redis_client) -> int:
         if not count:
             return 0
         count = int(count)
+
+        if fingerprint_verdict == "bot":
+            return count
 
         # Fast path: check Redis solved flag first
         solved_key = f"waf:solved:{ip_address}"
@@ -925,67 +963,47 @@ def _create_escalation_rule(ip_address: str):  # -> BlockRule | None
     # None on failure; callers should treat that as "block but unknown rule".
     """Create a persistent auto BlockRule for an escalated IP.
 
-    Uses update_or_create so concurrent escalations don't duplicate.
-    The rule is picked up by the nginx blocklist generator on its next run.
+    Routes through anomaly_detector._get_or_create_auto_rule (the same
+    guarded path detect_ua_rotation/detect_subnet_burst/detect_cloud_spray/
+    detect_challenge_farms use) rather than calling
+    BlockRule.objects.update_or_create directly. Escalation used to bypass
+    that guard entirely: an operator's REJECTED review decision on a
+    (rule_type=ip, pattern, source=AUTO, action=block) row could be
+    silently resurrected as an active block the next time the same IP hit
+    the escalation threshold, exactly the enforce-then-review order
+    BR-ANOM-007's quarantine machinery exists to prevent. Concurrent
+    escalations and pre-existing duplicate rows are handled by
+    _get_or_create_auto_rule itself, so this function no longer needs its
+    own dedup/retry logic.
 
-    If duplicate rows already exist for this (rule_type, pattern, source,
-    action) key, deduplicates by keeping the newest and retrying.
+    The rule is picked up by the nginx blocklist generator on its next run.
+    Import of anomaly_detector is deferred to the function body: rule_engine
+    is imported during middleware request evaluation, and anomaly_detector
+    imports from models/conf at module scope, so a module-level import here
+    would risk a circular import against anomaly_detector's own callers.
     """
     from datetime import timedelta
 
-    from django.db import transaction
     from django.utils import timezone
 
     from django_waf import conf
-    from django_waf.enums import RuleAction, RuleSource, RuleType
-    from django_waf.models import BlockRule
-
-    lookup = {
-        "rule_type": RuleType.IP,
-        "pattern": ip_address,
-        "source": RuleSource.AUTO,
-        "action": RuleAction.BLOCK,
-    }
-    defaults = {
-        "name": f"Auto: escalated from unsolved challenges ({ip_address})",
-        "match_type": "exact",
-        "is_active": True,
-        "expires_at": timezone.now() + timedelta(seconds=conf.DJANGO_WAF_ESCALATION_BLOCK_TTL),
-    }
+    from django_waf.enums import RuleAction, RuleType
+    from django_waf.services.anomaly_detector import _get_or_create_auto_rule
 
     try:
-        with transaction.atomic():
-            rule, _ = BlockRule.objects.update_or_create(**lookup, defaults=defaults)
-        return rule
-    except BlockRule.MultipleObjectsReturned:
-        logger.warning(
-            "django-waf: duplicate BlockRule rows for escalation of %s — deduplicating",
-            ip_address,
+        rule, _created = _get_or_create_auto_rule(
+            name=f"Auto: escalated from repeated challenges ({ip_address})",
+            rule_type=RuleType.IP,
+            match_type="exact",
+            pattern=ip_address,
+            action=RuleAction.BLOCK,
+            expiry=timezone.now() + timedelta(seconds=conf.DJANGO_WAF_ESCALATION_BLOCK_TTL),
+            detector_name="challenge_escalation",
         )
-        _deduplicate_escalation_rules(**lookup)
-        try:
-            with transaction.atomic():
-                rule, _ = BlockRule.objects.update_or_create(**lookup, defaults=defaults)
-            return rule
-        except Exception:
-            logger.exception("django-waf: failed to create escalation rule for %s after dedup", ip_address)
-            return None
+        return rule
     except Exception:
         logger.exception("django-waf: failed to create escalation rule for %s", ip_address)
         return None
-
-
-def _deduplicate_escalation_rules(**lookup) -> int:
-    """Keep the newest BlockRule matching ``lookup`` and delete the rest."""
-    from django_waf.models import BlockRule
-
-    qs = BlockRule.objects.filter(**lookup).order_by("-created_at")
-    if qs.count() <= 1:
-        return 0
-    keep_pk = qs.first().pk
-    deleted, _ = qs.exclude(pk=keep_pk).delete()
-    logger.info("django-waf: deleted %d duplicate escalation BlockRule rows for %s", deleted, lookup)
-    return deleted
 
 
 # ---------------------------------------------------------------------------

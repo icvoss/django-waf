@@ -5,7 +5,65 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-08-28
+
+### Security
+
+- **Challenge escalation never fired against a JS-executing botnet that
+  solves its own proof-of-work.** `_get_unsolved_challenge_count` cleared
+  the `waf:challenged:{ip}` counter to 0 whenever `waf:solved:{ip}` was
+  set, with no check on whether the solve came from a genuine browser.
+  Verified in production: a rotating-UA datacentre botnet (~37,700
+  events, ~3,044 CHALLENGED verdicts) produced zero blocks, because it
+  solved SHA-256 hashcash at negligible cost on datacentre CPUs and every
+  solve reset its counter before the escalation threshold was ever
+  reached. The counter now clears on a solve only when the request's HTTP
+  fingerprint (BR-FP-001) does not classify as "bot"; a bot-classified
+  fingerprint's challenges count towards
+  `DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD` regardless of solve status.
+  Fail-open is unchanged (BR-EVAL-007): a Redis failure still passes the
+  request through, now logged as before.
+
+- **Escalation could silently resurrect a rule an operator had rejected.**
+  `_create_escalation_rule` called `BlockRule.objects.update_or_create`
+  directly, bypassing the read-before-write CONFIRMED/REJECTED guard
+  (`anomaly_detector._update_or_create_auto_rule`, BR-ANOM-007) every
+  other auto-rule creation path already goes through. An operator who
+  rejected an auto-generated rule for a given `(rule_type, pattern,
+  source=AUTO, action)` key could see escalation recreate it as an active
+  BLOCK the next time the same IP crossed the challenge threshold.
+  Escalation now calls the same guarded `_get_or_create_auto_rule` path
+  the anomaly detectors use, so a CONFIRMED or REJECTED review decision is
+  never overwritten.
+
+### Changed
+
+- **BREAKING: auto-detected rules now escalate to an enforced nginx
+  block on repeat detection, where they previously stayed
+  challenge-only forever.** `detect_ua_rotation`, `detect_subnet_burst`,
+  and `detect_cloud_spray` still create CHALLENGE rules on first
+  detection, unchanged; that trigger stays deliberately weak (a
+  mean-times-3 threshold) and challenge-only is still the right first
+  response. What changes is what happens next: because the escalation
+  fix above makes `DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD` reachable
+  for a bot-classified IP for the first time, an IP that keeps getting
+  challenged by one of these detectors' rules and keeps presenting a
+  bot fingerprint will now cross the threshold and be promoted to a
+  persistent auto BLOCK rule, exactly as `DJANGO_WAF_ESCALATION_BLOCK_TTL`
+  and BR-CHAL-010 always specified. BlockRule.objects.for_nginx() already
+  exports BLOCK rules, so **on upgrade, an existing deployment will begin
+  auto-blocking, at the nginx edge, repeat offenders that previously only
+  ever received a JS challenge and were never blocked.** This is an
+  enforcement change on upgrade, not an opt-in: there is no flag to
+  restore the previous (permanently challenge-only) behaviour, only the
+  pre-existing `DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES` /
+  `DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS` review knobs (BR-ANOM-007,
+  BR-ANOM-008), which apply exactly as they already did to every other
+  auto-generated rule. `for_nginx()`'s own docstring and
+  `blocklist_generator.py`'s module docstring now document that a
+  CHALLENGE rule is middleware-only and never reaches nginx, since nginx
+  cannot serve or verify a JS proof-of-work; this was previously
+  undocumented.
 
 ### Added
 
