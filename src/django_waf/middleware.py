@@ -406,13 +406,21 @@ class WafMiddleware:
             if path.startswith(challenge_path) or path.startswith(verify_path):
                 return self._get_response(request)
 
-            # Increment unsolved-challenge counter for escalation tracking
+            # Increment unsolved-challenge counter for escalation tracking.
+            # This is the producer half of the counter
+            # rule_engine._get_unsolved_challenge_count reads: a silent
+            # failure here has the same effect as a failure on the read
+            # side, challenge escalation goes blind for this IP, so it is
+            # logged rather than swallowed.
             try:
                 key = f"waf:challenged:{ip_address}"
                 redis_client.incr(key)
                 redis_client.expire(key, 3600)  # 1-hour window
             except Exception:
-                pass
+                logger.warning(
+                    "django-waf: failed to record challenge for %s, escalation count will under-report",
+                    ip_address,
+                )
             challenge_url = f"{challenge_path}?next={path}"
             return HttpResponseRedirect(challenge_url)
 

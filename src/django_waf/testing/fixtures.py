@@ -37,12 +37,29 @@ def waf_redis_mock(monkeypatch: pytest.MonkeyPatch):
     """Patch every Redis accessor django-waf uses to return a shared fakeredis instance.
 
     Covers the middleware, the challenge/verify views, and the
-    form-protection subsystem's default Redis factory — the three places
+    form-protection subsystem's default Redis factory: the three places
     that independently resolve a Redis client via ``django_redis`` or the
     Django cache fallback.
 
     Requires ``fakeredis``. Raises ``ImportError`` with an actionable
     message if it is not installed.
+
+    The fake client is pinned to ``version=(6, 0)``, django-waf's own
+    declared minimum supported Redis version (see ``requires-python`` and
+    the version floor documented in ``redis_client.py`` / ``checks.py``).
+    Public-behaviour change (#78): previously this fixture instantiated
+    ``fakeredis.FakeRedis()`` with no ``version=`` argument, which defaults
+    to emulating fakeredis's newest modelled server and so silently accepted
+    commands that do not exist on the package's actual floor. A consuming
+    project's test suite that calls a Redis command introduced after 6.0
+    (directly, or via a fixture built on ``waf_redis_mock``) may start
+    failing after this change; that failure is correct; it means the
+    project depends on a Redis feature above what django-waf supports. Note
+    that fakeredis's ``version=`` argument does not gate every command
+    (``GETDEL`` in particular, see fakeredis's ``string_mixin.py``, is
+    unconditionally available regardless of the requested version), so this
+    pin improves fidelity but is not a substitute for testing against a real
+    Redis server at the floor version.
 
     Yields:
         The shared ``fakeredis.FakeRedis`` instance, so tests can assert on
@@ -62,7 +79,7 @@ def waf_redis_mock(monkeypatch: pytest.MonkeyPatch):
     import django_waf.middleware as middleware_mod
     import django_waf.views as views_mod
 
-    fake_client = fakeredis.FakeRedis()
+    fake_client = fakeredis.FakeRedis(version=(6, 0))
 
     monkeypatch.setattr(middleware_mod, "_get_redis_client", lambda: fake_client)
     monkeypatch.setattr(views_mod, "_get_redis_client", lambda: fake_client)

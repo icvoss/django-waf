@@ -115,10 +115,23 @@ def parse_access_log(log_path: str | None = None) -> dict:
     from django_waf.models import RequestLog
 
     path = log_path or conf.DJANGO_WAF_ACCESS_LOG_PATH
+
+    if not path:
+        # Feature not configured at all: an expected, quiet no-op, not a
+        # failure, so this stays at DEBUG.
+        logger.debug("django-waf: DJANGO_WAF_ACCESS_LOG_PATH not set, skipping parse")
+        return {"parsed_lines": 0, "created_records": 0, "skipped_lines": 0}
+
     offset_key = f"django_waf:access_log_offset:{path}"
 
-    if not path or not os.path.isfile(path):
-        logger.debug("django-waf: access log not found at %s — skipping parse", path)
+    if not os.path.isfile(path):
+        # A path *was* configured but does not resolve to a file: this is
+        # very likely a wrong DJANGO_WAF_ACCESS_LOG_PATH, which otherwise
+        # yields the identical {"parsed_lines": 0} as an idle site, forever,
+        # with no signal at all (the return dict is not itself surfaced
+        # anywhere; the log line is the only observable). WARNING so it is
+        # visible in production rather than silently invisible at DEBUG.
+        logger.warning("django-waf: configured access log %s does not exist, skipping parse", path)
         return {"parsed_lines": 0, "created_records": 0, "skipped_lines": 0}
 
     stored_offset = cache.get(offset_key)
@@ -352,8 +365,16 @@ def update_ip_reputation() -> dict:
     Covers the last 24 hours. Upserts one record per IP (BR-REP-003). Computes
     threat score per BR-REP-002.
 
+    ``detect_challenge_farms`` (services/anomaly_detector.py) reads
+    ``IPReputation`` directly, so a silent zero here is not just an idle
+    metric: it blinds that detector for the whole window. ``ips_seen``
+    distinguishes "no RequestLog rows landed at all" (logged at WARNING,
+    since either ingestion has stopped or nothing has been logged in 24
+    hours, both worth an operator's attention) from "rows landed but every
+    IP was already up to date", which is a genuinely quiet window.
+
     Returns:
-        Dict with keys: updated_count, created_count.
+        Dict with keys: updated_count, created_count, ips_seen.
 
     Scheduled: every 6 hours.
     """
@@ -368,7 +389,7 @@ def update_ip_reputation() -> dict:
     created_count = 0
 
     # Aggregate per IP
-    ip_stats = (
+    ip_stats = list(
         RequestLog.objects.filter(timestamp__gte=cutoff)
         .values("ip_address")
         .annotate(
@@ -378,6 +399,7 @@ def update_ip_reputation() -> dict:
             distinct_ua=Count("user_agent", distinct=True),
         )
     )
+    ips_seen = len(ip_stats)
 
     for row in ip_stats:
         ip = row["ip_address"]
@@ -437,12 +459,25 @@ def update_ip_reputation() -> dict:
         else:
             updated_count += 1
 
-    logger.info(
-        "django-waf: update_ip_reputation — updated=%d created=%d",
-        updated_count,
-        created_count,
-    )
-    return {"updated_count": updated_count, "created_count": created_count}
+    if ips_seen == 0:
+        # No RequestLog rows landed in the window at all: either logging
+        # has genuinely gone quiet or ingestion (parse_access_log,
+        # WafMiddleware's own logging) has stopped. Either way,
+        # detect_challenge_farms is now blind for this window, so this is
+        # worth a WARNING rather than the same log line as "processed
+        # everyone, nothing changed".
+        logger.warning(
+            "django-waf: update_ip_reputation saw no RequestLog rows in the last 24h window, "
+            "detect_challenge_farms has no data for this window"
+        )
+    else:
+        logger.info(
+            "django-waf: update_ip_reputation, ips_seen=%d updated=%d created=%d",
+            ips_seen,
+            updated_count,
+            created_count,
+        )
+    return {"updated_count": updated_count, "created_count": created_count, "ips_seen": ips_seen}
 
 
 @shared_task
@@ -547,6 +582,15 @@ def flush_rule_hit_counts(self) -> dict:
     Reads waf:rule_hits:{rule_id} keys, updates BlockRule.hit_count and
     last_hit_at, then deletes the Redis keys. Designed to run every 5 minutes
     alongside the blocklist generation task.
+
+    ``ignore_result=True`` means Celery discards the returned dict, so the
+    log line below is the only real observable this task has. All three
+    failure exits, and the success exit, now report ``keys_seen`` and
+    ``errors`` alongside ``flushed``, so "Redis unreachable", "keys listed
+    but every read/write failed", and a genuinely idle site with nothing to
+    flush produce three different log lines instead of the same
+    ``{"flushed": 0}`` for all three. Fail-open is unchanged (BR-EVAL-007):
+    an unflushed counter just waits for the next run.
     """
     from django_waf.models import BlockRule
 
@@ -557,36 +601,89 @@ def flush_rule_hit_counts(self) -> dict:
 
         redis_client = get_redis_connection(conf.DJANGO_WAF_REDIS_ALIAS)
     except Exception:
-        logger.warning("django-waf: Redis unavailable for hit count flush")
-        return {"flushed": 0}
+        logger.warning("django-waf: Redis unavailable for hit count flush, flushed=0 keys_seen=0 errors=0")
+        return {"flushed": 0, "keys_seen": 0, "errors": 0}
 
     flushed = 0
+    errors = 0
     prefix = "waf:rule_hits:"
 
     try:
         keys = redis_client.keys(f"{prefix}*")
     except Exception:
-        return {"flushed": 0}
+        logger.error(
+            "django-waf: failed to list Redis hit count keys, flushed=0 keys_seen=0 errors=1",
+            exc_info=True,
+        )
+        return {"flushed": 0, "keys_seen": 0, "errors": 1}
+
+    keys_seen = len(keys)
 
     for key in keys:
-        try:
-            key_str = key.decode() if isinstance(key, bytes) else key
-            rule_id = key_str[len(prefix) :]
-            count = int(redis_client.getdel(key) or 0)
-            if count > 0:
-                from django.db.models import F
+        key_str = key.decode() if isinstance(key, bytes) else key
+        rule_id = key_str[len(prefix) :]
 
-                updated = BlockRule.objects.filter(id=rule_id).update(
-                    hit_count=F("hit_count") + count,
-                    last_hit_at=timezone.now(),
-                )
-                if updated:
-                    flushed += 1
+        try:
+            # GETDEL requires Redis 6.2+; the package's own floor is 6.0
+            # (see django_waf.E005), so use a GET+DEL pipeline instead. Not
+            # atomic against a concurrent INCR landing between the two
+            # commands, but this is a coarse hit counter flushed every five
+            # minutes, not a balance: a count dropped or double counted in
+            # that narrow window is an acceptable trade for staying on the
+            # 6.0 floor.
+            pipe = redis_client.pipeline()
+            pipe.get(key)
+            pipe.delete(key)
+            get_result, _ = pipe.execute()
+            count = int(get_result or 0)
         except Exception:
+            errors += 1
+            logger.error("django-waf: failed to read/clear hit counter for rule %s", rule_id, exc_info=True)
             continue
 
-    logger.info("django-waf: flushed hit counts for %d rules", flushed)
-    return {"flushed": flushed}
+        if count <= 0:
+            continue
+
+        try:
+            from django.db.models import F
+
+            updated = BlockRule.objects.filter(id=rule_id).update(
+                hit_count=F("hit_count") + count,
+                last_hit_at=timezone.now(),
+            )
+        except Exception:
+            # The Redis counter is already cleared at this point, so this
+            # count is lost, not retried on the next run. Fail-open per
+            # BR-EVAL-007 means we do not raise and abort the whole flush
+            # over one bad rule id, but a lost count must be loud: previously
+            # this was a bare `except Exception: continue` that swallowed a
+            # DB error identically to a Redis error, with no log at all.
+            errors += 1
+            logger.error(
+                "django-waf: failed to persist hit count for rule %s (count=%d, Redis counter already cleared)",
+                rule_id,
+                count,
+                exc_info=True,
+            )
+            continue
+
+        if updated:
+            flushed += 1
+
+    if errors:
+        logger.warning(
+            "django-waf: flushed hit counts for %d rules, keys_seen=%d errors=%d",
+            flushed,
+            keys_seen,
+            errors,
+        )
+    else:
+        logger.info(
+            "django-waf: flushed hit counts for %d rules, keys_seen=%d errors=0",
+            flushed,
+            keys_seen,
+        )
+    return {"flushed": flushed, "keys_seen": keys_seen, "errors": errors}
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +729,18 @@ def _build_source_event_id(ip_address: str, timestamp_str: str, method: str, pat
 
 
 def _invalidate_rule_cache_redis() -> None:
-    """Increment waf:rules:version in Redis to invalidate the cached rule set."""
+    """Increment waf:rules:version in Redis to invalidate the cached rule set.
+
+    Every WafMiddleware process holds an in-process rule cache keyed on this
+    version; incrementing it is how a newly expired/created rule reaches
+    already-running workers without a restart. The Django cache fallback
+    below is per-process, not shared, so it does not actually invalidate
+    other workers' caches, only this one's next read. Falling back silently
+    previously looked identical to a successful Redis invalidation from the
+    caller's side, so an operator watching Redis come back up after an
+    outage had no way to see that a chunk of rule-cache invalidations were
+    only ever applied locally.
+    """
     try:
         from django_redis import get_redis_connection
 
@@ -641,7 +749,13 @@ def _invalidate_rule_cache_redis() -> None:
         redis_client = get_redis_connection(conf.DJANGO_WAF_REDIS_ALIAS)
         redis_client.incr("waf:rules:version")
     except Exception:
-        # Fall back to Django cache
+        # Fall back to Django cache. Per-process only: other WafMiddleware
+        # workers do not see this bump, so their rule caches stay stale
+        # until Redis recovers and a real invalidation reaches them.
+        logger.warning(
+            "django-waf: Redis unavailable for rule cache invalidation, falling back to the local Django "
+            "cache (other worker processes will not see this invalidation until Redis recovers)"
+        )
         from django.core.cache import cache
 
         version = (cache.get("waf:rules:version") or 0) + 1
