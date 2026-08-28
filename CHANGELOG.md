@@ -12,6 +12,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Django 6.1 added to the CI test matrix** and declared via the
   `Framework :: Django :: 6.1` classifier.
 
+- **`django_waf.E005`: a boot-time check for the connected Redis server's
+  version.** `django_waf.services.redis_client.MIN_REDIS_VERSION` (6.0) is
+  now the package's single declared floor, read via `INFO` and compared at
+  `manage.py check` time. Guarded exactly like `django_waf.E004`: silent
+  when the WAF is disabled, when the configured cache alias is not even a
+  django-redis backend, or when a live version cannot be read, so it never
+  repeats the mistake `django_waf.E004` made in #67 (firing under
+  `DJANGO_WAF_ENABLED = False`). Only a reachable, correctly configured
+  server reporting an unsupported version raises an Error.
+
+### Fixed
+
+- **`flush_rule_hit_counts` silently flushed nothing on Redis older than
+  6.2 (#78).** The task called `redis_client.getdel(key)`, which requires
+  Redis 6.2+; on a 6.0/6.1 server every call raised `ResponseError`,
+  caught by a bare `except Exception: continue`, so every `BlockRule`'s
+  `hit_count` stayed permanently 0 and `last_hit_at` stayed `None` while
+  the task logged `"flushed hit counts for 0 rules"` at INFO on every run,
+  identical to a genuinely idle site. Confirmed in production against a
+  Redis 6.0.16 server: 40,936 runs, all reporting success, none flushing
+  anything. `getdel` was the only command anywhere in the package needing
+  newer than Redis 6.0, so the fix is a `GET`+`DEL` pipeline in its place,
+  not a raised floor: the pipeline is not atomic against a concurrent
+  `INCR` landing between the two commands, an acceptable trade for a
+  coarse hit counter flushed every five minutes rather than a balance.
+  `BlockRule.objects.filter(...).update()` failures in the same loop
+  (previously caught by the same bare `except: continue`, so a DB error
+  read identically to a Redis error) now increment a distinct `errors`
+  count and log at ERROR rather than vanishing silently.
+
+- **Redis failures that fail open silently, with no log at any level, now
+  log a WARNING naming the consequence.** Fail-open behaviour is
+  unchanged in every case (BR-EVAL-007): only observability changes.
+  - `rule_engine._record_rule_hit`, the producer half of the same hit
+    counter `flush_rule_hit_counts` reads: a silent failure here means
+    every read of that rule's hit count reads as zero forever,
+    indistinguishable from the rule never matching, inviting an operator
+    to delete a rule that is actively blocking traffic.
+  - `rule_engine._get_unsolved_challenge_count`, the escalation counter:
+    returning 0 on failure is indistinguishable from "never challenged",
+    which silently disables challenge escalation. A bot farm failing
+    every challenge would never escalate to a block. The middleware's
+    matching write path (`waf:challenged:{ip}`, incremented on every
+    CHALLENGED verdict) gets the same treatment, since a silent failure
+    there has the identical effect from the other side of the counter.
+  - `fingerprint.register_known_fingerprint`: kills the dynamic
+    known-fingerprint allowlist, so a real user who just solved a
+    challenge is challenged again on every subsequent visit, a
+    false-positive amplifier rather than a neutral fail-open. The
+    `VerifyView` call site's own wrapping `except` (which also covered
+    the unrelated solved-flag write) is split so each failure logs its
+    own consequence.
+
+- **`_invalidate_rule_cache_redis` now logs when it falls back to the
+  per-process Django cache.** The Redis increment this function normally
+  performs (`waf:rules:version`) is how a newly expired or created rule
+  reaches every already-running `WafMiddleware` worker without a restart;
+  the Django cache fallback is per-process, so it does not actually
+  invalidate other workers' caches, only this one's next read. Previously
+  this fell back silently, indistinguishable from the caller's side as a
+  successful shared invalidation, so an operator watching Redis come back
+  up after an outage had no way to see that a chunk of rule changes only
+  ever reached one worker.
+
+- **`parse_access_log` and `update_ip_reputation` no longer report a
+  silent zero indistinguishable from an idle site.** A misconfigured
+  `DJANGO_WAF_ACCESS_LOG_PATH` (file does not exist) previously logged at
+  DEBUG, invisible in production, and returned the same
+  `{"parsed_lines": 0}` as a genuinely quiet site forever; it now logs a
+  WARNING (an unset path, the expected "feature not configured" case,
+  stays at DEBUG). `update_ip_reputation` now reports `ips_seen` alongside
+  `updated_count`/`created_count` and logs a WARNING when no `RequestLog`
+  rows landed in the 24-hour window at all, since `detect_challenge_farms`
+  reads `IPReputation` directly and a silent zero here means that detector
+  runs blind for the window with no signal that anything is wrong.
+
+- **Ruff `S110` (try-except-pass) and `S112` (try-except-continue) are
+  re-enabled** (previously ignored in `pyproject.toml`); these are
+  precisely the two rules that would have flagged the `flush_rule_hit_counts`
+  and `_record_rule_hit` defects above. All resulting violations in `src/`
+  are fixed by the logging changes in this release; none required a
+  per-line `noqa`.
+
 ## [1.10.0] - 2026-08-11
 
 ### Fixed

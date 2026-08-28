@@ -496,6 +496,49 @@ class TestVerdictDispatch:
         assert "/challenge/" in response["Location"]
 
     @override_settings(DJANGO_WAF_ENABLED=True)
+    def test_challenge_counter_increment_failure_still_redirects_and_logs(self, caplog):
+        """A Redis failure while recording the unsolved-challenge counter is
+        the producer half of the counter
+        rule_engine._get_unsolved_challenge_count reads: a silent failure
+        here has the same effect as a failure on the read side, escalation
+        goes blind for this IP. Fail-open must still redirect to the
+        challenge page (BR-EVAL-007), but the failure must be logged."""
+        import importlib
+        import logging
+
+        import django_waf.conf as conf_mod
+
+        importlib.reload(conf_mod)
+
+        factory = RequestFactory()
+        request = factory.get("/page/")
+        request.user = MagicMock(is_authenticated=False)
+        request.COOKIES = {}
+        get_response = MagicMock(return_value=HttpResponse("view response"))
+
+        broken_redis = _mock_redis()
+        broken_redis.incr.side_effect = RuntimeError("redis down")
+
+        with (
+            patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+            patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+            patch("django_waf.middleware._emit_request_blocked"),
+            patch("django_waf.middleware._emit_request_throttled"),
+            caplog.at_level(logging.WARNING, logger="django_waf.middleware"),
+        ):
+            mock_redis_fn.return_value = broken_redis
+            mock_validate.return_value = False
+            mock_eval.return_value = _make_result("challenged")
+
+            middleware = _make_middleware(get_response)
+            response = middleware(request)
+
+        assert response.status_code == 302
+        assert "/challenge/" in response["Location"]
+        assert any("failed to record challenge" in message for message in caplog.messages)
+
+    @override_settings(DJANGO_WAF_ENABLED=True)
     def test_challenged_verdict_on_challenge_path_passes_through(self):
         """Challenge verdict on /waf/challenge/ must not redirect to itself (loop prevention)."""
         import importlib

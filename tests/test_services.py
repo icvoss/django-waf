@@ -3881,11 +3881,27 @@ class TestKnownFingerprintRegistry:
         redis.incr.assert_not_called()
 
     def test_register_swallows_redis_exception(self):
-        """A Redis error during register is silently swallowed — never raises."""
+        """A Redis error during register does not raise: the caller (VerifyView)
+        must still complete the redirect."""
         redis = MagicMock()
         redis.incr.side_effect = RuntimeError("redis down")
         # Must not raise
         register_known_fingerprint("abc123", redis)
+
+    def test_register_logs_a_warning_on_failure(self, caplog):
+        """A silent failure here is a false-positive amplifier, not a neutral
+        fail-open: is_known_fingerprint fails closed, so a real user who just
+        solved a challenge would be re-challenged on every subsequent visit
+        with no operator-visible signal that the allowlist has stopped
+        growing."""
+        import logging
+
+        redis = MagicMock()
+        redis.incr.side_effect = RuntimeError("redis down")
+        with caplog.at_level(logging.WARNING, logger="django_waf.fingerprint"):
+            register_known_fingerprint("abc123", redis)
+
+        assert any("abc123" in message for message in caplog.messages)
 
     def test_is_known_returns_true_when_counter_present(self):
         """is_known_fingerprint returns True when the Redis key has a value."""
@@ -4274,6 +4290,21 @@ class TestRuleEngineHelpers:
         redis = MagicMock()
         redis.get.side_effect = RuntimeError("redis down")
         assert _get_unsolved_challenge_count("203.0.113.1", redis) == 0
+
+    def test_get_unsolved_challenge_count_logs_a_warning_on_failure(self, caplog):
+        """A Redis failure here returns 0, indistinguishable from a fresh
+        IP, which silently disables challenge escalation. Must be logged,
+        not swallowed silently (see the fail-open observability release)."""
+        import logging
+
+        from django_waf.services.rule_engine import _get_unsolved_challenge_count
+
+        redis = MagicMock()
+        redis.get.side_effect = RuntimeError("redis down")
+        with caplog.at_level(logging.WARNING, logger="django_waf.rule_engine"):
+            _get_unsolved_challenge_count("203.0.113.1", redis)
+
+        assert any("203.0.113.1" in message for message in caplog.messages)
 
     # ------------------------------------------------------------------ _create_escalation_rule
 

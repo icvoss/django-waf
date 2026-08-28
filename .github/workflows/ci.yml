@@ -39,6 +39,54 @@ jobs:
       - name: Test with coverage
         run: pytest --cov=src --cov-report=term-missing
 
+  # Dedicated leg, not part of the matrix above: the defect this leg exists
+  # to catch (getdel requiring Redis 6.2+, silently failing on 6.0.16 for
+  # 40,936 task runs, never caught because the package has never executed
+  # a single Redis command against a real server) is Redis-version-specific,
+  # not Python/Django-version-specific. Real-Redis behaviour does not vary
+  # across the python-version x django-version matrix, so running it on all
+  # 7 legs would multiply CI time sevenfold for no extra defect-catching
+  # power. One dedicated leg on a single, representative Python/Django pair
+  # guarantees every PR exercises real Redis exactly once.
+  #
+  # Pinned to Redis 6.0 (the package's lowest supported version per its
+  # documented floor, see checks.py / redis_client.py), not latest: testing
+  # against Redis 7 would have hidden the getdel defect exactly as fakeredis
+  # did, since GETDEL exists from 6.2 onwards and both fakeredis (regardless
+  # of its version= argument, which does not gate GETDEL) and Redis 6.2+
+  # accept it silently. Only a real server below 6.2 raises.
+  test-redis-integration:
+    name: Test (real Redis 6.0 integration)
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:6.0-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install "Django~=6.1.0"
+          pip install -e ".[dev,celery]"
+
+      - name: Test against real Redis 6.0
+        run: pytest tests/ -v --tb=short --color=yes --ds=tests.settings_redis -m redis_integration
+        env:
+          DJANGO_WAF_TEST_REDIS_URL: redis://localhost:6379/0
+
   lint:
     runs-on: ubuntu-latest
     steps:

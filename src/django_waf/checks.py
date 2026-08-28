@@ -76,6 +76,29 @@ The setting is checked against
 detector rename cannot silently desync the two: a typo or a stale name from
 a renamed detector would otherwise mean the operator believes a detector is
 running observe-only when it is, in fact, enforcing.
+
+The Redis version check (``django_waf.E005``) errors when the connected
+Redis server reports a version below the package's own floor, currently
+6.0 (see ``django_waf.services.redis_client.MIN_REDIS_VERSION``, the
+single source of truth this check reads). Redis 6.2 introduced ``GETDEL``;
+before this check existed, ``flush_rule_hit_counts`` called it
+unconditionally and, on a 6.0/6.1 server, ``ResponseError`` was raised on
+every key and swallowed by a bare ``except Exception: continue``, so hit
+counts silently never flushed. The task itself no longer calls ``GETDEL``
+(it uses a GET+DEL pipeline instead, so the package's floor stays 6.0
+rather than rising to 6.2), but the package has no other way to warn an
+operator running an older, unsupported server that other Redis-version
+assumptions elsewhere in the codebase may not hold. This is an Error
+rather than a Warning because an unsupported server version is a
+deployment fact, not a soft preference, mirroring ``django_waf.E004``'s
+reasoning. Like every other check in this module it must stay cheap and
+side-effect-free: it opens a connection only when the alias is already
+confirmed to be a django-redis backend, and does nothing at all when the
+WAF is disabled (``DJANGO_WAF_ENABLED = False``) or the connection cannot
+be made, since neither of those is the misconfiguration this check exists
+to catch (see issue #67, where ``django_waf.E004`` wrongly fired under
+``DJANGO_WAF_ENABLED = False`` with no Redis available; this check guards
+against repeating that).
 """
 
 from __future__ import annotations
@@ -445,5 +468,57 @@ def check_observe_only_detector_names(app_configs, **kwargs):
             "for this entry.",
             hint=f"Known detector names are: {known}.",
             id="django_waf.W008",
+        )
+    ]
+
+
+@register()
+def check_redis_version(app_configs, **kwargs):
+    """Error (``django_waf.E005``) when the connected Redis server reports a
+    version below ``redis_client.MIN_REDIS_VERSION`` (currently 6.0).
+
+    Guards, cheapest first, exactly like ``check_redis_backend``
+    (``django_waf.E004``): does nothing when the WAF is disabled (fixing
+    #67's mistake, where E004 fired regardless of
+    ``DJANGO_WAF_ENABLED``), does nothing when the configured alias is not
+    even a django-redis backend (E004 already covers that misconfiguration
+    on its own), and does nothing when a live version cannot be read
+    (unreachable server, or an ``INFO`` response this check cannot parse).
+    Only "reachable, correctly configured, and reporting an unsupported
+    version" is flagged: everything else is either not this check's
+    concern or the transient outage BR-EVAL-007 already handles at
+    runtime, not a boot-time misconfiguration.
+    """
+    from django_waf import conf
+    from django_waf.services.redis_client import (
+        MIN_REDIS_VERSION,
+        get_redis_server_version,
+        is_redis_backend,
+    )
+
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
+
+    if not is_redis_backend(conf.DJANGO_WAF_REDIS_ALIAS):
+        return []
+
+    version = get_redis_server_version(conf.DJANGO_WAF_REDIS_ALIAS)
+    if version is None or version >= MIN_REDIS_VERSION:
+        return []
+
+    version_str = ".".join(str(part) for part in version)
+    floor_str = ".".join(str(part) for part in MIN_REDIS_VERSION)
+    return [
+        Error(
+            f"Redis server on alias {conf.DJANGO_WAF_REDIS_ALIAS!r} reports "
+            f"version {version_str}, below this package's floor of "
+            f"{floor_str}.",
+            hint=(
+                f"Upgrade the Redis server backing "
+                f"CACHES[{conf.DJANGO_WAF_REDIS_ALIAS!r}] to {floor_str} or "
+                "newer, or point DJANGO_WAF_REDIS_ALIAS at one that already "
+                "meets the floor."
+            ),
+            id="django_waf.E005",
         )
     ]

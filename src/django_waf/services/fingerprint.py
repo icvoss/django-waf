@@ -151,6 +151,15 @@ def register_known_fingerprint(fp_hash: str, redis_client) -> None:
     profile list — as new browser versions roll out, real users solving
     challenges automatically register their fingerprints.
 
+    A failure here is a false-positive amplifier, not a neutral fail-open:
+    ``is_known_fingerprint`` (below) fails closed by design, returning
+    False, correctly, when it cannot confirm a fingerprint. That means an
+    unregistered fingerprint leaves every subsequent request carrying it
+    treated as unknown, so a real user who just solved a challenge would
+    otherwise be challenged again on their next visit. WARNING, not
+    silent: an operator needs to know the known-fingerprint allowlist has
+    stopped growing.
+
     Args:
         fp_hash: The SHA-256 fingerprint hash.
         redis_client: Redis client instance.
@@ -162,7 +171,10 @@ def register_known_fingerprint(fp_hash: str, redis_client) -> None:
         redis_client.incr(key)
         redis_client.expire(key, _KNOWN_FP_TTL)
     except Exception:
-        pass
+        logger.warning(
+            "django-waf: failed to register known fingerprint %s, this client will be re-challenged next visit",
+            fp_hash,
+        )
 
 
 def is_known_fingerprint(fp_hash: str, redis_client) -> bool:

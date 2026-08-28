@@ -264,3 +264,68 @@ class TestRedisBackendSystemCheck:
 
         assert messages == []
         importlib.reload(conf_mod)
+
+
+# ---------------------------------------------------------------------------
+# get_redis_server_version and django_waf.E005 (#78)
+#
+# fakeredis does not implement the INFO command at all (confirmed against
+# the pinned fakeredis version: FakeRedis(version=(6, 0)).info() raises
+# ResponseError: unknown command 'info'), the same class of gap that let
+# the original getdel defect through fakeredis undetected. A MagicMock
+# proves the parsing logic here; the actual server-version read is only
+# provable against a real server, see
+# tests/test_flush_rule_hit_counts_redis_integration.py's
+# TestOldGetdelImplementationFailsOnRedis60 for the same pattern applied to
+# the getdel fix, and add the equivalent real-Redis INFO assertion there if
+# E005 also needs a real-server regression test.
+# ---------------------------------------------------------------------------
+
+
+class TestGetRedisServerVersion:
+    def test_parses_a_standard_version_string(self):
+        from unittest.mock import MagicMock
+
+        from django_waf.services.redis_client import get_redis_server_version
+
+        client = MagicMock()
+        client.info.return_value = {"redis_version": "6.0.16"}
+
+        with patch("django_waf.services.redis_client.get_redis_client", return_value=client):
+            assert get_redis_server_version() == (6, 0, 16)
+
+    def test_returns_none_when_client_unavailable(self):
+        from django_waf.services.redis_client import get_redis_server_version
+
+        with patch("django_waf.services.redis_client.get_redis_client", return_value=None):
+            assert get_redis_server_version() is None
+
+    def test_returns_none_and_does_not_raise_on_a_malformed_info_response(self):
+        from unittest.mock import MagicMock
+
+        from django_waf.services.redis_client import get_redis_server_version
+
+        client = MagicMock()
+        client.info.return_value = {"redis_version": "not-a-version"}
+
+        with patch("django_waf.services.redis_client.get_redis_client", return_value=client):
+            assert get_redis_server_version() is None
+
+    def test_returns_none_and_does_not_raise_when_info_call_fails(self):
+        from unittest.mock import MagicMock
+
+        from django_waf.services.redis_client import get_redis_server_version
+
+        client = MagicMock()
+        client.info.side_effect = RuntimeError("connection reset")
+
+        with patch("django_waf.services.redis_client.get_redis_client", return_value=client):
+            assert get_redis_server_version() is None
+
+    def test_min_redis_version_is_six_zero(self):
+        """The single source of truth django_waf.E005 reads. Pinned
+        explicitly so a change to the floor is a deliberate, visible edit
+        to this test, not a silent drift."""
+        from django_waf.services.redis_client import MIN_REDIS_VERSION
+
+        assert MIN_REDIS_VERSION == (6, 0, 0)

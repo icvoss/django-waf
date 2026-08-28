@@ -550,13 +550,26 @@ def _check_block_rules(
 
 
 def _record_rule_hit(rule_id: str, redis_client) -> None:
-    """Increment the Redis hit counter for a block rule."""
+    """Increment the Redis hit counter for a block rule.
+
+    This is the producer half of the counter ``flush_rule_hit_counts``
+    (tasks.py) reads and zeroes every five minutes. Fail-open is correct
+    here (BR-EVAL-007: a lost hit count must never turn into a blocked
+    request), but a silent failure is more severe than most fail-open paths
+    in this package: every subsequent read of this rule's hit count reads
+    as zero, which is indistinguishable from the rule never matching at
+    all, and an operator auditing "unused" rules by hit count would delete
+    a rule that is, in fact, actively blocking traffic. WARNING, not
+    ERROR: a transient Redis outage here is the same class of event
+    redis_client.get_redis_client already logs at WARNING elsewhere, not a
+    boot-time misconfiguration.
+    """
     try:
         key = f"waf:rule_hits:{rule_id}"
         redis_client.incr(key)
         redis_client.expire(key, 86400 * 2)  # TTL: 2 days
     except Exception:
-        pass
+        logger.warning("django-waf: failed to record hit for rule %s, hit count will under-report", rule_id)
 
 
 def _rule_matches(rule: dict, ip_address: str, user_agent: str) -> bool:
@@ -871,6 +884,17 @@ def _get_unsolved_challenge_count(ip_address: str, redis_client) -> int:
     Uses Redis counter waf:challenged:{ip} incremented by the middleware
     on each CHALLENGED verdict. Checks Redis waf:solved:{ip} flag first
     (set by VerifyView on successful solve), falling back to DB only on miss.
+
+    Returning 0 means "this IP has never been challenged", the same value
+    a genuinely fresh IP produces. A Redis failure here is therefore not a
+    neutral fail-open: it silently disables challenge escalation entirely
+    for the affected IP for as long as the failure persists, since
+    ``_maybe_escalate_to_block`` never sees a count reach
+    DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD. A bot farm failing every
+    challenge would simply never escalate to a block. Fail-open is still
+    correct (BR-EVAL-007: a Redis outage must not turn every challenge into
+    a block), but it must be loud, not indistinguishable from the fresh-IP
+    case.
     """
     try:
         key = f"waf:challenged:{ip_address}"
@@ -887,6 +911,11 @@ def _get_unsolved_challenge_count(ip_address: str, redis_client) -> int:
 
         return count
     except Exception:
+        logger.warning(
+            "django-waf: failed to read unsolved-challenge count for %s, "
+            "challenge escalation is disabled for this IP until Redis recovers",
+            ip_address,
+        )
         return 0
 
 

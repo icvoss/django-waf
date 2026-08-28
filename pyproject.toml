@@ -68,6 +68,9 @@ django_waf = ["templates/**/*.html", "conf/nginx/*.conf.example"]
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
 pythonpath = ["."]
+markers = [
+    "redis_integration: requires a real Redis server (selected by the dedicated CI leg via --ds=settings_redis; skipped by the default LocMemCache/fakeredis run).",
+]
 
 [tool.ruff]
 target-version = "py311"
@@ -75,7 +78,7 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "S"]
-ignore = ["S101", "S104", "S105", "S106", "S107", "S110", "S112", "S311", "S603", "S607"]
+ignore = ["S101", "S104", "S105", "S106", "S107", "S311", "S603", "S607"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S"]
@@ -88,6 +91,7 @@ ignore = ["S101", "S104", "S105", "S106", "S107", "S110", "S112", "S311", "S603"
 # pattern, which ruff's F811 misreads as shadowing/redefinition.
 "tests/test_testing_fixtures.py" = ["F811"]
 "tests/test_redis_fallback.py" = ["F811"]
+"tests/test_flush_rule_hit_counts.py" = ["F811"]
 
 [tool.mypy]
 python_version = "3.11"

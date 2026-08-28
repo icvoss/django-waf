@@ -46,6 +46,14 @@ import logging
 
 logger = logging.getLogger("django_waf.redis_client")
 
+# The package's own Redis version floor. GETDEL (Redis 6.2+) is the only
+# command anywhere in this package that needs anything newer than the
+# 2.0-2.6 era; flush_rule_hit_counts no longer calls it (see tasks.py, a
+# GET+DEL pipeline replaces it), so this floor stays 6.0 rather than
+# rising to 6.2. Read by django_waf.E005 (checks.py), the single source of
+# truth so the check and the package's actual command usage cannot desync.
+MIN_REDIS_VERSION = (6, 0, 0)
+
 # Logged once per process (not once per request) so a misconfigured
 # deployment doesn't drown its own logs in a repeat of the same message on
 # every single request.
@@ -124,3 +132,34 @@ def is_redis_backend(alias: str | None = None) -> bool:
     caches_setting = getattr(settings, "CACHES", {})
     backend = caches_setting.get(resolved_alias, {}).get("BACKEND", "")
     return backend.startswith("django_redis.cache.")
+
+
+def get_redis_server_version(alias: str | None = None) -> tuple[int, int, int] | None:
+    """Return the connected Redis server's version as ``(major, minor, patch)``.
+
+    Used by ``django_waf.E005`` (``checks.py``) to compare the live server
+    against ``MIN_REDIS_VERSION``. Returns ``None`` when a client cannot be
+    obtained (unreachable, or not a django-redis backend) or the server's
+    ``INFO`` response omits/cannot parse ``redis_version``: the caller
+    treats ``None`` as "cannot confirm", not as a failing version, since
+    this helper's job is to answer the question when it safely can, not to
+    force a live connection at times a check should stay side-effect-free
+    (see ``is_redis_backend`` for that guard).
+
+    Never raises.
+    """
+    client = get_redis_client(alias)
+    if client is None:
+        return None
+
+    try:
+        info = client.info(section="server")
+        version_str = info.get("redis_version", "")
+        # redis_version can carry a trailing suffix on some forks/builds
+        # (e.g. "7.2.4" is standard, but be defensive about anything past
+        # the first three dot-separated numeric parts).
+        parts = version_str.split(".")[:3]
+        return tuple(int(part) for part in parts) if len(parts) == 3 else None  # type: ignore[return-value]
+    except Exception:
+        logger.warning("django-waf: could not read Redis server version for alias %r", alias)
+        return None

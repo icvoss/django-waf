@@ -127,6 +127,23 @@ class TestParseAccessLog:
 
         assert result == {"parsed_lines": 0, "created_records": 0, "skipped_lines": 0}
 
+    def test_unset_path_logs_at_debug_not_warning(self, caplog):
+        """No path configured is an expected, quiet no-op: DEBUG, not a
+        production-visible WARNING."""
+        import logging
+
+        with (
+            patch("django_waf.conf.DJANGO_WAF_ACCESS_LOG_PATH", ""),
+            caplog.at_level(logging.DEBUG, logger="django_waf.tasks"),
+        ):
+            from django_waf.tasks import parse_access_log
+
+            parse_access_log()
+
+        levels = [record.levelname for record in caplog.records]
+        assert "WARNING" not in levels
+        assert any(record.levelname == "DEBUG" for record in caplog.records)
+
     def test_skips_when_file_does_not_exist(self):
         """Task returns zero counts when the file at the configured path is absent."""
         from django_waf.tasks import parse_access_log
@@ -134,6 +151,19 @@ class TestParseAccessLog:
         result = parse_access_log(log_path="/non/existent/access.log")
 
         assert result == {"parsed_lines": 0, "created_records": 0, "skipped_lines": 0}
+
+    def test_configured_but_missing_path_logs_a_warning(self, caplog):
+        """A configured DJANGO_WAF_ACCESS_LOG_PATH that does not resolve to a
+        file is very likely a misconfiguration, not an idle site: it must be
+        visible in production (WARNING), not DEBUG-only."""
+        import logging
+
+        from django_waf.tasks import parse_access_log
+
+        with caplog.at_level(logging.WARNING, logger="django_waf.tasks"):
+            parse_access_log(log_path="/non/existent/access.log")
+
+        assert any("/non/existent/access.log" in message for message in caplog.messages)
 
     @pytest.mark.django_db
     def test_parses_valid_combined_log_lines(self):
@@ -558,7 +588,34 @@ class TestUpdateIpReputation:
 
         result = update_ip_reputation()
 
-        assert result == {"updated_count": 0, "created_count": 0}
+        assert result == {"updated_count": 0, "created_count": 0, "ips_seen": 0}
+
+    @pytest.mark.django_db
+    def test_no_recent_logs_logs_a_warning(self, caplog):
+        """detect_challenge_farms reads IPReputation directly, so a window
+        with zero RequestLog rows blinds that detector for the whole
+        window. Must be a WARNING, not the same INFO line as a processed,
+        genuinely quiet window."""
+        import logging
+
+        from django_waf.tasks import update_ip_reputation
+
+        with caplog.at_level(logging.WARNING, logger="django_waf.tasks"):
+            update_ip_reputation()
+
+        assert any(record.levelname == "WARNING" for record in caplog.records)
+
+    @pytest.mark.django_db
+    def test_ips_seen_reflects_processed_ips_on_success(self):
+        """A window that did see RequestLog rows reports a non-zero
+        ips_seen, distinguishing it from the zero-rows case above."""
+        from django_waf.tasks import update_ip_reputation
+
+        RequestLogFactory(ip_address="203.0.113.50", timestamp=timezone.now())
+
+        result = update_ip_reputation()
+
+        assert result["ips_seen"] == 1
 
     @pytest.mark.django_db
     def test_counts_challenge_tokens_for_pass_fail(self):

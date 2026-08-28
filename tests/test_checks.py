@@ -55,6 +55,12 @@ def _run_observe_only_detector_names_check():
     return check_observe_only_detector_names(app_configs=None)
 
 
+def _run_redis_version_check():
+    from django_waf.checks import check_redis_version
+
+    return check_redis_version(app_configs=None)
+
+
 class TestChallengeDifficultyCheck:
     def test_recommended_defaults_produce_no_messages(self):
         import django_waf.conf as conf_mod
@@ -411,3 +417,70 @@ class TestObserveOnlyDetectorNamesCheck:
 
         assert len(messages) == 1
         assert messages[0].id == "django_waf.W008"
+
+
+class TestRedisVersionCheck:
+    """E005 errors when the connected Redis server reports a version below
+    MIN_REDIS_VERSION (currently 6.0, see #78: getdel silently failed on a
+    6.0.16 production server for 40,936 task runs with no boot-time signal
+    at all)."""
+
+    def test_below_floor_emits_e005_error(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
+            patch("django_waf.services.redis_client.get_redis_server_version", return_value=(5, 0, 14)),
+        ):
+            messages = _run_redis_version_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.E005"
+
+    def test_at_or_above_floor_is_silent(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
+            patch("django_waf.services.redis_client.get_redis_server_version", return_value=(6, 0, 16)),
+        ):
+            assert _run_redis_version_check() == []
+
+    def test_silent_when_waf_disabled(self):
+        """Guards against repeating #67: E004 fired regardless of
+        DJANGO_WAF_ENABLED. E005 must not repeat that mistake."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", False),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
+            patch("django_waf.services.redis_client.get_redis_server_version", return_value=(5, 0, 0)),
+        ):
+            assert _run_redis_version_check() == []
+
+    def test_silent_when_alias_is_not_a_redis_backend(self):
+        """E004 already covers this misconfiguration; E005 stays quiet
+        rather than duplicating it or opening a connection unnecessarily."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=False),
+            patch("django_waf.services.redis_client.get_redis_server_version") as mock_version,
+        ):
+            assert _run_redis_version_check() == []
+            mock_version.assert_not_called()
+
+    def test_silent_when_version_cannot_be_read(self):
+        """An unreachable server or unparseable INFO response is not this
+        check's concern: that is the outage BR-EVAL-007 handles at runtime."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
+            patch("django_waf.services.redis_client.get_redis_server_version", return_value=None),
+        ):
+            assert _run_redis_version_check() == []

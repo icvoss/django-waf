@@ -278,22 +278,32 @@ class VerifyView(NoIndexResponseMixin, View):
                 logger.exception("django-waf: failed to issue replacement challenge token")
                 return JsonResponse({"error": reason}, status=400)
 
-        # Mark IP as solved in Redis so escalation counter resets
+        # Mark IP as solved in Redis so escalation counter resets. A
+        # failure here leaves the IP's unsolved-challenge counter standing,
+        # so a real user who just solved a challenge could still hit the
+        # escalation threshold and be blocked outright.
         try:
             solved_key = f"waf:solved:{ip}"
             redis_client.setex(solved_key, 86400, "1")  # 24-hour flag
             redis_client.delete(f"waf:challenged:{ip}")
         except Exception:
-            pass
+            logger.warning(
+                "django-waf: failed to set solved flag for %s, unsolved-challenge count will not reset",
+                ip,
+            )
 
-        # Register this browser's HTTP fingerprint as known-good
+        # Register this browser's HTTP fingerprint as known-good.
+        # register_known_fingerprint already logs its own failures; this
+        # try/except only needs to stop a fingerprinting failure (e.g.
+        # compute_fingerprint raising on malformed headers) from breaking
+        # the redirect that follows.
         try:
             from django_waf.services.fingerprint import compute_fingerprint, register_known_fingerprint
 
             fp_hash = compute_fingerprint(request.META)
             register_known_fingerprint(fp_hash, redis_client)
         except Exception:
-            pass
+            logger.warning("django-waf: failed to compute/register fingerprint for solved challenge from %s", ip)
 
         response = redirect(next_url)
         issue_pass_cookie(response, token, ip, secure=request.is_secure())

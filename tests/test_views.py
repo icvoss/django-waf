@@ -304,6 +304,67 @@ class TestVerifyView:
         assert response.status_code == 302
         assert response["Location"] == "/target/"
 
+    def test_solved_flag_write_failure_still_redirects_and_logs(self, settings, caplog):
+        """A Redis failure while setting the solved flag leaves the IP's
+        unsolved-challenge counter standing, so a real user who just solved
+        a challenge could still hit the escalation threshold. Fail-open
+        must still complete the redirect (BR-EVAL-007), but the failure
+        must be logged, not swallowed silently."""
+        import logging
+
+        settings.DJANGO_WAF_ENABLED = True
+
+        client = Client()
+        broken_redis = _mock_redis()
+        broken_redis.setex.side_effect = RuntimeError("redis down")
+
+        with (
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
+            patch("django_waf.services.challenge_service.issue_pass_cookie"),
+            caplog.at_level(logging.WARNING, logger="django_waf.views"),
+        ):
+            mock_redis_fn.return_value = broken_redis
+            mock_verify.return_value = True
+
+            response = client.post(
+                "/waf/verify/",
+                data={"token": "tok", "nonce": "nonce99", "next": "/target/"},
+            )
+
+        assert response.status_code == 302
+        assert any("solved flag" in message for message in caplog.messages)
+
+    def test_fingerprint_registration_failure_still_redirects_and_logs(self, settings, caplog):
+        """compute_fingerprint/register_known_fingerprint raising must not
+        break the redirect that follows a successfully solved challenge."""
+        import logging
+
+        settings.DJANGO_WAF_ENABLED = True
+
+        client = Client()
+
+        with (
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.verify_challenge_solution") as mock_verify,
+            patch("django_waf.services.challenge_service.issue_pass_cookie"),
+            patch(
+                "django_waf.services.fingerprint.compute_fingerprint",
+                side_effect=RuntimeError("bad headers"),
+            ),
+            caplog.at_level(logging.WARNING, logger="django_waf.views"),
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_verify.return_value = True
+
+            response = client.post(
+                "/waf/verify/",
+                data={"token": "tok", "nonce": "nonce99", "next": "/target/"},
+            )
+
+        assert response.status_code == 302
+        assert any("fingerprint" in message for message in caplog.messages)
+
     def test_missing_token_returns_400(self):
         client = Client()
 
