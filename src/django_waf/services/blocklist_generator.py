@@ -10,6 +10,19 @@ the enforcement (403 on block, limit_req on throttle) into their own server
 blocks using the reference include shipped under
 ``django_waf/conf/nginx/`` (see README.md's nginx Integration section).
 
+BlockRule.objects.for_nginx() (models.py) deliberately excludes
+action=challenge rules, alongside the existing action=log_only exclusion
+(BR-BL-005): nginx cannot serve or verify a JS proof-of-work, only
+WafMiddleware can. detect_ua_rotation, detect_subnet_burst, and
+detect_cloud_spray (anomaly_detector.py) all create CHALLENGE rules on
+first detection rather than BLOCK, deliberately, since their trigger is a
+comparatively weak statistical signal; a CHALLENGE rule from one of these
+detectors is therefore middleware-only and never reaches this generator's
+output until repeated triggering escalates the same IP to a persistent
+BLOCK rule (rule_engine._create_escalation_rule). An operator who wires
+only the nginx blocklist for enforcement will not see a first-detection
+rule at the edge, only an escalated one.
+
 Writes are atomic via a temp-file-then-rename (BR-BL-002).
 """
 
