@@ -3969,6 +3969,105 @@ class TestDetectUnsolvedChallenges:
         assert subnet_rules[0].action == RuleAction.CHALLENGE
         assert not BlockRule.objects.filter(pattern="203.0.115.0/24").exists()
 
+    @pytest.mark.django_db
+    def test_subnet_window_is_the_discriminator_for_a_slow_drip_spread(self):
+        """A slow-drip subnet that does NOT qualify inside a 60-minute
+        window DOES qualify once the subnet path is given its own wider
+        window (issue #93).
+
+        15 distinct IPs in one /24, 2 challenges each (30 total, clearing
+        DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED with exactly
+        DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS distinct IPs), spread evenly
+        across the last 300 minutes so no single 60-minute slice ever
+        contains more than a handful of them. This must fail if
+        subnet_window_minutes is ignored and the subnet path shares the
+        per-IP path's 60-minute window: at 60 minutes only the last couple
+        of IPs' traffic falls inside the window, clearing neither the count
+        nor the distinct-IP floor.
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        now = timezone.now()
+        # Spread the 15 IPs' traffic across 0..300 minutes ago, 20 minutes
+        # apart, so a 60-minute window only ever catches the most recent 2-3
+        # IPs (well under both thresholds) while a 360-minute window catches
+        # all 15.
+        for i in range(15):
+            offset = timezone.timedelta(minutes=i * 20)
+            for _ in range(2):
+                RequestLogFactory(
+                    ip_address=f"203.0.116.{i}",
+                    verdict=Verdict.CHALLENGED,
+                    path="/page",
+                    referer="",
+                    timestamp=now - offset,
+                )
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            # At the per-IP path's own 60-minute window, forced onto the
+            # subnet path too, the spread traffic cannot clear either gate.
+            rules_at_60m = detect_unsolved_challenges(
+                window_minutes=60,
+                min_challenged=999,
+                subnet_window_minutes=60,
+            )
+            assert [r for r in rules_at_60m if r.rule_type == RuleType.CIDR] == []
+
+            # The same data, with only the subnet window widened to 360
+            # minutes, qualifies: the existing (30, 10) thresholds are
+            # unchanged, only the window differs.
+            rules_at_360m = detect_unsolved_challenges(
+                window_minutes=60,
+                min_challenged=999,
+                subnet_window_minutes=360,
+            )
+
+        subnet_rules = [r for r in rules_at_360m if r.rule_type == RuleType.CIDR]
+        assert len(subnet_rules) == 1
+        assert subnet_rules[0].pattern == "203.0.116.0/24"
+        assert subnet_rules[0].action == RuleAction.CHALLENGE
+        assert BlockRule.objects.filter(pattern="203.0.116.0/24", is_active=True).exists()
+
+    @pytest.mark.django_db
+    def test_subnet_window_defaults_to_the_configured_setting(self):
+        """With subnet_window_minutes not passed, the subnet path reads
+        DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES, not the per-IP
+        window_minutes (issue #93's decoupling).
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        now = timezone.now()
+        # Traffic sits 200 minutes back: outside the per-IP path's 60-minute
+        # window (window_minutes stays default, unaffected) but inside the
+        # default 360-minute subnet window.
+        offset = timezone.timedelta(minutes=200)
+        for i in range(15):
+            for _ in range(2):
+                RequestLogFactory(
+                    ip_address=f"203.0.117.{i}",
+                    verdict=Verdict.CHALLENGED,
+                    path="/page",
+                    referer="",
+                    timestamp=now - offset,
+                )
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES", 360),
+        ):
+            rules = detect_unsolved_challenges(window_minutes=60, min_challenged=999)
+
+        subnet_rules = [r for r in rules if r.rule_type == RuleType.CIDR]
+        assert len(subnet_rules) == 1
+        assert subnet_rules[0].pattern == "203.0.117.0/24"
+
 
 # ---------------------------------------------------------------------------
 # fingerprint

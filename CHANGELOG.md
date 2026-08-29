@@ -38,6 +38,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   detection for any of them. `detect_subnet_burst` continues to create
   CHALLENGE rules on first detection, never BLOCK, unchanged.
 
+- **The subnet path of `detect_unsolved_challenges` could not fire at all
+  at the window it actually ran in.** Traced against the deployment #84
+  was built for (issue #93): the subnet thresholds
+  (`DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED` and
+  `DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS`) were calibrated against a seven-day
+  aggregate, but the subnet path shared the per-IP path's 60-minute window,
+  and a deliberately slow-drip attacker never produced enough volume in any
+  single hour to clear either threshold. Zero rules were created in 13
+  hours on that deployment. Measured live, varying only the window with
+  the thresholds unchanged: 42 subnets seen at 60 minutes (0 qualifying),
+  116 at 180 minutes (2 qualifying), 241 at 360 minutes (10 qualifying).
+  The subnet path now runs on its own, independently configurable window
+  (`DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES`, default 360), decoupled
+  from the per-IP path's `window_minutes`, which keeps its existing default
+  and behaviour unchanged: it is already producing correct BLOCK rules in
+  production. The (30, 10) thresholds themselves are unchanged; at a
+  360-minute window they already catch every subnet clearing the
+  distinct-IP floor. Every subnet that would have qualified at this window
+  in the traced sample carried zero allowed/passed requests, and all but
+  one had zero IPs that ever solved a challenge; the one exception was the
+  known JS-executing bot cohort from #77.
+
 ### Added
 
 - `DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT` setting (default
@@ -112,6 +134,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `referer_ratio` remain accepted keyword arguments on
   `detect_unsolved_challenges` and default to the new settings, so
   existing callers and the dry-run management command are unaffected.
+
+- `DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES` setting (default 360): the
+  time window, in minutes, the subnet path of `detect_unsolved_challenges`
+  aggregates over, independent of the per-IP path's `window_minutes`. See
+  the Security entry above for why this exists. `detect_unsolved_challenges`
+  also accepts a new `subnet_window_minutes` keyword argument, defaulting
+  to this setting, matching how the other four subnet-tuning settings
+  above are already exposed as overridable parameters.
 
 ### Fixed
 
