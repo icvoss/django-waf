@@ -302,6 +302,7 @@ def detect_unsolved_challenges(
     window_minutes: int = 60,
     min_challenged: int | None = None,
     referer_ratio: float | None = None,
+    subnet_window_minutes: int | None = None,
     dry_run: bool = False,
 ) -> list:
     """Detect IPs, and subnets, that receive challenges but never solve them.
@@ -326,17 +327,32 @@ def detect_unsolved_challenges(
     Creates an IP-exact BLOCK rule directly (unchanged: an IP that clears
     all three per-IP signals is already high-confidence).
 
-    Subnet path (new, #84):
+    Subnet path (new in #84, given its own window in #93):
     1. The /24 (IPv4) or /48 (IPv6) subnet's total challenged-verdict count
-       across the window meets DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED,
-       AND the number of DISTINCT contributing IPs meets
-       DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS. Both are required so one noisy
-       host cannot escalate its neighbours: a single IP alone can never
-       cross the distinct-IP floor no matter its own challenge count.
+       across its OWN window (subnet_window_minutes, independent of the
+       per-IP path's window_minutes) meets
+       DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED, AND the number of
+       DISTINCT contributing IPs meets DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS.
+       Both are required so one noisy host cannot escalate its neighbours:
+       a single IP alone can never cross the distinct-IP floor no matter
+       its own challenge count.
     2. The subnet is exempted if any of its contributing IPs solved a
        challenge within the recency window (same bound as the per-IP path,
        for the same reason: an occasional solve from a rotating pool must
        not grant the whole /24 permanent immunity).
+
+    The two paths were sharing window_minutes until #93: the subnet
+    thresholds above were calibrated in #84 against a seven-day aggregate,
+    but the per-IP path's 60-minute default left the subnet path unable to
+    accumulate enough volume in an hour to ever clear them against a
+    deliberately slow-drip attacker (measured live: 42 subnets seen in 60
+    minutes, 0 qualifying; 241 subnets seen in 360 minutes, 10 qualifying,
+    with the existing thresholds unchanged). The per-IP path's window stays
+    at its existing default (it is already producing correct BLOCK rules in
+    production and widening it is out of scope); the subnet path now reads
+    its own window from subnet_window_minutes /
+    DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES (default 360). See conf.py for
+    the full measurement.
 
     The empty-referer requirement is deliberately NOT applied to the subnet
     path: it is evaluated per-IP against a specific IP's non-root request
@@ -357,12 +373,21 @@ def detect_unsolved_challenges(
     caught at least 35.6% real users on the same deployment.
 
     Args:
-        window_minutes: Time window to analyse (default 60).
+        window_minutes: Time window to analyse for the per-IP path (default
+                        60). Unchanged by #93: this path is already
+                        producing correct BLOCK rules in production at this
+                        window and widening it is out of scope.
         min_challenged: Minimum challenged verdicts for the per-IP path.
                         Defaults to DJANGO_WAF_UNSOLVED_MIN_CHALLENGED.
         referer_ratio: Fraction of non-root requests with empty referer
                        required to trigger the per-IP path. Defaults to
                        DJANGO_WAF_UNSOLVED_REFERER_RATIO.
+        subnet_window_minutes: Time window to analyse for the subnet path,
+                       independent of window_minutes. Defaults to
+                       DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES (360). See
+                       conf.py and this docstring's "Subnet path" section
+                       for why the subnet path needs a wider window than
+                       the per-IP path (#93).
         dry_run: When True (#38), collects what would be created without
                  writing any BlockRule or emitting the anomaly_detected signal.
 
@@ -378,13 +403,16 @@ def detect_unsolved_challenges(
 
     effective_min_challenged = min_challenged if min_challenged is not None else conf.DJANGO_WAF_UNSOLVED_MIN_CHALLENGED
     effective_referer_ratio = referer_ratio if referer_ratio is not None else conf.DJANGO_WAF_UNSOLVED_REFERER_RATIO
+    effective_subnet_window_minutes = (
+        subnet_window_minutes if subnet_window_minutes is not None else conf.DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES
+    )
 
     cutoff = timezone.now() - timedelta(minutes=window_minutes)
     solve_exemption_cutoff = timezone.now() - timedelta(hours=conf.DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS)
 
-    # All challenged verdicts in the window, per IP, with their counts.
-    # Scoped to source=middleware (#32): a nginx_log row's verdict is
-    # inferred from the access-log status code, not observed by
+    # All challenged verdicts in the per-IP window, per IP, with their
+    # counts. Scoped to source=middleware (#32): a nginx_log row's verdict
+    # is inferred from the access-log status code, not observed by
     # rule_engine.evaluate_request. The nginx access log records the same
     # request middleware already logged, so counting both would double the
     # apparent challenged_count for every IP and distort this detector's
@@ -399,12 +427,32 @@ def detect_unsolved_challenges(
         .annotate(challenged_count=Count("id"))
     )
 
-    all_challenged_ips = [row["ip_address"] for row in challenged_by_ip]
+    # The subnet path's own aggregation, over its own (wider) window (#93).
+    # A separate query rather than filtering challenged_by_ip: the per-IP
+    # window is a strict subset of the subnet window by default (60 vs 360
+    # minutes), so reusing challenged_by_ip would silently cap the subnet
+    # aggregate at whatever the per-IP path happened to see.
+    subnet_cutoff = timezone.now() - timedelta(minutes=effective_subnet_window_minutes)
+    challenged_by_ip_for_subnet = list(
+        RequestLog.objects.filter(
+            timestamp__gte=subnet_cutoff,
+            verdict=Verdict.CHALLENGED,
+            source=RequestLogSource.MIDDLEWARE,
+        )
+        .values("ip_address")
+        .annotate(challenged_count=Count("id"))
+    )
+
+    all_challenged_ips = {row["ip_address"] for row in challenged_by_ip} | {
+        row["ip_address"] for row in challenged_by_ip_for_subnet
+    }
 
     # IPs with a SOLVED ChallengeToken within the recency window (#84).
     # Before #84 this had no time bound at all, so a single solve at any
     # point in an IP's history granted permanent immunity; traced live,
-    # that removed half the candidates in a 60-minute window.
+    # that removed half the candidates in a 60-minute window. Computed once
+    # against the union of both paths' candidate IPs so the same recency
+    # bound applies identically regardless of which window surfaced the IP.
     # order_by() clears ChallengeToken.Meta.ordering (-issued_at) before
     # distinct(): without it, Django appends issued_at to the SELECT, so
     # DISTINCT applies to (ip_address, issued_at) and this returns one row
@@ -437,9 +485,9 @@ def detect_unsolved_challenges(
     )
     created_rules.extend(
         _detect_unsolved_challenges_by_subnet(
-            challenged_by_ip=challenged_by_ip,
+            challenged_by_ip=challenged_by_ip_for_subnet,
             solved_ips=solved_ips,
-            window_minutes=window_minutes,
+            window_minutes=effective_subnet_window_minutes,
             expiry=expiry,
             dry_run=dry_run,
         )
@@ -565,7 +613,9 @@ def _detect_unsolved_challenges_by_subnet(
 ) -> list:
     """The subnet half of detect_unsolved_challenges (#84). See that
     function's docstring for the two-signal, two-stage contract this
-    implements.
+    implements. ``challenged_by_ip`` and ``window_minutes`` here are already
+    scoped to the subnet path's own window (#93), independent of the per-IP
+    path's window.
     """
     from django_waf import conf
     from django_waf.enums import AnomalyType, RuleAction, RuleType
@@ -796,7 +846,12 @@ def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) 
             detector. ``None`` (the default) leaves each detector on its own
             configured default window. ``detect_challenge_farms`` takes its
             window in hours, so the value is converted (rounded up to the
-            nearest hour, minimum 1) before being forwarded to it.
+            nearest hour, minimum 1) before being forwarded to it. Forwarded
+            to ``detect_unsolved_challenges`` as its per-IP ``window_minutes``
+            only (#93): that detector's subnet path keeps its own,
+            independently configured window
+            (``DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES``) regardless of
+            this override, since the two paths were deliberately decoupled.
         dry_run: When True (#38), every detector collects what would be
             created and reports it in the return value without writing any
             BlockRule, activating anything, or emitting the

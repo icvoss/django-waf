@@ -766,6 +766,36 @@ DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED: int = getattr(settings, "DJANGO_WAF_U
 # rather than only the extreme case already seen.
 DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS: int = getattr(settings, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10)
 
+# Time window, in minutes, the subnet path of detect_unsolved_challenges
+# aggregates over. Deliberately separate from the per-IP path's window
+# (which stays on the function's own window_minutes parameter, default 60,
+# and must not be widened: it is already producing correct per-IP BLOCK
+# rules in production at that window). Issue #93 traced why the subnet path
+# needed its own, wider window: DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED
+# (30) and DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS (10) were calibrated in #84
+# against a SEVEN DAY aggregate, but the subnet path only ever ran inside
+# the per-IP detector's 60-minute window, so a deliberately slow-drip
+# attacker never produced enough volume in any single hour to clear either
+# threshold. Measured on the production deployment #93 was built for, same
+# (30, 10) gate, varying only the window:
+#
+#   window  60m:  42 subnets seen,   0 qualify
+#   window 180m: 116 subnets seen,   2 qualify
+#   window 360m: 241 subnets seen,  10 qualify
+#
+# 360 (6 hours) is the smallest of the measured windows at which the
+# existing thresholds catch every subnet clearing the distinct-IP floor,
+# so it is the default rather than a threshold change: two variables were
+# not moved at once. At a 360-minute window, all ten subnets that would
+# have qualified carried zero allowed/passed rows, and nine of the ten had
+# zero IPs that ever solved a challenge; the tenth was the known
+# JS-executing bot cohort from #77. No legitimate user traffic was found in
+# any of them. The wider scan is not a query-cost concern: on a table of
+# 1.5M RequestLog rows, a 360-minute scan runs in 0.006s against the
+# existing django_waf_rl_verdict_ts_idx index, indistinguishable in cost
+# from the 60-minute scan.
+DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES: int = getattr(settings, "DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES", 360)
+
 # ---------------------------------------------------------------------------
 # Verify-endpoint rate limit (issue #81)
 # ---------------------------------------------------------------------------
