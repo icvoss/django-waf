@@ -64,7 +64,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   occasional solve from a rotating pool of addresses cannot grant a whole
   subnet permanent immunity either.
 
+- **`POST /waf/verify/` had no rate limit of its own** (issue #81). Each
+  solve attempt costs a signature check and Redis work, so it was a cheap
+  way to consume server resources at any submission rate a client could
+  sustain. `DJANGO_WAF_RATE_LIMIT_PATHS` cannot cover this endpoint: the
+  challenge and verify paths are typically listed in
+  `DJANGO_WAF_EXEMPT_PATHS` so a challenged user can always reach them,
+  and the middleware returns on that exempt-path match before its rate
+  limiter ever runs. `VerifyView` now checks a dedicated, independent
+  limit before doing any signature or proof-of-work verification work. A
+  breach returns 429 with an accurate `Retry-After`, matching the
+  existing throttle response shape, rather than blocking: the default
+  (20 solves per 5 minutes per IP, via `DJANGO_WAF_VERIFY_RATE_LIMIT_MAX`
+  and `DJANGO_WAF_VERIFY_RATE_LIMIT_WINDOW_SECONDS`) sits comfortably
+  above the 2 to 3 round trips a real client needs and above a NAT
+  gateway or corporate proxy serving several simultaneous solvers.
+  Fail-open is unchanged (BR-EVAL-007): a rate-limiter Redis error never
+  blocks a legitimate user from clearing a challenge.
+
 ### Added
+
+- `DJANGO_WAF_VERIFY_RATE_LIMIT_MAX` (default 20) and
+  `DJANGO_WAF_VERIFY_RATE_LIMIT_WINDOW_SECONDS` (default 300) settings
+  governing the new `POST /waf/verify/` rate limit described above.
 
 - `DJANGO_WAF_UNSOLVED_MIN_CHALLENGED`, `DJANGO_WAF_UNSOLVED_REFERER_RATIO`,
   `DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS`,

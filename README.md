@@ -166,7 +166,9 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | `DJANGO_WAF_RATE_LIMIT_BURST` | `10` | Max requests per IP per second |
 | `DJANGO_WAF_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per IP per minute |
 | `DJANGO_WAF_RATE_LIMIT_PER_5MIN` | `600` | Max requests per IP per 5 minutes |
-| `DJANGO_WAF_RATE_LIMIT_PATHS` | `{}` | Per-path rate limits: `{path_prefix: (max_requests, window_seconds)}`. Checked before the global windows; the longest matching prefix wins |
+| `DJANGO_WAF_RATE_LIMIT_PATHS` | `{}` | Per-path rate limits: `{path_prefix: (max_requests, window_seconds)}`. Checked before the global windows; the longest matching prefix wins. Cannot cover `/waf/verify/` if it is also in `DJANGO_WAF_EXEMPT_PATHS`, see the dedicated setting below |
+| `DJANGO_WAF_VERIFY_RATE_LIMIT_MAX` | `20` | Max `POST /waf/verify/` solve attempts per IP within the window below, independent of the settings above (issue #81) |
+| `DJANGO_WAF_VERIFY_RATE_LIMIT_WINDOW_SECONDS` | `300` | Window (seconds) for `DJANGO_WAF_VERIFY_RATE_LIMIT_MAX`. A breach returns `429` with `Retry-After`, never a block; fails open on Redis errors |
 
 ### Challenges
 
