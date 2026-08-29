@@ -119,8 +119,40 @@ def detect_ua_rotation(
 def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list:
     """Detect /24 (IPv4) or /48 (IPv6) subnets with anomalously high request volume.
 
-    Per BR-ANOM-002: flags subnets where request count exceeds 3× the mean
-    per-subnet rate in the last window_minutes.
+    Per BR-ANOM-002 (as amended, issue #80): flags a subnet when BOTH of the
+    following hold in the last window_minutes:
+
+    1. Its request count meets the absolute floor,
+       DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT. This floor is a
+       fixed number read from settings, entirely independent of
+       ``subnet_counts``, so no traffic pattern the detector is scoring can
+       move it.
+    2. Its request count also exceeds 3x the MEDIAN per-subnet count.
+
+    Before #80, the multiplier was applied to the arithmetic MEAN. The mean
+    is pulled towards every value added to the population it is computed
+    over, including the attacker's own subnets: a botnet spread across many
+    adjacent /24s at a similar low volume raises the mean it is judged
+    against, so the more prefixes it occupies, the higher its own bar
+    climbs and the safer every one of its own subnets becomes. This was
+    observed in production (issue #80): a cohort sustained ~1.2 requests/hour
+    per prefix across several adjacent /24s and /25s for a month and never
+    triggered this detector, because each additional prefix it added
+    inflated the mean it needed to clear.
+
+    The median does not have this property to nearly the same degree: it is
+    the middle-ranked value, so adding more attacker subnets at a similar
+    (low) volume only ever inserts more values into the low end of the
+    distribution. The median stays put until attacker-controlled subnets
+    make up more than half of all subnets seen in the window, a materially
+    harder bar than "adds one more low-volume entry", which is all it takes
+    to move the mean. The median alone is not a complete fix (a large enough
+    fraction of the window's traffic being attacker-controlled can still
+    shift it), which is why the absolute floor is required as well: floor 1
+    can never be diluted by population size, so it is the property's actual
+    guarantee, and the median-based ratio remains as the existing
+    proportionate signal for genuinely high-traffic deployments where a
+    fixed floor alone would be too coarse.
 
     Args:
         window_minutes: Time window to analyse (default 15).
@@ -131,6 +163,8 @@ def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list
         List of BlockRule instances that were created (or, in dry-run, would
         have been created).
     """
+    import statistics
+
     from django_waf import conf
     from django_waf.enums import AnomalyType, RuleAction, RuleType
     from django_waf.models import RequestLog
@@ -150,17 +184,28 @@ def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list
     if not subnet_counts:
         return []
 
-    mean_count = sum(subnet_counts.values()) / len(subnet_counts)
-    burst_threshold = mean_count * 3
+    median_count = statistics.median(subnet_counts.values())
+    burst_threshold = median_count * 3
+    min_count = conf.DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT
 
     created_rules = []
     expiry = timezone.now() + timedelta(hours=conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS)
 
     for subnet, count in subnet_counts.items():
-        if count <= burst_threshold:
+        # Either condition is sufficient, and that is the whole point of
+        # #80. Requiring BOTH would leave the defect in place: an attacker
+        # who spreads across enough subnets at equal volume raises the
+        # median until the ratio gate can never fire, and an AND would then
+        # mean the floor never gets a say. The floor is the guarantee
+        # precisely because it is population-independent, so it must be able
+        # to fire on its own. The ratio remains as the proportionate signal
+        # for high-traffic deployments, where a fixed floor alone is too
+        # coarse to catch a subnet that is anomalous relative to its peers
+        # while sitting below an absolute count.
+        if count < min_count and count <= burst_threshold:
             continue
 
-        details = {"count": count, "mean": mean_count, "threshold": burst_threshold}
+        details = {"count": count, "median": median_count, "threshold": burst_threshold, "min_count": min_count}
         confidence = _scaled_confidence(
             observed=count,
             threshold=burst_threshold,

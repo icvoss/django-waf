@@ -39,7 +39,7 @@ class TestBlockRuleSaveInvalidatesCache:
         mock_conn = MagicMock()
         mock_conn.incr = MagicMock()
 
-        with patch(_get_cache_incr_path(), return_value=mock_conn):
+        with patch(_get_cache_incr_path(), return_value=(mock_conn, True)):
             BlockRuleFactory()  # triggers post_save → on_block_rule_save
 
         mock_conn.incr.assert_called()
@@ -53,7 +53,7 @@ class TestBlockRuleSaveInvalidatesCache:
         mock_conn = MagicMock()
         mock_conn.incr = MagicMock()
 
-        with patch(_get_cache_incr_path(), return_value=mock_conn):
+        with patch(_get_cache_incr_path(), return_value=(mock_conn, True)):
             rule.notes = "updated"
             rule.save(update_fields=["notes"])
 
@@ -84,7 +84,7 @@ class TestBlockRuleDeleteInvalidatesCache:
         mock_conn = MagicMock()
         mock_conn.incr = MagicMock()
 
-        with patch(_get_cache_incr_path(), return_value=mock_conn):
+        with patch(_get_cache_incr_path(), return_value=(mock_conn, True)):
             rule.delete()
 
         mock_conn.incr.assert_called()
@@ -105,7 +105,7 @@ class TestAllowRuleSaveInvalidatesCache:
         mock_conn = MagicMock()
         mock_conn.incr = MagicMock()
 
-        with patch(_get_cache_incr_path(), return_value=mock_conn):
+        with patch(_get_cache_incr_path(), return_value=(mock_conn, True)):
             AllowRuleFactory()
 
         mock_conn.incr.assert_called()
@@ -119,7 +119,7 @@ class TestAllowRuleSaveInvalidatesCache:
         mock_conn = MagicMock()
         mock_conn.incr = MagicMock()
 
-        with patch(_get_cache_incr_path(), return_value=mock_conn):
+        with patch(_get_cache_incr_path(), return_value=(mock_conn, True)):
             rule.notes = "changed"
             rule.save(update_fields=["notes"])
 
@@ -143,7 +143,7 @@ class TestAllowRuleDeleteInvalidatesCache:
         mock_conn = MagicMock()
         mock_conn.incr = MagicMock()
 
-        with patch(_get_cache_incr_path(), return_value=mock_conn):
+        with patch(_get_cache_incr_path(), return_value=(mock_conn, True)):
             rule.delete()
 
         mock_conn.incr.assert_called()
@@ -155,13 +155,14 @@ class TestAllowRuleDeleteInvalidatesCache:
 
 
 class TestCacheFallback:
-    """The else branch is taken when conn has no 'incr' attribute.
+    """The else branch is taken when _get_cache reports a non-Redis connection.
     It tries conn.incr(); on ValueError it calls conn.set(key, 1).
     """
 
     def test_else_branch_set_called_on_value_error(self):
-        """When conn has no incr attr but exposes incr as a method that raises
-        ValueError, the else branch should call conn.set(key, 1)."""
+        """When _get_cache reports a non-Redis (Django cache API) connection whose
+        incr() raises ValueError on a cold key, the else branch should call
+        conn.set(key, 1)."""
         from django_waf.handlers import _invalidate_rule_cache
 
         class FallbackCache:
@@ -171,30 +172,44 @@ class TestCacheFallback:
                 self.set_calls: list = []
 
             def incr(self, key):
-                raise ValueError("Key not found — cache miss")
+                raise ValueError("Key not found, cache miss")
 
             def set(self, key, value, **kwargs):
                 self.set_calls.append((key, value))
 
         cache = FallbackCache()
 
-        # Make hasattr(cache, 'incr') return False so the else branch runs.
-        import builtins
-
-        original_hasattr = builtins.hasattr
-
-        def patched_hasattr(obj, name):
-            if obj is cache and name == "incr":
-                return False
-            return original_hasattr(obj, name)
-
-        with (
-            patch(_get_cache_incr_path(), return_value=cache),
-            patch("builtins.hasattr", side_effect=patched_hasattr),
-        ):
+        with patch(_get_cache_incr_path(), return_value=(cache, False)):
             _invalidate_rule_cache()
 
         assert ("waf:rules:version", 1) in cache.set_calls
+
+    def test_locmem_cold_cache_seeds_version_key(self):
+        """Regression test: a real LocMemCache (as configured in tests.settings,
+        and the shape a consumer without django-redis gets) must have its version
+        key seeded on the very first invalidation, not silently dropped.
+
+        Before this fix, hasattr(conn, "incr") could not distinguish a
+        django-redis connection from a plain Django cache-API object: every
+        Django cache backend, including LocMemCache, implements incr(). The
+        `if hasattr(conn, "incr")` branch therefore always fired, calling
+        conn.incr() with no ValueError guard, so on a cold LocMemCache the
+        raised ValueError was only ever caught by the outer blanket
+        `except Exception`, and the intended `conn.set(key, 1)` fallback in
+        the (dead) else branch never ran. The version key was left unseeded
+        after the very first BlockRule change on any non-Redis deployment.
+        """
+        from django.core.cache import cache as django_cache
+
+        from django_waf.handlers import _RULES_VERSION_KEY, _invalidate_rule_cache
+
+        django_cache.delete(_RULES_VERSION_KEY)
+        assert django_cache.get(_RULES_VERSION_KEY) is None
+
+        with patch(_get_cache_incr_path(), return_value=(django_cache, False)):
+            _invalidate_rule_cache()
+
+        assert django_cache.get(_RULES_VERSION_KEY) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +227,7 @@ class TestCacheErrorHandling:
         mock_conn = MagicMock()
         mock_conn.incr.side_effect = ConnectionError("Redis unreachable")
 
-        with patch(_get_cache_incr_path(), return_value=mock_conn):
+        with patch(_get_cache_incr_path(), return_value=(mock_conn, True)):
             # Saving the rule must not raise even when Redis is down
             try:
                 BlockRuleFactory()
@@ -359,16 +374,14 @@ class TestInvalidateRuleCacheHelper:
         mock_conn = MagicMock()
         mock_conn.incr = MagicMock()
 
-        with patch(_get_cache_incr_path(), return_value=mock_conn):
+        with patch(_get_cache_incr_path(), return_value=(mock_conn, True)):
             _invalidate_rule_cache()
 
         mock_conn.incr.assert_called_once_with("waf:rules:version")
 
     def test_else_branch_calls_set_when_incr_raises_value_error(self):
-        """Else branch (conn has no incr attr): tries conn.incr, catches ValueError,
+        """Else branch (non-Redis cache): tries conn.incr, catches ValueError,
         falls back to conn.set(key, 1)."""
-        import builtins
-
         from django_waf.handlers import _invalidate_rule_cache
 
         class FallbackCache:
@@ -382,17 +395,8 @@ class TestInvalidateRuleCacheHelper:
                 self.data[key] = value
 
         cache = FallbackCache()
-        original_hasattr = builtins.hasattr
 
-        def patched_hasattr(obj, name):
-            if obj is cache and name == "incr":
-                return False
-            return original_hasattr(obj, name)
-
-        with (
-            patch(_get_cache_incr_path(), return_value=cache),
-            patch("builtins.hasattr", side_effect=patched_hasattr),
-        ):
+        with patch(_get_cache_incr_path(), return_value=(cache, False)):
             _invalidate_rule_cache()
 
         assert cache.data.get("waf:rules:version") == 1

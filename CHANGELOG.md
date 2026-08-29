@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`detect_subnet_burst`'s threshold was raised by the very botnet it
+  measures.** The burst threshold was 3x the arithmetic mean of the
+  window's own per-subnet request counts. A botnet spread across several
+  adjacent /24s at a similar low volume raised that mean with every
+  additional prefix it occupied, so the wider the spread, the safer every
+  subnet in it became. Traced in production (issue #80): a cohort
+  sustaining roughly 1.2 requests/hour per prefix across several adjacent
+  /24 and /25 blocks was never flagged for a month. The ratio now compares
+  against the MEDIAN, which a large low-volume cohort cannot move nearly
+  as easily, and a new absolute floor,
+  `DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT` (default 30), gates
+  detection independently of the window's own population: adding more
+  attacker-controlled subnets at the same volume can no longer reduce
+  detection for any of them. `detect_subnet_burst` continues to create
+  CHALLENGE rules on first detection, never BLOCK, unchanged.
+
+### Added
+
+- `DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT` setting (default
+  30): the absolute minimum request count a /24 (or /48 for IPv6) subnet
+  must reach within the detection window before `detect_subnet_burst` can
+  flag it, in addition to the existing 3x-ratio check (now against the
+  median rather than the mean). An operator who has not tuned this
+  detector sees the same behaviour as before for any subnet whose burst
+  was already a clear outlier against a small, mostly-uniform population;
+  the change in outcome is specifically for the self-inflating-mean
+  pattern this fixes, which the old threshold could never have caught.
 - **`detect_unsolved_challenges` was starved of candidates by an attacker
   spreading traffic across a subnet.** Traced against a live deployment
   (issue #84): an attacker rotating roughly 120 addresses per /24 leaves
