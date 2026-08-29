@@ -45,7 +45,8 @@ The trust-level check (``django_waf.W006``) warns when
 unrecognised value to ``"staff"``), so this is a Warning about an
 ineffective setting, not an Error about a lockout.
 
-The Redis backend check (``django_waf.E004``) errors when
+The Redis backend check (``django_waf.E004``) is silent when the WAF is
+disabled (``DJANGO_WAF_ENABLED = False``, #67), and otherwise errors when
 ``DJANGO_WAF_REDIS_ALIAS`` is not configured as a ``django-redis`` cache
 backend (#44). Rule evaluation, rate limiting, and challenge state have no
 safe equivalent on a generic Django cache backend (rate limiting alone uses
@@ -369,7 +370,7 @@ def check_trusted_cookie_trust_level(app_configs, **kwargs):
 @register()
 def check_redis_backend(app_configs, **kwargs):
     """Error (``django_waf.E004``) when ``DJANGO_WAF_REDIS_ALIAS`` is not a
-    django-redis cache backend (#44).
+    django-redis cache backend (#44), unless the WAF is disabled (#67).
 
     Only inspects ``settings.CACHES``, never opens a connection: this check
     must be cheap and side-effect-free like every other check in this
@@ -380,6 +381,16 @@ def check_redis_backend(app_configs, **kwargs):
     """
     from django_waf import conf
     from django_waf.services.redis_client import is_redis_backend
+
+    # Cheapest guard first, and the one #67 was filed for: a project that
+    # has switched the WAF off entirely is not misconfigured for having a
+    # non-Redis cache, it simply is not using the feature this check
+    # guards. Without this, E004 fires as a hard Error during
+    # `manage.py check` on any settings profile that disables the WAF, so a
+    # test or CI profile using LocMemCache cannot boot at all. django_waf.E005
+    # already guards this way; E004 predates it and did not.
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
 
     if is_redis_backend(conf.DJANGO_WAF_REDIS_ALIAS):
         return []

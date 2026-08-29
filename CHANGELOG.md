@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`django_waf.E004` no longer fires when the WAF is switched off (#67).**
+  The check errored whenever `DJANGO_WAF_REDIS_ALIAS` was not a django-redis
+  backend, regardless of `DJANGO_WAF_ENABLED`, so any settings profile that
+  disables the WAF and uses a plain cache (a test or CI profile on
+  LocMemCache, typically) could not run `manage.py check` at all: the Error
+  aborts the command. A project that has switched the feature off is not
+  misconfigured for it. `django_waf.E005` already guarded this way, and its
+  own test cited #67 as the mistake not to repeat, but E004 itself had no
+  test of any kind, which is why the defect survived. It now has three,
+  including one that fails without the guard.
+
 ### Security
 
 - **`detect_subnet_burst`'s threshold was raised by the very botnet it
