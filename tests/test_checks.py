@@ -55,6 +55,12 @@ def _run_observe_only_detector_names_check():
     return check_observe_only_detector_names(app_configs=None)
 
 
+def _run_redis_backend_check():
+    from django_waf.checks import check_redis_backend
+
+    return check_redis_backend(app_configs=None)
+
+
 def _run_redis_version_check():
     from django_waf.checks import check_redis_version
 
@@ -417,6 +423,44 @@ class TestObserveOnlyDetectorNamesCheck:
 
         assert len(messages) == 1
         assert messages[0].id == "django_waf.W008"
+
+
+class TestRedisBackendCheck:
+    """django_waf.E004: the alias must be a django-redis backend."""
+
+    def test_errors_when_alias_is_not_a_redis_backend(self):
+        """The misconfiguration E004 exists to catch (#44)."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=False),
+        ):
+            messages = _run_redis_backend_check()
+
+        assert any(m.id == "django_waf.E004" for m in messages)
+
+    def test_silent_when_alias_is_a_redis_backend(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
+        ):
+            assert _run_redis_backend_check() == []
+
+    def test_silent_when_waf_disabled(self):
+        """#67: E004 fired as a hard Error regardless of DJANGO_WAF_ENABLED,
+        so a settings profile that switches the WAF off and uses LocMemCache
+        could not run manage.py check at all. A project not using the feature
+        is not misconfigured for it."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", False),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=False),
+        ):
+            assert _run_redis_backend_check() == []
 
 
 class TestRedisVersionCheck:
