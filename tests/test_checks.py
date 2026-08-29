@@ -8,7 +8,6 @@ users out. The check refuses settings that would reproduce that lockout.
 
 from __future__ import annotations
 
-import importlib
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -675,39 +674,30 @@ class TestManagePyCheckWithWafDisabled:
     absent), and tests/settings.py sets it True explicitly, so this test
     must override it itself rather than relying on either.
 
-    django_waf.conf.DJANGO_WAF_ENABLED is a module-level constant read once
-    at conf.py's first import (see test_api.py's disabled_waf fixture for
-    the same note): settings.DJANGO_WAF_ENABLED is set directly and
-    django_waf.conf is reloaded so every check function reads the disabled
-    value, exactly as a real settings module would produce it at process
-    start. override_settings alone would not reach conf on this branch
-    (issue #75, not yet merged here). See the docstring note below on what
-    changes once it lands.
+    Uses ``override_settings`` rather than mutating ``django.conf.settings``
+    directly: since #75, ``django_waf.conf`` resolves every DJANGO_WAF_* name
+    at call time via module-level ``__getattr__``, so ``override_settings``
+    reaches it with no reload required. Before #75, conf.py's names were
+    plain module constants frozen at first import, so this test predated
+    that fix and reload was the only way to force a fresh snapshot; that
+    idiom leaked state on manual restore. ``override_settings`` deletes any
+    attribute it added and restores any it shadowed, whichever is
+    correct, avoiding that leak.
     """
 
     def test_check_command_completes_with_waf_disabled_and_locmem_cache(self):
-        from django.conf import settings
-
-        import django_waf.conf as conf_mod
-
         # tests/settings.py's CACHES["default"] is already LocMemCache
         # (never a django-redis backend), and DJANGO_WAF_SITE_PASSWORD is
         # unset there, so DJANGO_WAF_SITE_PASSWORD_ENABLED resolves False
         # by BR-SP-001's own default rule. The only override this test
         # needs is the master switch itself.
-        previous = getattr(settings, "DJANGO_WAF_ENABLED", True)
-        settings.DJANGO_WAF_ENABLED = False
-        importlib.reload(conf_mod)
-        try:
+        with override_settings(DJANGO_WAF_ENABLED=False):
             # call_command("check") raises SystemCheckError (not a return
             # value) the instant any registered check returns an Error.
             # Before #95's guards, E003 (and, before #92, E004) would
             # raise here on this exact profile; a clean return is the
             # regression assertion.
             call_command("check")
-        finally:
-            settings.DJANGO_WAF_ENABLED = previous
-            importlib.reload(conf_mod)
 
     def test_check_command_aborts_when_site_password_misconfigured_even_disabled_guard_removed(self):
         """Sanity check that this test harness can actually detect the
@@ -715,27 +705,17 @@ class TestManagePyCheckWithWafDisabled:
         assertion-that-never-fails is not hiding a broken test. Exercises
         the registry path with the WAF enabled and the exact BR-SP-002
         misconfiguration, without touching the disabled-WAF guard itself."""
-        from django.conf import settings
-
-        import django_waf.conf as conf_mod
-
-        previous_enabled = getattr(settings, "DJANGO_WAF_ENABLED", True)
-        previous_pw_enabled = getattr(settings, "DJANGO_WAF_SITE_PASSWORD_ENABLED", False)
-        previous_pw = getattr(settings, "DJANGO_WAF_SITE_PASSWORD", "")
-        settings.DJANGO_WAF_ENABLED = True
-        settings.DJANGO_WAF_SITE_PASSWORD_ENABLED = True
-        settings.DJANGO_WAF_SITE_PASSWORD = ""
-        importlib.reload(conf_mod)
-        try:
-            with patch("django_waf.services.redis_client.is_redis_backend", return_value=True):
-                try:
-                    call_command("check")
-                except SystemCheckError as exc:
-                    assert "django_waf.E003" in str(exc)
-                else:
-                    raise AssertionError("expected SystemCheckError from django_waf.E003")
-        finally:
-            settings.DJANGO_WAF_ENABLED = previous_enabled
-            settings.DJANGO_WAF_SITE_PASSWORD_ENABLED = previous_pw_enabled
-            settings.DJANGO_WAF_SITE_PASSWORD = previous_pw
-            importlib.reload(conf_mod)
+        with (
+            override_settings(
+                DJANGO_WAF_ENABLED=True,
+                DJANGO_WAF_SITE_PASSWORD_ENABLED=True,
+                DJANGO_WAF_SITE_PASSWORD="",
+            ),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
+        ):
+            try:
+                call_command("check")
+            except SystemCheckError as exc:
+                assert "django_waf.E003" in str(exc)
+            else:
+                raise AssertionError("expected SystemCheckError from django_waf.E003")
