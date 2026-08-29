@@ -677,3 +677,63 @@ DJANGO_WAF_TRUSTED_COOKIE_TTL: int = getattr(settings, "DJANGO_WAF_TRUSTED_COOKI
 # coverage on this cookie without configuring it twice. Set explicitly only
 # when this cookie's subdomain scope must differ from the session cookie's.
 DJANGO_WAF_TRUSTED_COOKIE_DOMAIN: str | None = getattr(settings, "DJANGO_WAF_TRUSTED_COOKIE_DOMAIN", None)
+
+# ---------------------------------------------------------------------------
+# detect_unsolved_challenges (issue #84)
+# ---------------------------------------------------------------------------
+# Traced against a live deployment: an attacker rotating roughly 120
+# addresses per /24 abandons challenges (never attempts them, not failures)
+# at a rate that is unmistakable in aggregate but invisible per IP. Reading
+# these values from settings, not only the function's own parameter
+# defaults, lets an operator tune the detector without calling it directly.
+# Per #75 (still open), every value here is a conf.py import-time snapshot:
+# tests overriding it must use patch.object(conf, "NAME", ...), not
+# override_settings, or the override will not be seen.
+
+# Minimum challenged verdicts a single IP must accumulate within the
+# detection window before it is considered a candidate. Unchanged from the
+# pre-#84 function default: traced live, this threshold was not the
+# bottleneck for the IPs that reached it (3 of 3 survivors passed every
+# later check). The problem is that almost no individual IP reaches it at
+# all when the attacker spreads across a /24.
+DJANGO_WAF_UNSOLVED_MIN_CHALLENGED: int = getattr(settings, "DJANGO_WAF_UNSOLVED_MIN_CHALLENGED", 3)
+
+# Fraction of an IP's non-root requests that must carry an empty referer
+# before the per-IP path flags it. Unchanged from the pre-#84 function
+# default: traced live, this rejected nobody among the survivors, so it is
+# not the current bottleneck (kept as a safety margin for when the
+# candidate pool grows, per the issue's false-positive discipline).
+DJANGO_WAF_UNSOLVED_REFERER_RATIO: float = getattr(settings, "DJANGO_WAF_UNSOLVED_REFERER_RATIO", 0.8)
+
+# How far back to look for a SOLVED ChallengeToken before granting an IP (or
+# a subnet, see DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS below) permanent immunity
+# from this detector. Before #84 the solved-challenge exemption had no time
+# bound at all: a single solve at any point in an IP's history granted
+# immunity forever. Traced live, this removed half the candidates in a
+# 60-minute window. 24 hours is chosen to be comfortably longer than the
+# detector's own 60-minute default window (a recent, deliberate solve still
+# exempts the IP for a full day) while no longer letting a solve from weeks
+# or months ago paper over current abandonment behaviour.
+DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS: int = getattr(
+    settings, "DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS", 24
+)
+
+# Minimum total challenged-verdict count across an entire /24 (IPv4) or /48
+# (IPv6) subnet before the subnet itself becomes a candidate. Necessarily
+# far higher than DJANGO_WAF_UNSOLVED_MIN_CHALLENGED: a /24 carries up to
+# 256 addresses, and the measured attack produced up to 3,232 abandoned
+# challenges from one /24 in a week. 30 is chosen so ten distributed IPs
+# challenged 3 times each (the per-IP threshold) would already qualify,
+# while a handful of genuine visitors sharing a /24 who each abandon one
+# or two challenges does not.
+DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED: int = getattr(settings, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30)
+
+# Minimum number of DISTINCT contributing IPs within the subnet, required
+# alongside DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED. This is the guard
+# against one noisy host escalating its neighbours: without it, a single
+# IP hammering the site could cross the total-count threshold alone and
+# get an entire /24 challenged. Measured subnets in the traced attack
+# carried 100+ distinct contributing IPs; 10 is set far below that so the
+# detector catches a materially smaller, still-clearly-distributed pool
+# rather than only the extreme case already seen.
+DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS: int = getattr(settings, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10)
