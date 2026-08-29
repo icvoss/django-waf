@@ -28,10 +28,39 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # django-celery-beat caps at Django<6.1 (2.9.0 declares
+      # "Django<6.1,>=2.2"). Installing the celery extra alongside Django 6.1
+      # silently DOWNGRADES Django to 6.0.x and exits 0, so both nominal 6.1
+      # legs executed 6.0 for their entire life while pyproject.toml
+      # advertised Framework :: Django :: 6.1 on PyPI (issue #98).
+      #
+      # Only django-celery-beat carries that cap: celery itself is
+      # Django-agnostic and installs cleanly on 6.1. So the 6.1 leg keeps
+      # full celery coverage (src/django_waf/tasks.py imports `shared_task`
+      # from celery at module scope, and 81 tests import that module) and
+      # drops ONLY the beat scheduler. Do not "simplify" this to
+      # ".[dev]" on 6.1: that removes celery, tasks.py then raises
+      # ModuleNotFoundError at import, and 81 tests fail for a reason that
+      # has nothing to do with Django 6.1.
       - name: Install dependencies
         run: |
           pip install "Django~=${{ matrix.django-version }}.0"
-          pip install -e ".[dev,celery]"
+          if [ "${{ matrix.django-version }}" = "6.1" ]; then
+            pip install -e ".[dev]" "celery>=5.3"
+          else
+            pip install -e ".[dev,celery]"
+          fi
+
+      - name: Assert the installed Django is the version this leg claims
+        run: |
+          want="${{ matrix.django-version }}"
+          got="$(python -c 'import django; print(".".join(map(str, django.VERSION[:2])))')"
+          echo "requested Django ${want}, resolved ${got}"
+          if [ "${got}" != "${want}" ]; then
+            echo "::error::Django ${want} was requested but ${got} is installed."
+            echo "::error::A dependency has silently downgraded Django (see issue #98)."
+            exit 1
+          fi
 
       - name: Lint
         run: ruff check src/ tests/
