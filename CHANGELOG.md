@@ -32,8 +32,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the hourly log line, not only on its content, since this package
   stays stateless and does not persist a last-run timestamp.
 
-### Added
-
 - `django_waf.E006`: a new system check that errors when
   `DJANGO_WAF_ENABLED = True` but `WafMiddleware` (or a subclass of it,
   matched by class name) is absent from `MIDDLEWARE` entirely (#101).
@@ -46,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bill of health. This is an Error, matching `django_waf.E004`'s
   rationale: a security control that reports healthy while blocking
   nothing is worse than one that refuses to start.
+
 
 ### Fixed
 
