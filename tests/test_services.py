@@ -1458,8 +1458,8 @@ class TestDetectSubnetBurst:
 
         now = timezone.now()
         # 100 requests from a single /24 subnet, 1 each from 9 other subnets.
-        # Mean = (100 + 9) / 10 = 10.9. 3× = 32.7.
-        # The 20.20.20.0/24 subnet (100 requests) exceeds 3× mean.
+        # Median = 1. 3× = 3. The 20.20.20.0/24 subnet (100 requests) clears
+        # both the ratio and the absolute floor.
         for i in range(100):
             RequestLogFactory(ip_address=f"20.20.20.{i % 255}", timestamp=now)
         for j in range(9):
@@ -1474,12 +1474,85 @@ class TestDetectSubnetBurst:
         assert "20.20.20.0/24" in rule_patterns
 
     def test_returns_empty_when_no_burst(self, db):
-        """detect_subnet_burst returns empty list when no subnet exceeds 3× mean."""
+        """detect_subnet_burst returns empty list when no subnet exceeds 3× median."""
         from django_waf.services.anomaly_detector import detect_subnet_burst
 
         result = detect_subnet_burst(window_minutes=15)
 
         assert result == []
+
+    def test_spread_botnet_at_sustained_low_rate_is_detected(self, db):
+        """A botnet spread across several adjacent /24s at a similar low rate is
+        detected once each prefix clears the absolute floor (issue #80).
+
+        Before #80, the threshold was 3x the arithmetic MEAN of the window's
+        own per-subnet counts. Every one of these attacker subnets sits at
+        the identical count, so the mean equals that count and the ratio
+        3x-the-mean can never be exceeded by any of them: the old detector
+        was structurally blind to a uniform spread regardless of volume.
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_subnet_burst
+
+        now = timezone.now()
+        # Five adjacent /24s, each sustaining the same volume, well clear of
+        # the absolute floor. A couple of quiet legitimate subnets sit
+        # alongside them so the window is not attacker-only.
+        attacker_subnets = ["163.7.14", "163.7.15", "163.7.16", "163.7.17", "163.7.18"]
+        for subnet in attacker_subnets:
+            for i in range(40):
+                RequestLogFactory(ip_address=f"{subnet}.{i % 255}", timestamp=now)
+        for j in range(3):
+            RequestLogFactory(ip_address=f"9.9.{j}.1", timestamp=now)
+
+        with patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+            created = detect_subnet_burst(window_minutes=60)
+
+        rule_patterns = {r.pattern for r in created}
+        for subnet in attacker_subnets:
+            assert f"{subnet}.0/24" in rule_patterns
+
+    def test_adding_more_attacker_subnets_does_not_reduce_detection(self, db):
+        """Adding more attacker-controlled subnets at the same volume must not
+        reduce detection probability for any of them (issue #80's required
+        property).
+
+        This is the discriminator: the pre-#80 mean-relative threshold was
+        raised by every additional attacker subnet added at the same volume,
+        so a wider spread was strictly SAFER for the attacker than a narrow
+        one. Run the same per-subnet volume against a smaller and a larger
+        attacker footprint and assert that every attacker subnet is still
+        flagged in both cases; the larger footprint must not de-detect any
+        of the subnets the smaller footprint already caught.
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.models import RequestLog
+        from django_waf.services.anomaly_detector import detect_subnet_burst
+
+        per_subnet_count = 40
+
+        def run_with_attacker_count(n_attacker_subnets: int) -> set[str]:
+            RequestLog.objects.all().delete()
+            now = timezone.now()
+            attacker_subnets = [f"163.7.{20 + n}" for n in range(n_attacker_subnets)]
+            for subnet in attacker_subnets:
+                for i in range(per_subnet_count):
+                    RequestLogFactory(ip_address=f"{subnet}.{i % 255}", timestamp=now)
+            # A stable, small population of quiet legitimate subnets, so the
+            # window is never attacker-only in either run.
+            for j in range(3):
+                RequestLogFactory(ip_address=f"9.9.{j}.1", timestamp=now)
+
+            with patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
+                created = detect_subnet_burst(window_minutes=60)
+
+            return {f"{subnet}.0/24" for subnet in attacker_subnets} & {r.pattern for r in created}
+
+        detected_small_spread = run_with_attacker_count(3)
+        detected_large_spread = run_with_attacker_count(8)
+
+        assert len(detected_small_spread) == 3
+        assert len(detected_large_spread) == 8
 
 
 # ---------------------------------------------------------------------------
@@ -1749,7 +1822,7 @@ class TestGetOrCreateAutoRuleDedup:
 
 class TestDetectSubnetBurstBranches:
     def test_subnet_below_burst_threshold_not_flagged(self, db):
-        """Subnets at or below 3× mean are not flagged."""
+        """Subnets at or below 3× median (and below the absolute floor) are not flagged."""
         import django_waf.conf as conf_mod
         from django_waf.services.anomaly_detector import detect_subnet_burst
 

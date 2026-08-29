@@ -677,3 +677,33 @@ DJANGO_WAF_TRUSTED_COOKIE_TTL: int = getattr(settings, "DJANGO_WAF_TRUSTED_COOKI
 # coverage on this cookie without configuring it twice. Set explicitly only
 # when this cookie's subdomain scope must differ from the session cookie's.
 DJANGO_WAF_TRUSTED_COOKIE_DOMAIN: str | None = getattr(settings, "DJANGO_WAF_TRUSTED_COOKIE_DOMAIN", None)
+
+# ---------------------------------------------------------------------------
+# detect_subnet_burst (issue #80)
+# ---------------------------------------------------------------------------
+# Absolute floor a subnet's request count must clear before it can ever be
+# flagged as a burst, in addition to the existing 3x-median ratio check.
+# Before #80 the ratio was judged against the arithmetic MEAN of the
+# window's own per-subnet counts, which the measured population itself
+# moves: a botnet spread across more adjacent /24s at a similar volume
+# raises the mean it is judged against, so occupying more prefixes made
+# every one of them safer. Traced live: a cohort sustaining ~1.2
+# requests/hour per prefix across several adjacent /24s and /25s was never
+# flagged. The ratio now compares against the MEDIAN, which resists this
+# far better (adding more low-volume attacker entries does not move the
+# middle-ranked value the way it moves the mean), but the median is still
+# only resistant, not immune: if attacker subnets come to outnumber
+# legitimate ones in the window, the median itself becomes an
+# attacker-typical value. This floor is what actually delivers the required
+# guarantee, since it is a fixed number read from settings and never
+# derived from subnet_counts, so no amount of dilution by additional
+# attacker subnets can move it. Default 30 mirrors the existing
+# DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED order of magnitude used
+# elsewhere in this module for a comparable "aggregate looks wrong even
+# though nothing else does" signal, and is deliberately far below the
+# default window's typical single-subnet volume on a low-traffic
+# deployment, while still requiring more than a handful of incidental
+# requests before a subnet can be flagged at all.
+DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT: int = getattr(
+    settings, "DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT", 30
+)
