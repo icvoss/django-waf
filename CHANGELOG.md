@@ -74,6 +74,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the process once that module stopped freezing values at import
   time.
 
+- `django_waf.E003` (the site-password gate, BR-SP-002), `django_waf.E001`,
+  `django_waf.E002`, `django_waf.W001`, `django_waf.W002` (challenge
+  difficulty), and `django_waf.W004` (middleware ordering) no longer fire
+  when `DJANGO_WAF_ENABLED = False` (#95). Every feature these checks
+  protect is dead at runtime when the master switch is off, so a
+  misconfiguration behind it was never a live lockout, only a boot-time
+  false positive. E003 mattered most: as an Error it aborted
+  `manage.py check` outright, and consumers personal-site and JOBU hit
+  this exact failure under a `LocMemCache` settings profile. This closes
+  the same class of defect `django_waf.E004` was fixed for in 2.0.0 (#67,
+  #92), for the checks that fix missed.
+  `django_waf.W006` (trusted-cookie trust level) is unchanged, and
+  deliberately not gated: it warns behind its own explicit opt-in flag
+  (`DJANGO_WAF_TRUSTED_COOKIE_ENABLED`) and, as a Warning, cannot abort
+  `manage.py check`. `django_waf.W005`, `django_waf.W007`, and
+  `django_waf.W008` are also unchanged: the features they cover (threat-feed
+  sync, the anomaly detectors) run on independent Celery schedules, not the
+  request path the master switch gates.
+
 ### Removed
 
 - `tests/conftest.py`'s `_reset_conf_module` autouse fixture and every

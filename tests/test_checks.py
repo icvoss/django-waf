@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from django.core.management import call_command
+from django.core.management.base import SystemCheckError
 from django.test import override_settings
 
 
@@ -65,6 +67,12 @@ def _run_redis_version_check():
     from django_waf.checks import check_redis_version
 
     return check_redis_version(app_configs=None)
+
+
+def _run_site_password_configured_check():
+    from django_waf.checks import check_site_password_configured
+
+    return check_site_password_configured(app_configs=None)
 
 
 class TestChallengeDifficultyCheck:
@@ -138,6 +146,23 @@ class TestChallengeDifficultyCheck:
 
         assert any(m.id == "django_waf.E001" for m in messages)
 
+    def test_silent_when_waf_disabled(self):
+        """#95: the PoW challenge flow never runs when the WAF is switched
+        off, so a difficulty misconfiguration behind it is not a live
+        lockout. Uses the same over-28 config as
+        test_difficulty_over_28_errors, which fires E002 when the WAF is
+        enabled: proof this guard, not an unrelated default, is silencing
+        it."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", False),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY", 32),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_DESKTOP", 22),
+            patch.object(conf_mod, "DJANGO_WAF_CHALLENGE_DIFFICULTY_MOBILE", 18),
+        ):
+            assert _run_checks() == []
+
 
 class TestSigningKeyCheck:
     """W003 — warns when DJANGO_WAF_SIGNING_KEY is unset.
@@ -166,6 +191,20 @@ class TestSigningKeyCheck:
         # part of the message so future edits don't lose the remediation.
         assert "secrets.token_urlsafe" in messages[0].hint
         assert "DJANGO_WAF_SIGNING_KEY" in messages[0].hint
+
+    def test_silent_when_waf_disabled(self):
+        """#95: no WAF token is ever signed with this key when the master
+        switch is off, so an unset key is not a live weakness in that
+        state. Uses the same empty-key config as
+        test_empty_key_emits_w003_warning, which fires W003 when the WAF
+        is enabled."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", False),
+            patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", ""),
+        ):
+            assert _run_signing_key_check() == []
 
 
 class TestFeedUrlSchemeCheck:
@@ -305,6 +344,26 @@ class TestMiddlewareOrderingCheck:
 
         assert len(messages) == 1
         assert messages[0].id == "django_waf.W004"
+
+    def test_silent_when_waf_disabled(self):
+        """#95: request.user has nothing to bypass when WafMiddleware never
+        evaluates a request in the first place. Uses the same bad ordering
+        as test_warns_when_waf_runs_before_auth, which fires W004 when the
+        WAF is enabled."""
+        import django_waf.conf as conf_mod
+
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django_waf.middleware.WafMiddleware",
+            "django.contrib.sessions.middleware.SessionMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+        ]
+
+        with (
+            override_settings(MIDDLEWARE=middleware),
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", False),
+        ):
+            assert _run_middleware_ordering_check() == []
 
 
 class TestTrustedCookieTrustLevelCheck:
@@ -528,3 +587,135 @@ class TestRedisVersionCheck:
             patch("django_waf.services.redis_client.get_redis_server_version", return_value=None),
         ):
             assert _run_redis_version_check() == []
+
+
+class TestSitePasswordConfiguredCheck:
+    """django_waf.E003: errors when the site-password gate is enabled with
+    an empty password (issue #40, BR-SP-002), unless the WAF is disabled
+    (#95).
+
+    This check had no test coverage at all before #95: no runner helper,
+    no test class. That gap is what let the E003-fires-when-WAF-disabled
+    defect survive as long as it did, the same class of gap #92 closed
+    for E004.
+    """
+
+    def test_enabled_with_password_produces_no_messages(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_SITE_PASSWORD_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_SITE_PASSWORD", "correct-horse-battery-staple"),
+        ):
+            assert _run_site_password_configured_check() == []
+
+    def test_disabled_gate_produces_no_messages(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_SITE_PASSWORD_ENABLED", False),
+            patch.object(conf_mod, "DJANGO_WAF_SITE_PASSWORD", ""),
+        ):
+            assert _run_site_password_configured_check() == []
+
+    def test_enabled_with_empty_password_emits_e003_error(self):
+        """The BR-SP-002 lockout class: the gate fails closed and denies
+        every gated request. This is the exact misconfiguration #95 exists
+        for; without a WAF-disabled guard, it also fires on a settings
+        profile that has switched the WAF off entirely."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_SITE_PASSWORD_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_SITE_PASSWORD", ""),
+        ):
+            messages = _run_site_password_configured_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.E003"
+        assert "DJANGO_WAF_SITE_PASSWORD" in messages[0].hint
+
+    def test_silent_when_waf_disabled(self):
+        """#95: the site-password gate is evaluated by WafMiddleware
+        (BR-SP-008), so it cannot fail closed on a request the middleware
+        never evaluates. Uses the same misconfigured combination as
+        test_enabled_with_empty_password_emits_e003_error, which fires
+        E003 when the WAF is enabled: proof this guard, not an unrelated
+        default, is silencing it. Consumers personal-site and JOBU hit
+        this exact combination under LocMemCache."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", False),
+            patch.object(conf_mod, "DJANGO_WAF_SITE_PASSWORD_ENABLED", True),
+            patch.object(conf_mod, "DJANGO_WAF_SITE_PASSWORD", ""),
+        ):
+            assert _run_site_password_configured_check() == []
+
+
+class TestManagePyCheckWithWafDisabled:
+    """End-to-end regression for #95: every other test in this module calls
+    a check function directly with app_configs=None, patching
+    django_waf.conf attributes. That never exercises the registry path
+    Django's own ``check`` framework uses, or the behaviour that an Error
+    aborts ``manage.py check`` outright (``SystemCheckError``) rather than
+    just being returned as a value in a list. Consumers personal-site and
+    JOBU hit this exact failure under LocMemCache: DJANGO_WAF_ENABLED=False
+    with an empty DJANGO_WAF_SITE_PASSWORD and DJANGO_WAF_SITE_PASSWORD_ENABLED
+    left at its True default aborted ``manage.py check`` via E003, and a
+    misconfigured DJANGO_WAF_REDIS_ALIAS under a non-Redis test cache did
+    the same via E004 before #92.
+
+    tests/conftest.py's pytest_configure sets DJANGO_WAF_ENABLED=True as a
+    fallback default (only applied via setattr when the attribute is
+    absent), and tests/settings.py sets it True explicitly, so this test
+    must override it itself rather than relying on either.
+
+    Uses ``override_settings`` rather than mutating ``django.conf.settings``
+    directly: since #75, ``django_waf.conf`` resolves every DJANGO_WAF_* name
+    at call time via module-level ``__getattr__``, so ``override_settings``
+    reaches it with no reload required. Before #75, conf.py's names were
+    plain module constants frozen at first import, so this test predated
+    that fix and reload was the only way to force a fresh snapshot; that
+    idiom leaked state on manual restore. ``override_settings`` deletes any
+    attribute it added and restores any it shadowed, whichever is
+    correct, avoiding that leak.
+    """
+
+    def test_check_command_completes_with_waf_disabled_and_locmem_cache(self):
+        # tests/settings.py's CACHES["default"] is already LocMemCache
+        # (never a django-redis backend), and DJANGO_WAF_SITE_PASSWORD is
+        # unset there, so DJANGO_WAF_SITE_PASSWORD_ENABLED resolves False
+        # by BR-SP-001's own default rule. The only override this test
+        # needs is the master switch itself.
+        with override_settings(DJANGO_WAF_ENABLED=False):
+            # call_command("check") raises SystemCheckError (not a return
+            # value) the instant any registered check returns an Error.
+            # Before #95's guards, E003 (and, before #92, E004) would
+            # raise here on this exact profile; a clean return is the
+            # regression assertion.
+            call_command("check")
+
+    def test_check_command_aborts_when_site_password_misconfigured_even_disabled_guard_removed(self):
+        """Sanity check that this test harness can actually detect the
+        SystemCheckError abort this module guards against, so a silent
+        assertion-that-never-fails is not hiding a broken test. Exercises
+        the registry path with the WAF enabled and the exact BR-SP-002
+        misconfiguration, without touching the disabled-WAF guard itself."""
+        with (
+            override_settings(
+                DJANGO_WAF_ENABLED=True,
+                DJANGO_WAF_SITE_PASSWORD_ENABLED=True,
+                DJANGO_WAF_SITE_PASSWORD="",
+            ),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
+        ):
+            try:
+                call_command("check")
+            except SystemCheckError as exc:
+                assert "django_waf.E003" in str(exc)
+            else:
+                raise AssertionError("expected SystemCheckError from django_waf.E003")
