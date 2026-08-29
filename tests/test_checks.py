@@ -75,6 +75,12 @@ def _run_site_password_configured_check():
     return check_site_password_configured(app_configs=None)
 
 
+def _run_middleware_present_check():
+    from django_waf.checks import check_middleware_present
+
+    return check_middleware_present(app_configs=None)
+
+
 class TestChallengeDifficultyCheck:
     def test_recommended_defaults_produce_no_messages(self):
         import django_waf.conf as conf_mod
@@ -364,6 +370,104 @@ class TestMiddlewareOrderingCheck:
             patch.object(conf_mod, "DJANGO_WAF_ENABLED", False),
         ):
             assert _run_middleware_ordering_check() == []
+
+
+class TestMiddlewarePresentCheck:
+    """django_waf.E006 -- errors when the WAF is enabled but WafMiddleware
+    (or a subclass, matched by class name) is absent from MIDDLEWARE
+    entirely (#101). Unlike W004, which only warns about ordering once the
+    middleware is found, this check is the one that catches it not being
+    there at all."""
+
+    def test_present_and_enabled_is_silent(self):
+        import django_waf.conf as conf_mod
+
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+            "django_waf.middleware.WafMiddleware",
+        ]
+
+        with (
+            override_settings(MIDDLEWARE=middleware),
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+        ):
+            assert _run_middleware_present_check() == []
+
+    def test_absent_and_disabled_is_silent(self):
+        """A disabled WAF is not expected to carry the middleware at all
+        (#95's own gating rationale) -- absence here is not a
+        misconfiguration."""
+        import django_waf.conf as conf_mod
+
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+        ]
+
+        with (
+            override_settings(MIDDLEWARE=middleware),
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", False),
+        ):
+            assert _run_middleware_present_check() == []
+
+    def test_present_with_engine_off_is_silent(self):
+        """The middleware is wired in but the master switch is off: still
+        silent, the same disabled-WAF precondition as the fully-absent
+        case above, just with the line still present in MIDDLEWARE."""
+        import django_waf.conf as conf_mod
+
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+            "django_waf.middleware.WafMiddleware",
+        ]
+
+        with (
+            override_settings(MIDDLEWARE=middleware),
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", False),
+        ):
+            assert _run_middleware_present_check() == []
+
+    def test_subclass_matched_by_class_name_is_silent(self):
+        """A subclass under a different dotted path is exactly as live as
+        the base class -- it must not be flagged as absent."""
+        import django_waf.conf as conf_mod
+
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+            "myproject.middleware.CustomWafMiddleware",
+        ]
+
+        with (
+            override_settings(MIDDLEWARE=middleware),
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+        ):
+            assert _run_middleware_present_check() == []
+
+    def test_absent_and_enabled_emits_e006_error(self):
+        """The #101 blackout class: WafMiddleware genuinely absent
+        from MIDDLEWARE while the WAF is switched on. This is the exact
+        brickworkui.com production state: installed, enabled, and
+        completely inert with manage.py check passing throughout."""
+        import django_waf.conf as conf_mod
+
+        middleware = [
+            "django.middleware.security.SecurityMiddleware",
+            "django.contrib.sessions.middleware.SessionMiddleware",
+            "django.contrib.auth.middleware.AuthenticationMiddleware",
+        ]
+
+        with (
+            override_settings(MIDDLEWARE=middleware),
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+        ):
+            messages = _run_middleware_present_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.E006"
+        assert "MIDDLEWARE" in messages[0].hint
 
 
 class TestTrustedCookieTrustLevelCheck:
