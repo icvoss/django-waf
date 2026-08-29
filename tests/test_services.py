@@ -1526,12 +1526,22 @@ class TestDetectSubnetBurst:
         of the subnets the smaller footprint already caught.
         """
         import django_waf.conf as conf_mod
-        from django_waf.models import RequestLog
+        from django_waf.models import BlockRule, RequestLog
         from django_waf.services.anomaly_detector import detect_subnet_burst
 
         per_subnet_count = 40
 
         def run_with_attacker_count(n_attacker_subnets: int) -> set[str]:
+            # Each footprint must be judged as its own independent world.
+            # detect_subnet_burst only reports NEWLY created rules (BR-ANOM-007's
+            # re-detection guard refreshes, rather than recreates, an already-active
+            # auto rule for the same pattern): without clearing BlockRule here, the
+            # smaller footprint's rules would still be active when the larger
+            # footprint runs, and its subnets would be silently omitted from the
+            # second call's `created` list despite the detector correctly having
+            # (re-)flagged them. That would make this test conflate "detected" with
+            # "newly created", not "not detected".
+            BlockRule.objects.all().delete()
             RequestLog.objects.all().delete()
             now = timezone.now()
             attacker_subnets = [f"163.7.{20 + n}" for n in range(n_attacker_subnets)]

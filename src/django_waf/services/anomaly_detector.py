@@ -192,13 +192,17 @@ def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list
     expiry = timezone.now() + timedelta(hours=conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS)
 
     for subnet, count in subnet_counts.items():
-        # Both conditions are required. The floor alone would flag any
-        # subnet that happens to be genuinely busy; the ratio alone is what
-        # #80 showed can be starved by the attacker's own dilution. Together,
-        # neither can be defeated by adding more attacker subnets: the floor
-        # is population-independent by construction, and the ratio is judged
-        # against the median, not the mean.
-        if count < min_count or count <= burst_threshold:
+        # Either condition is sufficient, and that is the whole point of
+        # #80. Requiring BOTH would leave the defect in place: an attacker
+        # who spreads across enough subnets at equal volume raises the
+        # median until the ratio gate can never fire, and an AND would then
+        # mean the floor never gets a say. The floor is the guarantee
+        # precisely because it is population-independent, so it must be able
+        # to fire on its own. The ratio remains as the proportionate signal
+        # for high-traffic deployments, where a fixed floor alone is too
+        # coarse to catch a subnet that is anomalous relative to its peers
+        # while sitting below an absolute count.
+        if count < min_count and count <= burst_threshold:
             continue
 
         details = {"count": count, "median": median_count, "threshold": burst_threshold, "min_count": min_count}

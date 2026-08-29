@@ -13,6 +13,7 @@ Connected automatically in ``DjangoWafConfig.ready()`` via
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
@@ -27,9 +28,10 @@ logger = logging.getLogger(__name__)
 _RULES_VERSION_KEY = "waf:rules:version"
 
 
-def _get_cache():
+def _get_cache() -> tuple[Any, bool]:
     """
-    Return the configured cache backend for WAF operations.
+    Return the configured cache backend for WAF operations, plus whether it
+    is a native Redis connection.
 
     Unlike ``django_waf.services.redis_client.get_redis_client`` (#44), this
     is intentionally allowed to fall back to the plain Django cache API,
@@ -37,6 +39,15 @@ def _get_cache():
     which the Django cache API implements directly. That is the one part of
     #44's advertised fallback that was already genuinely safe: this
     function's contract does not change.
+
+    The boolean is the fix for a real defect: every Django cache backend
+    (including LocMemCache) implements ``incr``, so a caller cannot tell a
+    django-redis connection from a Django cache-API object by probing
+    ``hasattr(conn, "incr")``, the two disagree on what an ``incr`` of a
+    missing key does. Redis's native ``INCR`` auto-vivifies a missing key to
+    0 before incrementing; Django's cache API raises ``ValueError`` instead.
+    Returning which branch actually fired lets the caller pick the right
+    behaviour instead of guessing from the object's shape.
     """
     from django.conf import settings
 
@@ -44,25 +55,29 @@ def _get_cache():
     try:
         from django_redis import get_redis_connection  # type: ignore[import-untyped]
 
-        return get_redis_connection(alias)
+        return get_redis_connection(alias), True
     except (NotImplementedError, ImportError):
         # NotImplementedError: alias is configured but not django-redis
         # backed (e.g. LocMemCache), safe to fall back to here, unlike
         # the Redis-only callers in middleware.py/views.py/rule_engine.py.
         from django.core.cache import caches
 
-        return caches[alias]
+        return caches[alias], False
 
 
 def _invalidate_rule_cache() -> None:
     """Increment the rules version key to signal a cache invalidation."""
     try:
-        conn = _get_cache()
-        # django-redis connection supports INCR directly.
-        if hasattr(conn, "incr"):
+        conn, is_redis = _get_cache()
+        if is_redis:
+            # Native Redis INCR auto-vivifies a missing key to 0 before
+            # incrementing, so this is always safe on a cold cache.
             conn.incr(_RULES_VERSION_KEY)
         else:
-            # Fallback: increment via Django cache API.
+            # Django's cache API raises ValueError on incr() of a missing
+            # key (locmem, filebased, and any other non-Redis backend), so
+            # a cold cache must be seeded explicitly rather than relying on
+            # the increment itself to create it.
             try:
                 conn.incr(_RULES_VERSION_KEY)
             except ValueError:
