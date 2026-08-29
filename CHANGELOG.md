@@ -5,60 +5,12 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-08-29
 
-### Fixed
-
-- **`django_waf.E004` no longer fires when the WAF is switched off (#67).**
-  The check errored whenever `DJANGO_WAF_REDIS_ALIAS` was not a django-redis
-  backend, regardless of `DJANGO_WAF_ENABLED`, so any settings profile that
-  disables the WAF and uses a plain cache (a test or CI profile on
-  LocMemCache, typically) could not run `manage.py check` at all: the Error
-  aborts the command. A project that has switched the feature off is not
-  misconfigured for it. `django_waf.E005` already guarded this way, and its
-  own test cited #67 as the mistake not to repeat, but E004 itself had no
-  test of any kind, which is why the defect survived. It now has three,
-  including one that fails without the guard.
-
-### Security
-
-- **`detect_subnet_burst`'s threshold was raised by the very botnet it
-  measures.** The burst threshold was 3x the arithmetic mean of the
-  window's own per-subnet request counts. A botnet spread across several
-  adjacent /24s at a similar low volume raised that mean with every
-  additional prefix it occupied, so the wider the spread, the safer every
-  subnet in it became. Traced in production (issue #80): a cohort
-  sustaining roughly 1.2 requests/hour per prefix across several adjacent
-  /24 and /25 blocks was never flagged for a month. The ratio now compares
-  against the MEDIAN, which a large low-volume cohort cannot move nearly
-  as easily, and a new absolute floor,
-  `DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT` (default 30), gates
-  detection independently of the window's own population: adding more
-  attacker-controlled subnets at the same volume can no longer reduce
-  detection for any of them. `detect_subnet_burst` continues to create
-  CHALLENGE rules on first detection, never BLOCK, unchanged.
-
-- **The subnet path of `detect_unsolved_challenges` could not fire at all
-  at the window it actually ran in.** Traced against the deployment #84
-  was built for (issue #93): the subnet thresholds
-  (`DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED` and
-  `DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS`) were calibrated against a seven-day
-  aggregate, but the subnet path shared the per-IP path's 60-minute window,
-  and a deliberately slow-drip attacker never produced enough volume in any
-  single hour to clear either threshold. Zero rules were created in 13
-  hours on that deployment. Measured live, varying only the window with
-  the thresholds unchanged: 42 subnets seen at 60 minutes (0 qualifying),
-  116 at 180 minutes (2 qualifying), 241 at 360 minutes (10 qualifying).
-  The subnet path now runs on its own, independently configurable window
-  (`DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES`, default 360), decoupled
-  from the per-IP path's `window_minutes`, which keeps its existing default
-  and behaviour unchanged: it is already producing correct BLOCK rules in
-  production. The (30, 10) thresholds themselves are unchanged; at a
-  360-minute window they already catch every subnet clearing the
-  distinct-IP floor. Every subnet that would have qualified at this window
-  in the traced sample carried zero allowed/passed requests, and all but
-  one had zero IPs that ever solved a challenge; the one exception was the
-  known JS-executing bot cohort from #77.
+No breaking API changes and no migration in this release, unlike 2.0.0. If
+you are upgrading from 2.0.0, read the first two Fixed entries before
+anything else: the subnet detection 2.0.0 shipped did not run, and a
+settings profile with the WAF switched off may currently fail to boot.
 
 ### Added
 
@@ -66,30 +18,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   30): the absolute minimum request count a /24 (or /48 for IPv6) subnet
   must reach within the detection window before `detect_subnet_burst` can
   flag it, in addition to the existing 3x-ratio check (now against the
-  median rather than the mean). An operator who has not tuned this
-  detector sees the same behaviour as before for any subnet whose burst
-  was already a clear outlier against a small, mostly-uniform population;
-  the change in outcome is specifically for the self-inflating-mean
-  pattern this fixes, which the old threshold could never have caught.
+  median rather than the mean; see Security below). An operator who has
+  not tuned this detector sees the same behaviour as before for any
+  subnet whose burst was already a clear outlier against a small,
+  mostly-uniform population; the change in outcome is specifically for
+  the self-inflating-mean pattern this fixes, which the old threshold
+  could never have caught.
 - **`detect_unsolved_challenges` was starved of candidates by an attacker
-  spreading traffic across a subnet.** Traced against a live deployment
-  (issue #84): an attacker rotating roughly 120 addresses per /24 leaves
-  almost no individual IP reaching the challenge-count threshold within the
-  detection window, even though the subnet in aggregate abandoned
-  thousands of challenges from over 100 distinct IPs in a week. The
-  detector now runs a parallel subnet-grain aggregation alongside the
-  existing per-IP one: a /24 (or /48 for IPv6) whose total challenged-verdict
-  count and number of distinct contributing IPs both clear a configurable
-  threshold is treated as a candidate even when no individual IP within it
-  ever reaches the per-IP threshold. The distinct-IP requirement is
-  independent of the total count, so one noisy host can never escalate its
-  neighbours by itself. A first subnet-level crossing creates a CHALLENGE
-  rule; only a repeat crossing of the same subnet, detected against an
-  already-active auto-generated CHALLENGE rule, promotes it to BLOCK.
-  Abandonment has legitimate causes (a real user closing the tab or
-  blocking JavaScript looks identical to a bot at this signal), so a
-  subnet is never blocked on a single crossing.
-
+  spreading traffic across a subnet** (closes #84). Traced against a live
+  deployment: an attacker rotating roughly 120 addresses per /24 leaves
+  almost no individual IP reaching the challenge-count threshold within
+  the detection window, even though the subnet in aggregate abandoned
+  3,232 challenges from 120 distinct IPs in one hour, and 15,667 over
+  seven days (1,616 solved, zero failed: the counted signal is
+  abandonment, not failure). The detector now runs a parallel
+  subnet-grain aggregation alongside the existing per-IP one: a /24 (or
+  /48 for IPv6) whose total challenged-verdict count and number of
+  distinct contributing IPs both clear a configurable threshold is
+  treated as a candidate even when no individual IP within it ever
+  reaches the per-IP threshold (only 6 IPs reached it in the traced hour,
+  and 3 of those were exempted by a past solve). The distinct-IP
+  requirement is independent of the total count, so one noisy host can
+  never escalate its neighbours by itself. A first subnet-level crossing
+  creates a CHALLENGE rule; only a repeat crossing of the same subnet,
+  detected against an already-active auto-generated CHALLENGE rule,
+  promotes it to BLOCK. Abandonment has legitimate causes (a real user
+  closing the tab or blocking JavaScript looks identical to a bot at this
+  signal), so a subnet is never blocked on a single crossing. Five new
+  settings, listed below, cover both the per-IP and subnet thresholds.
 - **The solved-challenge exemption had no time bound.** `solved_ips`
   exempted an IP from this detector permanently after a single solved
   challenge at any point in its history. Traced live, this removed half
@@ -98,8 +54,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (default 24 hours); the same bound applies to the new subnet path, so an
   occasional solve from a rotating pool of addresses cannot grant a whole
   subnet permanent immunity either.
-
-- **`POST /waf/verify/` had no rate limit of its own** (issue #81). Each
+- `DJANGO_WAF_UNSOLVED_MIN_CHALLENGED`, `DJANGO_WAF_UNSOLVED_REFERER_RATIO`,
+  `DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS`,
+  `DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED`, and
+  `DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS` settings for tuning
+  `detect_unsolved_challenges`, matching every other detector threshold in
+  the package. The two existing thresholds were previously only reachable
+  as function-parameter defaults; an operator can now tune all five
+  without calling the detector directly. `min_challenged` and
+  `referer_ratio` remain accepted keyword arguments on
+  `detect_unsolved_challenges` and default to the new settings, so
+  existing callers and the dry-run management command are unaffected.
+- `DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES` setting (default 360): the
+  time window, in minutes, the subnet path of `detect_unsolved_challenges`
+  aggregates over, independent of the per-IP path's `window_minutes`. See
+  the first Fixed entry below for why this exists. `detect_unsolved_challenges`
+  also accepts a new `subnet_window_minutes` keyword argument, defaulting
+  to this setting, matching how the other five subnet-tuning settings
+  above are already exposed as overridable parameters.
+- **`POST /waf/verify/` had no rate limit of its own** (closes #81). Each
   solve attempt costs a signature check and Redis work, so it was a cheap
   way to consume server resources at any submission rate a client could
   sustain. `DJANGO_WAF_RATE_LIMIT_PATHS` cannot cover this endpoint: the
@@ -116,53 +89,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gateway or corporate proxy serving several simultaneous solvers.
   Fail-open is unchanged (BR-EVAL-007): a rate-limiter Redis error never
   blocks a legitimate user from clearing a challenge.
-
-### Added
-
 - `DJANGO_WAF_VERIFY_RATE_LIMIT_MAX` (default 20) and
   `DJANGO_WAF_VERIFY_RATE_LIMIT_WINDOW_SECONDS` (default 300) settings
-  governing the new `POST /waf/verify/` rate limit described above.
-
-- `DJANGO_WAF_UNSOLVED_MIN_CHALLENGED`, `DJANGO_WAF_UNSOLVED_REFERER_RATIO`,
-  `DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS`,
-  `DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED`, and
-  `DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS` settings for tuning
-  `detect_unsolved_challenges`, matching every other detector threshold in
-  the package. The two existing thresholds were previously only reachable
-  as function-parameter defaults; an operator can now tune all five
-  without calling the detector directly. `min_challenged` and
-  `referer_ratio` remain accepted keyword arguments on
-  `detect_unsolved_challenges` and default to the new settings, so
-  existing callers and the dry-run management command are unaffected.
-
-- `DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES` setting (default 360): the
-  time window, in minutes, the subnet path of `detect_unsolved_challenges`
-  aggregates over, independent of the per-IP path's `window_minutes`. See
-  the Security entry above for why this exists. `detect_unsolved_challenges`
-  also accepts a new `subnet_window_minutes` keyword argument, defaulting
-  to this setting, matching how the other four subnet-tuning settings
-  above are already exposed as overridable parameters.
+  governing the new `POST /waf/verify/` rate limit above.
 
 ### Fixed
 
+- **On 2.0.0, the subnet detection added to `detect_unsolved_challenges`
+  above produced zero rules in 13 hours in production, because its window
+  and thresholds were calibrated against different timescales** (closes
+  #93). The subnet path shared the per-IP path's hardcoded 60-minute
+  window, but the subnet thresholds
+  (`DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED` and
+  `DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS`) were calibrated against a
+  seven-day aggregate, so a deliberately slow-drip attacker never
+  produced enough volume in any single hour to clear either threshold.
+  Measured live, holding the thresholds constant and varying only the
+  window: 60 minutes catches 0 qualifying subnets, 180 minutes catches 2,
+  360 minutes catches 10. The subnet path now runs on its own,
+  independently configurable window
+  (`DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES`, default 360), decoupled
+  from the per-IP path's `window_minutes`, which stays at 60 minutes,
+  unchanged, and keeps producing correct BLOCK rules in production. The
+  thresholds themselves are unchanged; at a 360-minute window they already
+  catch every subnet clearing the distinct-IP floor. **Without this fix,
+  the subnet detection 2.0.0 shipped does nothing**, which is why this
+  release matters most to anyone upgrading from 2.0.0.
+- **`django_waf.E004` no longer fires when the WAF is switched off**
+  (closes #67). The check errored whenever `DJANGO_WAF_REDIS_ALIAS` was
+  not a django-redis backend, regardless of `DJANGO_WAF_ENABLED`, so any
+  settings profile that disables the WAF and uses a plain cache (a test
+  or CI profile on LocMemCache, typically) could not run `manage.py
+  check` at all: the Error aborts the command. A project that has
+  switched the feature off is not misconfigured for it. `django_waf.E005`
+  already guarded this way, and its own test cited #67 as the mistake not
+  to repeat, but E004 itself had no test of any kind, which is why the
+  defect survived. It now has three, including one that fails without the
+  guard. This may currently be blocking a settings profile you have not
+  tried yet, and affects any consumer upgrading from before 1.8.1, where
+  E004 was introduced.
 - **`ChallengeTokenFactory` could produce a solved token with no solve
   timestamp, a state production never writes.** `challenge_service.py`
   unconditionally sets `solved_at` on the solve path, so every genuinely
   solved token has one, but the factory hardcoded `solved_at = None`
-  regardless of the `status` passed in (#86). A consuming project's own
-  tests that build a solved `ChallengeToken` via `ChallengeTokenFactory`
-  will now get a realistic `solved_at` timestamp derived from `status`
-  without having to pass one explicitly. A consumer test that (incorrectly)
-  relied on a solved token's `solved_at` being `None` will start failing,
-  which is the point: fix the assertion to match what production actually
-  writes, or pass `solved_at=None` explicitly if the inconsistent object is
-  genuinely what the test needs, which still overrides the derived value.
+  regardless of the `status` passed in (closes #86). This is shipped
+  package API (`django_waf.testing.factories`), so a consuming project's
+  tests inherit it: a consuming project's own tests that build a solved
+  `ChallengeToken` via `ChallengeTokenFactory` will now get a realistic
+  `solved_at` timestamp derived from `status` without having to pass one
+  explicitly. A consumer test that (incorrectly) relied on a solved
+  token's `solved_at` being `None` will start failing, correctly: fix the
+  assertion to match what production actually writes, or pass
+  `solved_at=None` explicitly if the inconsistent object is genuinely
+  what the test needs, which still overrides the derived value.
   `PENDING`, `EXPIRED`, and `FAILED` were already correct (`solved_at`
   stays `None` on every path but the solve path) and are unchanged. Two
   tests in `tests/test_services.py` (added by #87) pass an explicit
   `solved_at=now` that duplicates what the factory now derives on its own;
   left as-is rather than churned, since they are otherwise unaffected by
   this fix.
+- **`_invalidate_rule_cache` could never distinguish a django-redis
+  connection from the plain Django cache API, so the fallback path it
+  guarded against was dead code.** It chose its code path with
+  `hasattr(conn, "incr")`, but every Django cache backend implements
+  `incr`, so the probe could never tell a django-redis connection (whose
+  native `INCR` auto-creates a missing key) apart from the plain Django
+  cache API (whose `incr()` raises on a missing key). On any non-Redis
+  deployment, the first cache-version bump silently failed. It now
+  branches on provenance instead.
+
+### Security
+
+- **`detect_subnet_burst`'s threshold was raised by the very botnet it
+  measures** (closes #80). The burst threshold was 3x the arithmetic mean
+  of the window's own per-subnet request counts. A botnet spread across
+  several adjacent /24s at a similar low volume raised that mean with
+  every additional prefix it occupied, so the wider the spread, the safer
+  every subnet in it became. Traced in production: a cohort sustaining
+  roughly 1.2 requests/hour per prefix across several adjacent /24 and
+  /25 blocks was never flagged for a month. The ratio now compares
+  against the MEDIAN, which a large low-volume cohort cannot move nearly
+  as easily, and a new absolute floor,
+  `DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT` (default 30),
+  gates detection independently of the window's own population: adding
+  more attacker-controlled subnets at the same volume can no longer
+  reduce detection for any of them. Either condition alone flags, and the
+  floor is the actual guarantee, because it is read from settings and
+  never derived from the measured population. `detect_subnet_burst`
+  continues to create CHALLENGE rules on first detection, never BLOCK,
+  unchanged.
 
 ## [2.0.0] - 2026-08-28
 
