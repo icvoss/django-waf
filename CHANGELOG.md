@@ -51,6 +51,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `detect_unsolved_challenges` and default to the new settings, so
   existing callers and the dry-run management command are unaffected.
 
+### Fixed
+
+- **`ChallengeTokenFactory` could produce a solved token with no solve
+  timestamp, a state production never writes.** `challenge_service.py`
+  unconditionally sets `solved_at` on the solve path, so every genuinely
+  solved token has one, but the factory hardcoded `solved_at = None`
+  regardless of the `status` passed in (#86). A consuming project's own
+  tests that build a solved `ChallengeToken` via `ChallengeTokenFactory`
+  will now get a realistic `solved_at` timestamp derived from `status`
+  without having to pass one explicitly. A consumer test that (incorrectly)
+  relied on a solved token's `solved_at` being `None` will start failing,
+  which is the point: fix the assertion to match what production actually
+  writes, or pass `solved_at=None` explicitly if the inconsistent object is
+  genuinely what the test needs, which still overrides the derived value.
+  `PENDING`, `EXPIRED`, and `FAILED` were already correct (`solved_at`
+  stays `None` on every path but the solve path) and are unchanged. Two
+  tests in `tests/test_services.py` (added by #87) pass an explicit
+  `solved_at=now` that duplicates what the factory now derives on its own;
+  left as-is rather than churned, since they are otherwise unaffected by
+  this fix.
+
 ## [2.0.0] - 2026-08-28
 
 ### Security
