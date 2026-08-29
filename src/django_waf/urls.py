@@ -9,17 +9,13 @@ The namespace must be "django_waf" to match reverse() calls throughout the packa
 
 The optional DRF API is mounted under waf/api/ only when
 DJANGO_WAF_API_ENABLED is true. This is read once, at urlconf-import time,
-which is the Django norm for urlpatterns — matches how ROOT_URLCONF itself
+which is the Django norm for urlpatterns: matches how ROOT_URLCONF itself
 is only re-evaluated on process restart or explicit urlconf-cache clearing.
-
-The flag is read directly from django.conf.settings here rather than from
-the cached django_waf.conf.DJANGO_WAF_API_ENABLED constant. Django resolves
-a urlconf lazily, on first URL dispatch, not at ROOT_URLCONF assignment —
-so this module's body can execute at an arbitrary later point in a process
-(e.g. mid-test, inside another test's mock.patch of django_waf.conf). Reading
-straight off settings here means the mount decision reflects the settings
-that were active for the whole process, not whatever happened to be patched
-onto django_waf.conf at the moment something first triggered a dispatch.
+Django resolves a urlconf lazily, on first URL dispatch, not at
+ROOT_URLCONF assignment, so this module's body can execute at an arbitrary
+later point in a process (e.g. mid-test). Whatever DJANGO_WAF_API_ENABLED
+resolves to at that one moment decides the mount for the rest of the
+process; a later settings change does not remount the routes.
 
 Importing this module with the API disabled never imports rest_framework,
 keeping djangorestframework an optional dependency (the [api] extra).
@@ -27,10 +23,9 @@ keeping djangorestframework an optional dependency (the [api] extra).
 
 import logging
 
-from django.conf import settings
 from django.urls import include, path
 
-from django_waf import views
+from django_waf import conf, views
 
 app_name = "django_waf"
 
@@ -76,7 +71,7 @@ urlpatterns = [
 # -----------------------------------------------------------------------
 # Optional DRF API — off by default, requires django-waf[api]
 # -----------------------------------------------------------------------
-if getattr(settings, "DJANGO_WAF_API_ENABLED", False):
+if conf.DJANGO_WAF_API_ENABLED:
     try:
         from django_waf.api import urls as api_urls
 

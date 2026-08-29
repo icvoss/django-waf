@@ -20,15 +20,24 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-def disable_waf(monkeypatch: pytest.MonkeyPatch):
+def disable_waf(settings):
     """Disable the WAF middleware for the duration of a test.
 
-    Patches ``django_waf.conf.DJANGO_WAF_ENABLED`` to ``False``. Restored
-    automatically by ``monkeypatch`` at teardown.
-    """
-    from django_waf import conf
+    Sets ``settings.DJANGO_WAF_ENABLED`` to ``False``. Restored
+    automatically by the ``settings`` fixture at teardown.
 
-    monkeypatch.setattr(conf, "DJANGO_WAF_ENABLED", False)
+    Public-behaviour change (django-waf 2.2.0): this fixture previously
+    patched ``django_waf.conf.DJANGO_WAF_ENABLED`` directly via
+    ``monkeypatch.setattr``. ``django_waf.conf`` now resolves every
+    ``DJANGO_WAF_*`` setting at call time (issue #75), so patching the
+    conf module directly is no longer necessary, and ``monkeypatch.setattr``
+    against it is no longer safe (its restore-on-teardown path can
+    permanently shadow live resolution for the rest of the process; see the
+    module docstring in ``django_waf.conf``). Using the ``settings`` fixture
+    here is both the fix and the recommended pattern for a consuming
+    project's own tests.
+    """
+    settings.DJANGO_WAF_ENABLED = False
     yield
 
 

@@ -322,12 +322,6 @@ class TestMiddlewareIPv6PassCookie:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_solved_ipv6_client_cookie_bypasses_evaluation(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         ip = "2001:db8::1"
         cookie_value = _issued_cookie_value("ipv6-client-token", ip, secure=False)
 
@@ -355,11 +349,6 @@ class TestMiddlewareIPv6PassCookie:
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_solved_ipv6_client_cookie_rejected_for_different_ip(self):
         """A pass cookie issued to one IPv6 client does not bypass evaluation for another."""
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
 
         issued_ip = "2001:db8::1"
         requesting_ip = "2001:db8::2"

@@ -230,12 +230,6 @@ class TestRedisBackendSystemCheck:
         }
     )
     def test_silent_on_a_configured_redis_backend(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         messages = check_redis_backend(None)
 
         assert messages == []
@@ -254,16 +248,9 @@ class TestRedisBackendSystemCheck:
         DJANGO_WAF_REDIS_ALIAS="waf",
     )
     def test_respects_a_non_default_redis_alias(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         messages = check_redis_backend(None)
 
         assert messages == []
-        importlib.reload(conf_mod)
 
 
 # ---------------------------------------------------------------------------

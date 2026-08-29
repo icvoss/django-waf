@@ -16,16 +16,7 @@ Covers the trusted-proxy resolution contract:
 
 from __future__ import annotations
 
-import importlib
-
 from django.test import RequestFactory, override_settings
-
-import django_waf.conf as conf_mod
-
-
-def _reload_conf():
-    importlib.reload(conf_mod)
-
 
 # ---------------------------------------------------------------------------
 # No trusted proxies configured (default) -- legacy / safe-default behaviour
@@ -36,7 +27,6 @@ class TestNoTrustedProxiesConfigured:
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=[], DJANGO_WAF_TRUST_X_FORWARDED_FOR=False)
     def test_spoofed_xff_from_untrusted_peer_is_ignored(self):
         """With no trusted proxies and the legacy trust flag off, XFF is never honoured."""
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -52,7 +42,6 @@ class TestNoTrustedProxiesConfigured:
     def test_legacy_trust_flag_preserves_leftmost_behaviour(self):
         """Legacy DJANGO_WAF_TRUST_X_FORWARDED_FOR=True with no trusted proxies
         preserves the old leftmost-XFF behaviour for backwards compatibility."""
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -66,7 +55,6 @@ class TestNoTrustedProxiesConfigured:
 
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=[], DJANGO_WAF_TRUST_X_FORWARDED_FOR=False)
     def test_no_xff_header_returns_remote_addr(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -85,7 +73,6 @@ class TestTrustedProxiesConfigured:
     def test_xff_honoured_only_when_remote_addr_is_trusted_proxy(self):
         """A request from an untrusted REMOTE_ADDR never gets XFF honoured,
         even with trusted proxies configured."""
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -100,7 +87,6 @@ class TestTrustedProxiesConfigured:
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["10.0.0.0/8"])
     def test_xff_honoured_when_remote_addr_is_trusted_proxy(self):
         """REMOTE_ADDR inside the trusted range -> rightmost non-proxy hop returned."""
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -116,7 +102,6 @@ class TestTrustedProxiesConfigured:
     def test_multiple_chained_trusted_proxies_resolve_to_real_client(self):
         """A chain of trusted proxies is walked right-to-left, skipping trusted
         hops, until the real (untrusted) client IP is found."""
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -134,7 +119,6 @@ class TestTrustedProxiesConfigured:
         """A client behind a trusted proxy cannot spoof by injecting a fake
         leftmost XFF entry -- only the rightmost non-proxy hop is trusted,
         so a forged entry ahead of the proxy-appended real IP is ignored."""
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -150,7 +134,6 @@ class TestTrustedProxiesConfigured:
 
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["10.0.0.0/8"])
     def test_all_hops_trusted_falls_back_to_remote_addr(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -171,7 +154,6 @@ class TestTrustedProxiesConfigured:
 class TestTrustedUnixSocket:
     @override_settings(DJANGO_WAF_TRUSTED_UNIX_SOCKET=False)
     def test_empty_remote_addr_does_not_trust_xff_by_default(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         request = RequestFactory().get(
@@ -184,7 +166,6 @@ class TestTrustedUnixSocket:
 
     @override_settings(DJANGO_WAF_TRUSTED_UNIX_SOCKET=True)
     def test_empty_remote_addr_uses_hardened_xff_walk(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         request = RequestFactory().get(
@@ -197,7 +178,6 @@ class TestTrustedUnixSocket:
 
     @override_settings(DJANGO_WAF_TRUSTED_UNIX_SOCKET=True)
     def test_empty_remote_addr_with_no_valid_xff_remains_empty(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         request = RequestFactory().get(
@@ -213,7 +193,6 @@ class TestTrustedUnixSocket:
         DJANGO_WAF_TRUSTED_UNIX_SOCKET=True,
     )
     def test_nonempty_untrusted_remote_addr_still_ignores_xff(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         request = RequestFactory().get(
@@ -233,7 +212,6 @@ class TestTrustedUnixSocket:
 class TestMalformedForwardedFor:
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["10.0.0.0/8"])
     def test_malformed_entries_are_skipped(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -247,7 +225,6 @@ class TestMalformedForwardedFor:
 
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["10.0.0.0/8"])
     def test_empty_entries_are_skipped(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -261,7 +238,6 @@ class TestMalformedForwardedFor:
 
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["10.0.0.0/8"])
     def test_empty_header_falls_back_to_remote_addr(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -271,7 +247,6 @@ class TestMalformedForwardedFor:
 
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["10.0.0.0/8"])
     def test_entirely_malformed_header_falls_back_to_remote_addr(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -288,7 +263,6 @@ class TestMalformedForwardedFor:
 class TestIPv6:
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["fd00::/8"])
     def test_ipv6_trusted_proxy_and_ipv6_client(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -302,7 +276,6 @@ class TestIPv6:
 
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["10.0.0.0/8"])
     def test_ipv4_trusted_proxy_with_ipv6_client(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -316,7 +289,6 @@ class TestIPv6:
 
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["fd00::/8"])
     def test_ipv6_remote_addr_not_in_trusted_range_ignores_xff(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()
@@ -338,7 +310,6 @@ class TestIPv6:
 class TestCrossSubsystemConsistency:
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["10.0.0.0/8"])
     def test_middleware_views_and_forms_defence_agree(self):
-        _reload_conf()
         from django_waf.forms.defences.render_token import _extract_ip as forms_extract_ip
         from django_waf.middleware import _extract_ip as middleware_extract_ip
         from django_waf.services.client_ip import resolve_client_ip
@@ -359,7 +330,6 @@ class TestCrossSubsystemConsistency:
 
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=[], DJANGO_WAF_TRUST_X_FORWARDED_FOR=False)
     def test_agree_on_spoofed_untrusted_request_too(self):
-        _reload_conf()
         from django_waf.forms.defences.render_token import _extract_ip as forms_extract_ip
         from django_waf.middleware import _extract_ip as middleware_extract_ip
         from django_waf.services.client_ip import resolve_client_ip
@@ -387,7 +357,6 @@ class TestCrossSubsystemConsistency:
 class TestInvalidTrustedProxyEntries:
     @override_settings(DJANGO_WAF_TRUSTED_PROXIES=["not-a-cidr"])
     def test_invalid_cidr_entry_is_skipped_not_fatal(self):
-        _reload_conf()
         from django_waf.services.client_ip import resolve_client_ip
 
         factory = RequestFactory()

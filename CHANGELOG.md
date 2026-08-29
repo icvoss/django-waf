@@ -5,6 +5,82 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2.2.0
+
+### Fixed
+
+- **`django_waf.conf` now resolves every `DJANGO_WAF_*` setting at call
+  time instead of freezing it at import time** (closes #75). Every one of
+  the 92 settings was previously a module-level constant computed once
+  from `getattr(settings, "DJANGO_WAF_X", default)` when `conf.py` first
+  imported, despite the module's own docstring promising call-time
+  resolution. In practice this meant `override_settings` and the pytest
+  `settings` fixture silently had no effect on WAF behaviour, and any
+  consuming project whose own settings module touched `django_waf.conf`
+  during settings execution froze every constant at the package default
+  for the rest of the process. This was observed live: a site whose
+  `settings.DJANGO_WAF_ENABLED` was `False` still ran with the WAF
+  enabled, against the wrong Redis alias, because `conf.py` had imported
+  earlier in the settings module with the package defaults still in
+  effect. Every `DJANGO_WAF_*` name is now a private resolver function
+  behind a PEP 562 module `__getattr__`, so `conf.DJANGO_WAF_X` always
+  reflects the current `django.conf.settings` value.
+
+  **This is consumer-visible if your test suite relied on the WAF
+  ignoring `override_settings` or the pytest `settings` fixture.** A test
+  that sets `DJANGO_WAF_ENABLED = False` (by either mechanism) expecting
+  the WAF to keep running regardless will now see it actually disabled;
+  the same applies to every other `DJANGO_WAF_*` setting. If your suite
+  worked around the old defect with `importlib.reload(django_waf.conf)`,
+  that reload is now a harmless no-op and can be removed.
+
+  `DJANGO_WAF_SITE_PASSWORD_ENABLED`'s derived default (`bool(DJANGO_WAF_SITE_PASSWORD)`,
+  the one intra-conf cross-reference among all 92 settings) now recurses
+  through the resolver for `DJANGO_WAF_SITE_PASSWORD` rather than reading
+  a value frozen at import time, so BR-SP-002's fail-closed guarantee
+  (gate enabled, no password, deny every request) holds correctly when
+  the password is set or cleared after the process started.
+
+  `DJANGO_WAF_CELERY_BEAT_SCHEDULE` (and every other setting) resolves to
+  its documented default rather than raising `ImproperlyConfigured` when
+  `django.conf.settings` is not yet configured, which is what keeps the
+  README's documented consumer pattern, importing it directly from
+  inside a consuming project's own `settings.py` before that module has
+  finished running, safe.
+
+  `django_waf.services.blocklist_generator._activate_candidate` and
+  `_validate_nginx_config` now read `DJANGO_WAF_NGINX_VALIDATE` and
+  `DJANGO_WAF_NGINX_TEST_COMMAND` from `django_waf.conf` instead of
+  duplicating their own `getattr(django.conf.settings, ...)` reads and
+  defaults. `django_waf.urls` now reads `DJANGO_WAF_API_ENABLED` from
+  `django_waf.conf` instead of `django.conf.settings` directly; the
+  urlconf-import-time caveat this read carried (the mount decision is
+  still made once, at first URL dispatch for the whole process, not
+  re-evaluated per request) is unchanged and still documented in the
+  module docstring.
+
+- **`disable_waf` (the public `django_waf.testing.fixtures` pytest
+  fixture) no longer patches `django_waf.conf` directly.** It now sets
+  `settings.DJANGO_WAF_ENABLED = False` via the pytest `settings`
+  fixture. **Consumer-visible**: the fixture's signature changed from
+  `disable_waf(monkeypatch)` to `disable_waf(settings)`; a project that
+  depended on the exact patched object (rather than only on the WAF being
+  disabled for the duration of the test) should review its own tests.
+  This also removes a genuine hazard the old implementation carried:
+  `monkeypatch.setattr` restores a patched module attribute by calling
+  `setattr` with the pre-patch value on teardown, which, unlike
+  `unittest.mock.patch.object`'s `delattr`-based restore, would have
+  permanently shadowed live resolution in `django_waf.conf` for the rest
+  of the process once that module stopped freezing values at import
+  time.
+
+### Removed
+
+- `tests/conftest.py`'s `_reset_conf_module` autouse fixture and every
+  `importlib.reload(django_waf.conf)` call across the test suite (55
+  sites): both were workarounds for the import-time-snapshot defect
+  above and are no longer needed now that `conf.py` resolves live.
+
 ## [2.1.0] - 2026-08-29
 
 No breaking API changes and no migration in this release, unlike 2.0.0. If
