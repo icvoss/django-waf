@@ -3596,7 +3596,7 @@ class TestDetectUnsolvedChallenges:
                 referer="",
                 timestamp=now,
             )
-        ChallengeTokenFactory(ip_address=ip, status=ChallengeStatus.SOLVED)
+        ChallengeTokenFactory(ip_address=ip, status=ChallengeStatus.SOLVED, solved_at=now)
 
         rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
 
@@ -3750,7 +3750,7 @@ class TestDetectUnsolvedChallenges:
         # issued_at is auto_now_add, so create multiple solved tokens for the
         # same IP, then use a queryset update() (which bypasses auto_now_add,
         # unlike save()) to force distinct issued_at values across rows.
-        tokens = [ChallengeTokenFactory(ip_address=ip, status=ChallengeStatus.SOLVED) for _ in range(3)]
+        tokens = [ChallengeTokenFactory(ip_address=ip, status=ChallengeStatus.SOLVED, solved_at=now) for _ in range(3)]
         for offset, token in enumerate(tokens):
             ChallengeToken.objects.filter(pk=token.pk).update(issued_at=now - timezone.timedelta(minutes=offset))
 
@@ -3767,6 +3767,207 @@ class TestDetectUnsolvedChallenges:
 
         assert "unsolved_challenge_rules" in result
         assert "total_rules_created" in result
+
+    @pytest.mark.django_db
+    def test_subnet_promoted_when_no_individual_ip_qualifies(self):
+        """A /24 whose IPs each fall below min_challenged is still promoted
+        to a CHALLENGE rule once the subnet aggregate clears its own
+        threshold with enough distinct contributing IPs (issue #84).
+
+        This must fail against a per-IP-only implementation: every
+        individual IP here carries only 2 challenged verdicts, one short of
+        min_challenged=3.
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        now = timezone.now()
+        # 15 distinct IPs in 203.0.113.0/24, 2 challenges each = 30 total.
+        for i in range(15):
+            for _ in range(2):
+                RequestLogFactory(
+                    ip_address=f"203.0.113.{i}",
+                    verdict=Verdict.CHALLENGED,
+                    path="/page",
+                    referer="",
+                    timestamp=now,
+                )
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            rules = detect_unsolved_challenges(window_minutes=60, min_challenged=3)
+
+        subnet_rules = [r for r in rules if r.rule_type == RuleType.CIDR]
+        assert len(subnet_rules) == 1
+        rule = subnet_rules[0]
+        assert rule.pattern == "203.0.113.0/24"
+        assert rule.action == RuleAction.CHALLENGE
+        assert rule.source == RuleSource.AUTO
+        assert BlockRule.objects.filter(pattern="203.0.113.0/24", is_active=True).exists()
+
+    @pytest.mark.django_db
+    def test_subnet_below_distinct_ip_floor_is_not_promoted(self):
+        """A single noisy IP cannot cross the subnet total-count threshold
+        alone: the distinct-IP floor guards against one host escalating its
+        whole /24.
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        now = timezone.now()
+        # One IP alone racks up 40 challenges -- clears the 30-count floor
+        # but only 1 distinct IP, well under the 10-IP floor.
+        for _ in range(40):
+            RequestLogFactory(
+                ip_address="198.51.100.7",
+                verdict=Verdict.CHALLENGED,
+                path="/page",
+                referer="",
+                timestamp=now,
+            )
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            rules = detect_unsolved_challenges(window_minutes=60, min_challenged=999)
+
+        subnet_rules = [r for r in rules if r.rule_type == RuleType.CIDR]
+        assert subnet_rules == []
+
+    @pytest.mark.django_db
+    def test_subnet_second_crossing_promotes_challenge_to_block(self):
+        """A repeat crossing of the same subnet promotes the existing active
+        auto CHALLENGE rule to BLOCK; a first crossing never blocks
+        outright (issue #82's false-positive discipline).
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        now = timezone.now()
+
+        def make_traffic():
+            for i in range(15):
+                for _ in range(2):
+                    RequestLogFactory(
+                        ip_address=f"203.0.114.{i}",
+                        verdict=Verdict.CHALLENGED,
+                        path="/page",
+                        referer="",
+                        timestamp=now,
+                    )
+
+        make_traffic()
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            first_pass = detect_unsolved_challenges(window_minutes=60, min_challenged=3)
+
+        first_subnet_rules = [r for r in first_pass if r.rule_type == RuleType.CIDR]
+        assert len(first_subnet_rules) == 1
+        assert first_subnet_rules[0].action == RuleAction.CHALLENGE
+
+        # A second crossing of the same subnet, with the CHALLENGE rule
+        # still active, must promote to BLOCK rather than re-issuing
+        # CHALLENGE or blocking on the very first crossing.
+        make_traffic()
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            second_pass = detect_unsolved_challenges(window_minutes=60, min_challenged=3)
+
+        second_subnet_rules = [r for r in second_pass if r.rule_type == RuleType.CIDR]
+        assert len(second_subnet_rules) == 1
+        assert second_subnet_rules[0].action == RuleAction.BLOCK
+        assert second_subnet_rules[0].pattern == "203.0.114.0/24"
+
+    @pytest.mark.django_db
+    def test_ip_solved_outside_recency_window_is_still_eligible(self):
+        """An IP whose only solved challenge falls outside the configured
+        recency window is not exempted (issue #84): this must fail against
+        the pre-#84 unbounded exemption, which grants immunity from a
+        single solve at any point in history.
+        """
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        ip = "10.0.0.20"
+        now = timezone.now()
+        for _ in range(4):
+            RequestLogFactory(
+                ip_address=ip,
+                verdict=Verdict.CHALLENGED,
+                path="/page",
+                referer="",
+                timestamp=now,
+            )
+        # Solved 48 hours ago -- well outside the default 24-hour
+        # DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS.
+        old_solve = now - timezone.timedelta(hours=48)
+        ChallengeTokenFactory(ip_address=ip, status=ChallengeStatus.SOLVED, solved_at=old_solve)
+
+        rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
+
+        ip_rules = [r for r in rules if r.rule_type == RuleType.IP and r.pattern == ip]
+        assert len(ip_rules) == 1
+        assert ip_rules[0].action == RuleAction.BLOCK
+
+    @pytest.mark.django_db
+    def test_ip_solved_within_recency_window_is_still_exempted(self):
+        """The recency bound does not regress the existing exemption for a
+        genuinely recent solve.
+        """
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        ip = "10.0.0.21"
+        now = timezone.now()
+        for _ in range(4):
+            RequestLogFactory(
+                ip_address=ip,
+                verdict=Verdict.CHALLENGED,
+                path="/page",
+                referer="",
+                timestamp=now,
+            )
+        ChallengeTokenFactory(ip_address=ip, status=ChallengeStatus.SOLVED, solved_at=now)
+
+        rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
+
+        ip_rules = [r for r in rules if r.rule_type == RuleType.IP and r.pattern == ip]
+        assert ip_rules == []
+
+    @pytest.mark.django_db
+    def test_dry_run_suppresses_subnet_writes(self):
+        """dry_run=True makes zero writes on the subnet path too (BR-ANOM-006)."""
+        import django_waf.conf as conf_mod
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        now = timezone.now()
+        for i in range(15):
+            for _ in range(2):
+                RequestLogFactory(
+                    ip_address=f"203.0.115.{i}",
+                    verdict=Verdict.CHALLENGED,
+                    path="/page",
+                    referer="",
+                    timestamp=now,
+                )
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            rules = detect_unsolved_challenges(window_minutes=60, min_challenged=3, dry_run=True)
+
+        subnet_rules = [r for r in rules if r.rule_type == RuleType.CIDR]
+        assert len(subnet_rules) == 1
+        assert subnet_rules[0].action == RuleAction.CHALLENGE
+        assert not BlockRule.objects.filter(pattern="203.0.115.0/24").exists()
 
 
 # ---------------------------------------------------------------------------
