@@ -40,6 +40,22 @@ DETECTOR_NAMES = frozenset(
     }
 )
 
+# Maps each DETECTOR_NAMES entry to its corresponding key in run_all_detectors'
+# result dict. The two vocabularies differ on purpose (a function name reads
+# naturally in code; a result key reads naturally in a report) and there is
+# no other mapping between them today, so django_waf.services.detector_probe
+# keys its per-detector liveness report on DETECTOR_NAMES and looks up the
+# matching count via this dict rather than guessing a naming convention. Kept
+# next to DETECTOR_NAMES so a detector rename or addition cannot desync the
+# two silently: update both in the same change.
+DETECTOR_NAME_TO_RESULT_KEY = {
+    "detect_ua_rotation": "ua_rotation_rules",
+    "detect_subnet_burst": "subnet_burst_rules",
+    "detect_challenge_farms": "challenge_farm_rules",
+    "detect_unsolved_challenges": "unsolved_challenge_rules",
+    "detect_cloud_spray": "cloud_spray_rules",
+}
+
 
 def detect_ua_rotation(
     window_minutes: int = 5,
