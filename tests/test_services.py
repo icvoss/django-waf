@@ -3885,6 +3885,342 @@ class TestDetectUnsolvedChallenges:
         assert len(second_subnet_rules) == 1
         assert second_subnet_rules[0].action == RuleAction.BLOCK
         assert second_subnet_rules[0].pattern == "203.0.114.0/24"
+        assert "detect_unsolved_challenges" in second_subnet_rules[0].detectors.split(",")
+
+    @pytest.mark.django_db
+    def test_subnet_burst_challenge_rule_does_not_promote_first_own_crossing(self):
+        """A CHALLENGE rule created by detect_subnet_burst for the same
+        subnet must not count as detect_unsolved_challenges's own prior
+        crossing (issue #97, own-provenance-only). The first
+        detect_unsolved_challenges crossing for this subnet must still
+        create CHALLENGE, not BLOCK, even though an active AUTO/CIDR/
+        CHALLENGE rule for the identical pattern already exists.
+
+        This must fail against the pre-#97 code: matching on rule shape
+        alone (rule_type, pattern, source=AUTO, action=CHALLENGE,
+        is_active=True) with no detector scoping treats any detector's
+        rule as this detector's own, so the first real crossing here would
+        wrongly promote straight to BLOCK.
+
+        A pre-existing CHALLENGE row for this exact lookup key means
+        _get_or_create_auto_rule refreshes it (created=False) rather than
+        creating a new one, so this test reads the BlockRule row directly
+        rather than the function's created_rules return value, which only
+        ever includes newly-created rows.
+        """
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        now = timezone.now()
+        BlockRuleFactory(
+            rule_type=RuleType.CIDR,
+            match_type="cidr",
+            pattern="203.0.116.0/24",
+            action=RuleAction.CHALLENGE,
+            source=RuleSource.AUTO,
+            is_active=True,
+            detectors="detect_subnet_burst",
+        )
+
+        for i in range(15):
+            for _ in range(2):
+                RequestLogFactory(
+                    ip_address=f"203.0.116.{i}",
+                    verdict=Verdict.CHALLENGED,
+                    path="/page",
+                    referer="",
+                    timestamp=now,
+                )
+
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            detect_unsolved_challenges(window_minutes=60, min_challenged=3)
+
+        rule = BlockRule.objects.get(rule_type=RuleType.CIDR, pattern="203.0.116.0/24")
+        assert rule.action == RuleAction.CHALLENGE
+        assert "detect_unsolved_challenges" in rule.detectors.split(",")
+
+    @pytest.mark.django_db
+    def test_cloud_spray_challenge_rule_does_not_promote_first_own_crossing(self):
+        """Same as above for a detect_cloud_spray-provenance CHALLENGE rule:
+        another detector's rule of the identical shape still must not
+        promote detect_unsolved_challenges's own first crossing.
+
+        As above, a pre-existing row for this lookup key means
+        _get_or_create_auto_rule reports created=False, so this test reads
+        the BlockRule row directly rather than the created_rules return
+        value.
+        """
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        now = timezone.now()
+        BlockRuleFactory(
+            rule_type=RuleType.CIDR,
+            match_type="cidr",
+            pattern="203.0.117.0/24",
+            action=RuleAction.CHALLENGE,
+            source=RuleSource.AUTO,
+            is_active=True,
+            detectors="detect_cloud_spray",
+        )
+
+        for i in range(15):
+            for _ in range(2):
+                RequestLogFactory(
+                    ip_address=f"203.0.117.{i}",
+                    verdict=Verdict.CHALLENGED,
+                    path="/page",
+                    referer="",
+                    timestamp=now,
+                )
+
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            detect_unsolved_challenges(window_minutes=60, min_challenged=3)
+
+        rule = BlockRule.objects.get(rule_type=RuleType.CIDR, pattern="203.0.117.0/24")
+        assert rule.action == RuleAction.CHALLENGE
+        assert "detect_unsolved_challenges" in rule.detectors.split(",")
+
+    @pytest.mark.django_db
+    def test_own_provenance_repeat_crossing_still_promotes_to_block(self):
+        """Own-provenance-only (#97) must not regress the existing
+        own-detector repeat-crossing promotion: an active CHALLENGE rule
+        this detector itself created still promotes on the next crossing.
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.services.anomaly_detector import detect_unsolved_challenges
+
+        now = timezone.now()
+        BlockRuleFactory(
+            rule_type=RuleType.CIDR,
+            match_type="cidr",
+            pattern="203.0.118.0/24",
+            action=RuleAction.CHALLENGE,
+            source=RuleSource.AUTO,
+            is_active=True,
+            detectors="detect_unsolved_challenges",
+        )
+
+        for i in range(15):
+            for _ in range(2):
+                RequestLogFactory(
+                    ip_address=f"203.0.118.{i}",
+                    verdict=Verdict.CHALLENGED,
+                    path="/page",
+                    referer="",
+                    timestamp=now,
+                )
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            rules = detect_unsolved_challenges(window_minutes=60, min_challenged=3)
+
+        subnet_rules = [r for r in rules if r.rule_type == RuleType.CIDR and r.pattern == "203.0.118.0/24"]
+        assert len(subnet_rules) == 1
+        assert subnet_rules[0].action == RuleAction.BLOCK
+        assert "detect_unsolved_challenges" in subnet_rules[0].detectors.split(",")
+
+    @pytest.mark.django_db
+    def test_detector_field_populated_by_every_detector_passing_it(self):
+        """Every detector that passes detector_name to _get_or_create_auto_rule
+        must have its name added to the created BlockRule's detectors set
+        (#97). Covers all five DETECTOR_NAMES entries plus rule_engine's
+        escalation caller, which passes a detector_name outside that set.
+        """
+        from django_waf.services.anomaly_detector import _get_or_create_auto_rule
+
+        cases = [
+            ("detect_ua_rotation", RuleType.UA, "some-bot/1.0"),
+            ("detect_subnet_burst", RuleType.CIDR, "203.0.119.0/24"),
+            ("detect_challenge_farms", RuleType.IP, "203.0.119.50"),
+            ("detect_unsolved_challenges", RuleType.CIDR, "203.0.120.0/24"),
+            ("detect_cloud_spray", RuleType.CIDR, "203.0.121.0/24"),
+            ("challenge_escalation", RuleType.IP, "203.0.119.51"),
+        ]
+        for detector_name, rule_type, pattern in cases:
+            rule, created = _get_or_create_auto_rule(
+                name=f"Auto: {detector_name} test",
+                rule_type=rule_type,
+                match_type="exact" if rule_type != RuleType.CIDR else "cidr",
+                pattern=pattern,
+                action=RuleAction.CHALLENGE,
+                expiry=timezone.now() + timezone.timedelta(hours=24),
+                detector_name=detector_name,
+            )
+            assert created is True
+            assert rule.detectors == detector_name
+
+    @pytest.mark.django_db
+    def test_detectors_field_is_additive_not_overwritten_by_a_later_detector(self):
+        """The regression this session's coordinator review caught: three
+        detectors (detect_subnet_burst, detect_unsolved_challenges's subnet
+        path, detect_cloud_spray) can all target the identical (CIDR,
+        subnet, AUTO, CHALLENGE) key for a shared subnet, and
+        run_all_detectors runs them in exactly that order on every pass.
+        A last-writer-wins detectors value would let detect_cloud_spray,
+        which always runs after detect_unsolved_challenges, clobber that
+        detector's own stamp at the end of every pass, so on the NEXT pass
+        detect_unsolved_challenges would no longer recognise its own prior
+        rule and could never promote to BLOCK.
+
+        This must fail against a last-writer-wins implementation: after
+        detect_cloud_spray writes to the row, detect_unsolved_challenges's
+        own name must still be present in detectors, and a subsequent
+        crossing must still promote to BLOCK.
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import (
+            detect_cloud_spray,
+            detect_unsolved_challenges,
+        )
+
+        now = timezone.now()
+        subnet_ips = [f"203.0.122.{i}" for i in range(15)]
+
+        def make_challenge_traffic():
+            for ip in subnet_ips:
+                for _ in range(2):
+                    RequestLogFactory(
+                        ip_address=ip,
+                        verdict=Verdict.CHALLENGED,
+                        path="/page",
+                        referer="",
+                        timestamp=now,
+                    )
+
+        # First pass: detect_unsolved_challenges creates the stage-one
+        # CHALLENGE rule and stamps its own name.
+        make_challenge_traffic()
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            first_pass = detect_unsolved_challenges(window_minutes=60, min_challenged=3)
+        first_subnet_rules = [r for r in first_pass if r.rule_type == RuleType.CIDR]
+        assert len(first_subnet_rules) == 1
+        assert first_subnet_rules[0].action == RuleAction.CHALLENGE
+
+        rule = BlockRule.objects.get(rule_type=RuleType.CIDR, pattern="203.0.122.0/24", action=RuleAction.CHALLENGE)
+        assert "detect_unsolved_challenges" in rule.detectors.split(",")
+
+        # A different detector, sharing the same subnet pattern via
+        # _get_subnet_prefix, now writes to the SAME row: enough distinct
+        # IPs with no referer, each making a small number of requests, to
+        # clear detect_cloud_spray's own thresholds.
+        for ip in subnet_ips:
+            for _ in range(2):
+                RequestLogFactory(
+                    ip_address=ip,
+                    verdict=Verdict.CHALLENGED,
+                    path="/page",
+                    referer="",
+                    timestamp=now,
+                )
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_CLOUD_SPRAY_MIN_IPS", 10),
+            patch.object(conf_mod, "DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP", 5),
+        ):
+            detect_cloud_spray(window_minutes=60)
+        # detect_cloud_spray finds the same (CIDR, subnet, AUTO, CHALLENGE)
+        # row detect_unsolved_challenges already created, so its own
+        # update_or_create reports created=False (a refresh, not a new
+        # row) and this subnet is absent from its returned created_rules
+        # list. That is expected dedup behaviour and not what this test is
+        # about: the row itself, not the return value, carries the
+        # evidence of whether the write was additive.
+
+        # The shared row must now carry BOTH names, not just the most
+        # recent writer's.
+        rule.refresh_from_db()
+        detectors_after_spray = set(rule.detectors.split(","))
+        assert "detect_unsolved_challenges" in detectors_after_spray
+        assert "detect_cloud_spray" in detectors_after_spray
+
+        # Second pass: detect_unsolved_challenges must still recognise its
+        # own prior rule and promote to BLOCK, despite detect_cloud_spray
+        # having written to the row in between. Promotion creates a
+        # separate BLOCK row (action is part of the update_or_create
+        # lookup key, unrelated to this fix and unchanged by it); what
+        # matters here is that this second crossing reaches BLOCK at all,
+        # rather than re-issuing CHALLENGE because the own-provenance
+        # check no longer finds this detector's name in a row
+        # detect_cloud_spray has since touched.
+        make_challenge_traffic()
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+        ):
+            second_pass = detect_unsolved_challenges(window_minutes=60, min_challenged=3)
+        second_subnet_rules = [r for r in second_pass if r.rule_type == RuleType.CIDR]
+        assert len(second_subnet_rules) == 1
+        assert second_subnet_rules[0].action == RuleAction.BLOCK
+
+    @pytest.mark.django_db
+    def test_run_all_detectors_two_passes_still_promotes_shared_subnet(self):
+        """The realistic production path (coordinator review): run
+        run_all_detectors itself, twice, for a subnet that trips both
+        detect_unsolved_challenges and detect_cloud_spray on every pass.
+        Promotion to BLOCK must still occur on the repeat crossing, exactly
+        as it would if detect_unsolved_challenges were the only detector
+        ever touching this subnet.
+        """
+        import django_waf.conf as conf_mod
+        from django_waf.models import BlockRule
+        from django_waf.services.anomaly_detector import run_all_detectors
+
+        now = timezone.now()
+        subnet_ips = [f"203.0.123.{i}" for i in range(15)]
+
+        def make_traffic():
+            for ip in subnet_ips:
+                for _ in range(2):
+                    RequestLogFactory(
+                        ip_address=ip,
+                        verdict=Verdict.CHALLENGED,
+                        path="/page",
+                        referer="",
+                        timestamp=now,
+                    )
+
+        patches = (
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED", 30),
+            patch.object(conf_mod, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10),
+            patch.object(conf_mod, "DJANGO_WAF_CLOUD_SPRAY_MIN_IPS", 10),
+            patch.object(conf_mod, "DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP", 5),
+        )
+
+        make_traffic()
+        with patches[0], patches[1], patches[2], patches[3]:
+            run_all_detectors(window_minutes=60)
+
+        rule = BlockRule.objects.get(rule_type=RuleType.CIDR, pattern="203.0.123.0/24", action=RuleAction.CHALLENGE)
+        assert "detect_unsolved_challenges" in rule.detectors.split(",")
+        assert "detect_cloud_spray" in rule.detectors.split(",")
+
+        make_traffic()
+        with patches[0], patches[1], patches[2], patches[3]:
+            run_all_detectors(window_minutes=60)
+
+        # Promotion creates a separate BLOCK row (action is part of the
+        # update_or_create lookup key, unrelated to and unchanged by this
+        # fix); what this asserts is that the second pass reaches BLOCK at
+        # all, which is exactly what the last-writer-wins defect prevented.
+        assert BlockRule.objects.filter(
+            rule_type=RuleType.CIDR, pattern="203.0.123.0/24", action=RuleAction.BLOCK
+        ).exists()
 
     @pytest.mark.django_db
     def test_ip_solved_outside_recency_window_is_still_eligible(self):

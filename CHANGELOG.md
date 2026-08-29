@@ -5,6 +5,177 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2.2.0
+
+### Added
+
+- **Detector liveness probe** (BR-ANOM-012). Three defects this cycle (a
+  `getdel` call reporting success 40,936 times while doing nothing, the
+  2.0.0 subnet detector producing 0 rules for 13 hours, and #97's staging
+  skip) all passed tests, review and release. A scheduled probe asserting
+  the detectors still produce rules would have caught each within the
+  hour. `services.detector_probe.run_detector_probe()` builds synthetic
+  fixture traffic, shaped to provably cross every anomaly detector's own
+  configured threshold using RFC 5737 TEST-NET IP ranges, and reports
+  which detectors did (and did not) produce a rule against it. Real
+  recent traffic cannot be used for this: `run_all_detectors` returning
+  zero is the normal, healthy result on a quiet site, indistinguishable
+  from a dead detector. Everything runs inside a transaction that is
+  unconditionally rolled back, so no synthetic row is ever committed. New
+  `probe_detectors` Celery task (hourly) and `django_waf_probe_detectors`
+  management command (`--exercise-writes` for the opt-in real-write mode;
+  exits non-zero on a silent detector, for cron wrappers and k8s liveness
+  probes). No environment guard gates this probe, on the same principle
+  as #97's fix: a check silently inert in one environment is the next
+  regression, not a safety net for it. A dead Celery Beat entry for this
+  task produces no log line at all; consumers must alert on the absence
+  of the hourly log line, not only on its content, since this package
+  stays stateless and does not persist a last-run timestamp.
+
+- `django_waf.E006`: a new system check that errors when
+  `DJANGO_WAF_ENABLED = True` but `WafMiddleware` (or a subclass of it,
+  matched by class name) is absent from `MIDDLEWARE` entirely (#101).
+  `django_waf.W004` only ever warns about ordering once `WafMiddleware`
+  is found in `MIDDLEWARE`; nothing previously checked for its outright
+  absence. A brickworkui.com production deployment had `django_waf`
+  installed and `DJANGO_WAF_ENABLED = True` with no `WafMiddleware` in
+  `MIDDLEWARE` for its entire deployed life, and `manage.py check` passed
+  throughout: the WAF inspected no traffic at all while reporting a clean
+  bill of health. This is an Error, matching `django_waf.E004`'s
+  rationale: a security control that reports healthy while blocking
+  nothing is worse than one that refuses to start.
+
+
+### Fixed
+
+- **`django_waf.conf` now resolves every `DJANGO_WAF_*` setting at call
+  time instead of freezing it at import time** (closes #75). Every one of
+  the 92 settings was previously a module-level constant computed once
+  from `getattr(settings, "DJANGO_WAF_X", default)` when `conf.py` first
+  imported, despite the module's own docstring promising call-time
+  resolution. In practice this meant `override_settings` and the pytest
+  `settings` fixture silently had no effect on WAF behaviour, and any
+  consuming project whose own settings module touched `django_waf.conf`
+  during settings execution froze every constant at the package default
+  for the rest of the process. This was observed live: a site whose
+  `settings.DJANGO_WAF_ENABLED` was `False` still ran with the WAF
+  enabled, against the wrong Redis alias, because `conf.py` had imported
+  earlier in the settings module with the package defaults still in
+  effect. Every `DJANGO_WAF_*` name is now a private resolver function
+  behind a PEP 562 module `__getattr__`, so `conf.DJANGO_WAF_X` always
+  reflects the current `django.conf.settings` value.
+
+  **This is consumer-visible if your test suite relied on the WAF
+  ignoring `override_settings` or the pytest `settings` fixture.** A test
+  that sets `DJANGO_WAF_ENABLED = False` (by either mechanism) expecting
+  the WAF to keep running regardless will now see it actually disabled;
+  the same applies to every other `DJANGO_WAF_*` setting. If your suite
+  worked around the old defect with `importlib.reload(django_waf.conf)`,
+  that reload is now a harmless no-op and can be removed.
+
+  `DJANGO_WAF_SITE_PASSWORD_ENABLED`'s derived default (`bool(DJANGO_WAF_SITE_PASSWORD)`,
+  the one intra-conf cross-reference among all 92 settings) now recurses
+  through the resolver for `DJANGO_WAF_SITE_PASSWORD` rather than reading
+  a value frozen at import time, so BR-SP-002's fail-closed guarantee
+  (gate enabled, no password, deny every request) holds correctly when
+  the password is set or cleared after the process started.
+
+  `DJANGO_WAF_CELERY_BEAT_SCHEDULE` (and every other setting) resolves to
+  its documented default rather than raising `ImproperlyConfigured` when
+  `django.conf.settings` is not yet configured, which is what keeps the
+  README's documented consumer pattern, importing it directly from
+  inside a consuming project's own `settings.py` before that module has
+  finished running, safe.
+
+  `django_waf.services.blocklist_generator._activate_candidate` and
+  `_validate_nginx_config` now read `DJANGO_WAF_NGINX_VALIDATE` and
+  `DJANGO_WAF_NGINX_TEST_COMMAND` from `django_waf.conf` instead of
+  duplicating their own `getattr(django.conf.settings, ...)` reads and
+  defaults. `django_waf.urls` now reads `DJANGO_WAF_API_ENABLED` from
+  `django_waf.conf` instead of `django.conf.settings` directly; the
+  urlconf-import-time caveat this read carried (the mount decision is
+  still made once, at first URL dispatch for the whole process, not
+  re-evaluated per request) is unchanged and still documented in the
+  module docstring.
+
+- **`disable_waf` (the public `django_waf.testing.fixtures` pytest
+  fixture) no longer patches `django_waf.conf` directly.** It now sets
+  `settings.DJANGO_WAF_ENABLED = False` via the pytest `settings`
+  fixture. **Consumer-visible**: the fixture's signature changed from
+  `disable_waf(monkeypatch)` to `disable_waf(settings)`; a project that
+  depended on the exact patched object (rather than only on the WAF being
+  disabled for the duration of the test) should review its own tests.
+  This also removes a genuine hazard the old implementation carried:
+  `monkeypatch.setattr` restores a patched module attribute by calling
+  `setattr` with the pre-patch value on teardown, which, unlike
+  `unittest.mock.patch.object`'s `delattr`-based restore, would have
+  permanently shadowed live resolution in `django_waf.conf` for the rest
+  of the process once that module stopped freezing values at import
+  time.
+
+- `django_waf.E003` (the site-password gate, BR-SP-002), `django_waf.E001`,
+  `django_waf.E002`, `django_waf.W001`, `django_waf.W002` (challenge
+  difficulty), and `django_waf.W004` (middleware ordering) no longer fire
+  when `DJANGO_WAF_ENABLED = False` (#95). Every feature these checks
+  protect is dead at runtime when the master switch is off, so a
+  misconfiguration behind it was never a live lockout, only a boot-time
+  false positive. E003 mattered most: as an Error it aborted
+  `manage.py check` outright, and consumers personal-site and JOBU hit
+  this exact failure under a `LocMemCache` settings profile. This closes
+  the same class of defect `django_waf.E004` was fixed for in 2.0.0 (#67,
+  #92), for the checks that fix missed.
+  `django_waf.W006` (trusted-cookie trust level) is unchanged, and
+  deliberately not gated: it warns behind its own explicit opt-in flag
+  (`DJANGO_WAF_TRUSTED_COOKIE_ENABLED`) and, as a Warning, cannot abort
+  `manage.py check`. `django_waf.W005`, `django_waf.W007`, and
+  `django_waf.W008` are also unchanged: the features they cover (threat-feed
+  sync, the anomaly detectors) run on independent Celery schedules, not the
+  request path the master switch gates.
+
+- **`detect_unsolved_challenges`'s subnet staging could not reach its own
+  CHALLENGE stage on a default deployment** (closes #97). The detector's
+  two-stage promotion (a first crossing of a subnet creates a CHALLENGE
+  rule; only a repeat crossing promotes to BLOCK) checked for a prior
+  active CHALLENGE rule by rule shape alone, not by which detector created
+  it. `detect_subnet_burst` and `detect_cloud_spray` both run by default
+  and both create AUTO/CIDR/CHALLENGE rules for the same subnet pattern,
+  so their rules were counted as `detect_unsolved_challenges`'s own prior
+  crossing: measured live, 9 of 10 subnet rules from this detector were
+  promoted straight to BLOCK instead of staging through CHALLENGE first.
+  This defeated the staging that exists specifically as a false-positive
+  control: issue #82 measured that blocking on this signal without
+  staging would have caught at least 35.6% real users, including genuine
+  Bingbot and Applebot, on the deployment it was measured against. A
+  subnet's two-stage promotion now recognises only a CHALLENGE rule
+  `detect_unsolved_challenges` itself created; another detector reaching
+  the same conclusion about a subnet no longer accelerates this
+  detector's own promotion to BLOCK.
+
+  **Migration note**: this fix adds a new field, `BlockRule.detectors`
+  (migration `0006_blockrule_detectors`), recording which detector(s)
+  created or refreshed an auto-generated rule. It is a set, not a single
+  value: several detectors can independently target the same rule (most
+  commonly a shared subnet pattern), and a rule created by one detector
+  and later touched by another carries both names, never overwriting one
+  with the other. This is what lets `detect_unsolved_challenges`
+  recognise its own prior CHALLENGE rule even after a different detector
+  has since refreshed the same row. Existing rows backfill to blank.
+  Practical effect: for a subnet whose CHALLENGE rule already existed
+  before you upgrade, `detect_unsolved_challenges`'s next run against
+  that subnet will not recognise its own prior rule (since the backfilled
+  value cannot say who created it) and will create or refresh a CHALLENGE
+  rule again rather than promoting to BLOCK. This costs at most one extra
+  CHALLENGE stage per pre-existing subnet rule, once, and is intentional:
+  it fails safe toward the less disruptive action, consistent with the
+  discipline this fix restores.
+
+### Removed
+
+- `tests/conftest.py`'s `_reset_conf_module` autouse fixture and every
+  `importlib.reload(django_waf.conf)` call across the test suite (55
+  sites): both were workarounds for the import-time-snapshot defect
+  above and are no longer needed now that `conf.py` resolves live.
+
 ## [2.1.0] - 2026-08-29
 
 No breaking API changes and no migration in this release, unlike 2.0.0. If

@@ -40,6 +40,22 @@ DETECTOR_NAMES = frozenset(
     }
 )
 
+# Maps each DETECTOR_NAMES entry to its corresponding key in run_all_detectors'
+# result dict. The two vocabularies differ on purpose (a function name reads
+# naturally in code; a result key reads naturally in a report) and there is
+# no other mapping between them today, so django_waf.services.detector_probe
+# keys its per-detector liveness report on DETECTOR_NAMES and looks up the
+# matching count via this dict rather than guessing a naming convention. Kept
+# next to DETECTOR_NAMES so a detector rename or addition cannot desync the
+# two silently: update both in the same change.
+DETECTOR_NAME_TO_RESULT_KEY = {
+    "detect_ua_rotation": "ua_rotation_rules",
+    "detect_subnet_burst": "subnet_burst_rules",
+    "detect_challenge_farms": "challenge_farm_rules",
+    "detect_unsolved_challenges": "unsolved_challenge_rules",
+    "detect_cloud_spray": "cloud_spray_rules",
+}
+
 
 def detect_ua_rotation(
     window_minutes: int = 5,
@@ -365,12 +381,15 @@ def detect_unsolved_challenges(
     A subnet clearing its threshold is never blocked directly: the first
     crossing creates (or refreshes) a CHALLENGE rule. Only a REPEAT
     crossing, detected by an already-active auto CHALLENGE rule for the
-    same subnet, promotes it to BLOCK. This matters more here than for the
-    per-IP path because abandonment has a legitimate cause: a real user who
-    closes the tab or whose JavaScript is blocked abandons a challenge
-    exactly as a bot does, so a single crossing is not enough evidence to
-    block outright. Issue #82 measured that a coarse signal here would have
-    caught at least 35.6% real users on the same deployment.
+    same subnet that THIS detector itself created (own-provenance-only,
+    #97; another detector's CHALLENGE rule of the same shape, e.g. from
+    detect_subnet_burst or detect_cloud_spray, does not count), promotes
+    it to BLOCK. This matters more here than for the per-IP path because
+    abandonment has a legitimate cause: a real user who closes the tab or
+    whose JavaScript is blocked abandons a challenge exactly as a bot
+    does, so a single crossing is not enough evidence to block outright.
+    Issue #82 measured that a coarse signal here would have caught at
+    least 35.6% real users on the same deployment.
 
     Args:
         window_minutes: Time window to analyse for the per-IP path (default
@@ -668,18 +687,50 @@ def _detect_unsolved_challenges_by_subnet(
         # Two-stage promotion (#84, issue #82's false-positive discipline):
         # a subnet never goes straight to BLOCK on one crossing. Detect a
         # repeat crossing as "this subnet already has an active auto
-        # CHALLENGE rule from this detector" and promote to BLOCK only
+        # CHALLENGE rule from THIS detector" and promote to BLOCK only
         # then; a first crossing creates (or refreshes) the CHALLENGE rule.
         # This existence check is a read, so it runs identically under
         # dry_run: BR-ANOM-006 requires a dry run to report what a real run
         # WOULD do, and only the write below is conditioned on dry_run.
-        already_challenged = BlockRule.objects.filter(
+        #
+        # own-provenance-only (#97): membership in detectors is checked in
+        # Python, not via a database filter on the raw comma-joined string,
+        # so "detect_unsolved_challenges" cannot false-match as a substring
+        # of some other, longer detector name. A CHALLENGE rule created by
+        # detect_subnet_burst or detect_cloud_spray, which target the same
+        # rule_type/pattern/source/action shape via the same
+        # _get_subnet_prefix, does not count as this detector's own prior
+        # crossing merely because it exists; this detector's own name must
+        # actually be present in the set. Before the detectors field
+        # existed, rule_type/pattern/source/action alone could not
+        # distinguish "this detector already challenged this subnet" from
+        # "some other detector already did", and because both of those
+        # detectors run by default, this detector's own first crossing
+        # almost never reached CHALLENGE: a default deployment measured 9
+        # of 10 subnet rules promoted straight to BLOCK. The owner ruled
+        # against cross-detector acceleration: another detector's rule does
+        # not promote this one.
+        #
+        # detectors is additive (see _merge_detector_names), so even
+        # though detect_cloud_spray runs after this detector on every
+        # run_all_detectors pass and also targets this same subnet shape,
+        # its write only adds "detect_cloud_spray" to the set rather than
+        # replacing "detect_unsolved_challenges" already in it. Without
+        # that additive guarantee, this membership check would still fail:
+        # the next pass would find this detector's own name missing from a
+        # row a sibling detector had since overwritten, and the two-stage
+        # promotion would never reach BLOCK for exactly the subnets
+        # multiple detectors independently flag.
+        existing_subnet_rule = BlockRule.objects.filter(
             rule_type=RuleType.CIDR,
             pattern=subnet,
             source=RuleSource.AUTO,
             action=RuleAction.CHALLENGE,
             is_active=True,
-        ).exists()
+        ).first()
+        already_challenged = existing_subnet_rule is not None and "detect_unsolved_challenges" in (
+            existing_subnet_rule.detectors.split(",")
+        )
         stage_action = RuleAction.BLOCK if already_challenged else RuleAction.CHALLENGE
 
         rule, created = _get_or_create_auto_rule(
@@ -1084,6 +1135,33 @@ def _get_or_create_auto_rule(
     corresponding argument is omitted, so a caller not yet passing them sees
     unchanged behaviour.
 
+    Provenance (#97): ``detector_name`` (when non-empty) is added to
+    ``BlockRule.detectors``, a comma-separated, sorted SET of every detector
+    that has ever written to this row, not only used for the observe-only
+    membership test above. This lets a detector that does its own promotion
+    between actions, currently only ``detect_unsolved_challenges``'s subnet
+    path, recognise a prior rule it created itself even after a *different*
+    detector has since written to the same row. ``detectors`` sits in
+    ``defaults`` (via the merge performed in ``_update_or_create_auto_rule``,
+    not here), never in ``lookup``, so it does not affect the dedup key: two
+    detectors that independently target the same (rule_type, pattern,
+    source=AUTO, action) still update_or_create the same single row.
+
+    The set must be additive, not last-writer-wins, because three detectors
+    (``detect_subnet_burst``, ``detect_unsolved_challenges``'s subnet path,
+    ``detect_cloud_spray``) can all independently target the identical
+    (CIDR, subnet, AUTO, CHALLENGE) key when they share a subnet via
+    ``_get_subnet_prefix``, and ``run_all_detectors`` runs all three, in
+    that order, on every pass. A plain overwrite would mean
+    ``detect_cloud_spray``, which always runs last, clobbers
+    ``detect_unsolved_challenges``'s own stamp at the end of every pass; on
+    the next pass that detector would no longer recognise its own prior
+    rule, and its two-stage promotion would get stuck at stage one forever
+    for exactly the subnets multiple detectors independently flag, which are
+    the most suspicious ones. This does not reintroduce #97 (it fails safe
+    toward CHALLENGE, never a wrong BLOCK), but it silently defeats the
+    promotion mechanism, so the set must accumulate rather than replace.
+
     Re-detection guard (BR-ANOM-007, mirrors threat_feed.sync_feed's
     survive-later-syncs guarantee for feed-sourced allow rules): before
     writing, the existing row's review_status (if any) is read. When it is
@@ -1130,11 +1208,12 @@ def _get_or_create_auto_rule(
         existing = BlockRule.objects.filter(**lookup).first()
         if existing is not None:
             return existing, False
+        defaults["detectors"] = _merge_detector_names("", detector_name)
         return BlockRule(**lookup, **defaults), True
 
     try:
         with transaction.atomic():
-            rule, created = _update_or_create_auto_rule(lookup, defaults)
+            rule, created = _update_or_create_auto_rule(lookup, defaults, detector_name)
         return rule, created
     except BlockRule.MultipleObjectsReturned:
         logger.warning(
@@ -1144,11 +1223,27 @@ def _get_or_create_auto_rule(
         )
         _deduplicate_block_rules(**lookup)
         with transaction.atomic():
-            rule, created = _update_or_create_auto_rule(lookup, defaults)
+            rule, created = _update_or_create_auto_rule(lookup, defaults, detector_name)
         return rule, created
 
 
-def _update_or_create_auto_rule(lookup: dict, defaults: dict) -> tuple:
+def _merge_detector_names(existing_value: str, detector_name: str) -> str:
+    """Add ``detector_name`` to the existing comma-separated detector set.
+
+    Returns a sorted, comma-joined, deduplicated string. Additive by design
+    (#97): the set only ever grows, so a later detector's write cannot
+    remove a name a prior detector's write already added. An empty
+    ``detector_name`` is a no-op (some callers, e.g. tests exercising
+    _get_or_create_auto_rule directly, do not pass one), and never
+    contributes an empty entry to the set.
+    """
+    names = {name for name in existing_value.split(",") if name}
+    if detector_name:
+        names.add(detector_name)
+    return ",".join(sorted(names))
+
+
+def _update_or_create_auto_rule(lookup: dict, defaults: dict, detector_name: str = "") -> tuple:
     """Read-before-write wrapper around BlockRule.objects.update_or_create.
 
     A plain single-shot update_or_create would let a later detector run
@@ -1159,6 +1254,15 @@ def _update_or_create_auto_rule(lookup: dict, defaults: dict) -> tuple:
     review_status exactly as the operator last set them. This mirrors
     threat_feed.sync_feed's equivalent guarantee for feed-sourced allow
     rules (services/threat_feed.py).
+
+    ``detectors`` (#97) is merged here, not passed pre-computed in
+    ``defaults``, because computing it correctly requires the existing
+    row's current value, which is only fetched here under
+    ``select_for_update()``. Merging happens unconditionally, including
+    when the review-status guard below strips ``is_active``/
+    ``review_status``: provenance is not a review decision, so a
+    CONFIRMED/REJECTED rule's detector set still accumulates on
+    re-detection exactly as an unreviewed rule's does.
 
     Must run inside the same transaction.atomic() block as its caller so the
     read and the write are consistent.
@@ -1171,6 +1275,11 @@ def _update_or_create_auto_rule(lookup: dict, defaults: dict) -> tuple:
     if existing is not None and existing.review_status in (ReviewStatus.CONFIRMED, ReviewStatus.REJECTED):
         write_defaults.pop("is_active", None)
         write_defaults.pop("review_status", None)
+
+    write_defaults["detectors"] = _merge_detector_names(
+        existing.detectors if existing is not None else "",
+        detector_name,
+    )
 
     return BlockRule.objects.update_or_create(**lookup, defaults=write_defaults)
 

@@ -61,42 +61,72 @@ def _mock_redis():
 
 
 class TestWafEnabledKillSwitch:
-    """DJANGO_WAF_ENABLED=False passes every request through without evaluation."""
+    """DJANGO_WAF_ENABLED=False passes every request through without evaluation.
+
+    Both tests provide a working Redis client (matching the pattern used
+    throughout this file) so the request cannot reach get_response via the
+    unrelated BR-EVAL-007 Redis-unavailable fail-open path (redis_client is
+    None under this suite's LocMemCache settings). Without that, a request
+    passes through and looks identical whether the kill switch is doing its
+    job or is silently broken: the fail-open path converges on exactly the
+    same observable outcome (200, get_response called once) regardless of
+    DJANGO_WAF_ENABLED's real value, so an assertion on outcome alone cannot
+    tell the two apart. The discriminator these tests assert on is whether
+    evaluate_request was reached at all: with the kill switch OFF it must
+    never be called; with it ON (proven by the enabled counterpart test) it
+    must be called exactly once. That is what actually differs between the
+    two states.
+    """
 
     @override_settings(DJANGO_WAF_ENABLED=False)
-    def test_disabled_waf_passes_request_through(self):
-        # Reload conf so the override is picked up
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
+    def test_disabled_waf_passes_through_without_reaching_evaluation(self):
         factory = RequestFactory()
         request = factory.get("/some/path/")
+        request.user = MagicMock(is_authenticated=False)
+        request.COOKIES = {}
         get_response = MagicMock(return_value=HttpResponse("passed"))
         middleware = _make_middleware(get_response)
 
-        response = middleware(request)
+        with (
+            patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+        ):
+            mock_redis_fn.return_value = _mock_redis()
 
+            response = middleware(request)
+
+        mock_eval.assert_not_called()
         get_response.assert_called_once_with(request)
         assert response.status_code == 200
 
-    @override_settings(DJANGO_WAF_ENABLED=False)
-    def test_disabled_waf_does_not_call_evaluate_request(self):
-        import importlib
+    @override_settings(DJANGO_WAF_ENABLED=True)
+    def test_enabled_waf_reaches_evaluation_with_the_same_request_shape(self):
+        """The falsifiability counterpart to the test above.
 
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
+        Same request shape, same working Redis client, only DJANGO_WAF_ENABLED
+        flipped. This is what proves the disabled test's assert_not_called()
+        is actually pinned to the kill switch and not merely a permanent
+        feature of this request shape: if evaluate_request were never called
+        regardless of DJANGO_WAF_ENABLED, both tests would pass for the same
+        wrong reason the original pair did.
+        """
         factory = RequestFactory()
-        request = factory.get("/")
+        request = factory.get("/some/path/")
+        request.user = MagicMock(is_authenticated=False)
+        request.COOKIES = {}
+        get_response = MagicMock(return_value=HttpResponse("passed"))
+        middleware = _make_middleware(get_response)
 
-        with patch("django_waf.services.rule_engine.evaluate_request") as mock_eval:
-            middleware = _make_middleware()
+        with (
+            patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_eval.return_value = _make_result("allowed")
+
             middleware(request)
-            mock_eval.assert_not_called()
+
+        mock_eval.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +139,6 @@ class TestExemptPaths:
 
     @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_EXEMPT_PATHS=["/static/", "/health/"])
     def test_static_path_is_exempt(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/static/app.css")
         get_response = MagicMock(return_value=HttpResponse("static"))
@@ -126,12 +150,6 @@ class TestExemptPaths:
 
     @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_EXEMPT_PATHS=["/static/", "/health/"])
     def test_health_path_is_exempt(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/health/")
         get_response = MagicMock(return_value=HttpResponse("ok"))
@@ -143,12 +161,6 @@ class TestExemptPaths:
 
     @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_EXEMPT_PATHS=["/static/"])
     def test_non_exempt_path_continues_to_evaluation(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/api/data/")
         # Evaluation raises to confirm we reached it
@@ -175,12 +187,6 @@ class TestExemptHosts:
         ALLOWED_HOSTS=["admin.example.com", "app.example.com"],
     )
     def test_exact_host_is_exempt(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/api/data/", HTTP_HOST="admin.example.com")
         get_response = MagicMock(return_value=HttpResponse("ok"))
@@ -196,12 +202,6 @@ class TestExemptHosts:
         ALLOWED_HOSTS=["admin.example.com:8000"],
     )
     def test_port_is_stripped_before_matching(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/api/data/", HTTP_HOST="admin.example.com:8000")
         get_response = MagicMock(return_value=HttpResponse("ok"))
@@ -217,12 +217,6 @@ class TestExemptHosts:
         ALLOWED_HOSTS=[".example.com"],
     )
     def test_leading_dot_matches_subdomains(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         get_response = MagicMock(return_value=HttpResponse("ok"))
         middleware = _make_middleware(get_response)
@@ -239,12 +233,6 @@ class TestExemptHosts:
         ALLOWED_HOSTS=["public.example.com", "admin.example.com"],
     )
     def test_non_exempt_host_continues_to_evaluation(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/api/data/", HTTP_HOST="public.example.com")
         with patch("django_waf.middleware._get_redis_client") as mock_redis_fn:
@@ -260,12 +248,6 @@ class TestExemptHosts:
         ALLOWED_HOSTS=["app.example.com"],
     )
     def test_empty_exempt_hosts_continues_to_evaluation(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/api/data/", HTTP_HOST="app.example.com")
         with patch("django_waf.middleware._get_redis_client") as mock_redis_fn:
@@ -286,12 +268,6 @@ class TestStaffBypass:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_staff_user_bypasses_waf(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/page/")
         request.user = MagicMock(is_authenticated=True, is_staff=True, is_superuser=False)
@@ -306,12 +282,6 @@ class TestStaffBypass:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_superuser_bypasses_waf(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/admin/")
         request.user = MagicMock(is_authenticated=True, is_staff=False, is_superuser=True)
@@ -326,12 +296,6 @@ class TestStaffBypass:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_anonymous_user_does_not_bypass_waf(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/page/")
         request.user = MagicMock(is_authenticated=False)
@@ -355,12 +319,6 @@ class TestWafPassCookie:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_valid_waf_pass_cookie_bypasses_evaluation(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/page/")
         request.user = MagicMock(is_authenticated=False)
@@ -382,12 +340,6 @@ class TestWafPassCookie:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_invalid_waf_pass_cookie_proceeds_to_evaluation(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/page/")
         request.user = MagicMock(is_authenticated=False)
@@ -418,11 +370,6 @@ class TestVerdictDispatch:
 
     def _run_with_verdict(self, verdict: str, **result_kwargs):
         """Helper: run middleware with a mocked evaluate_request returning the given verdict."""
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         request = factory.get("/page/")
@@ -448,48 +395,24 @@ class TestVerdictDispatch:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_blocked_verdict_returns_403(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         response = self._run_with_verdict("blocked")
 
         assert response.status_code == 403
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_throttled_verdict_returns_429(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         response = self._run_with_verdict("throttled")
 
         assert response.status_code == 429
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_throttled_verdict_includes_retry_after_header(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         response = self._run_with_verdict("throttled")
 
         assert "Retry-After" in response
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_challenged_verdict_redirects_to_challenge_page(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         response = self._run_with_verdict("challenged")
 
         assert response.status_code == 302
@@ -503,12 +426,7 @@ class TestVerdictDispatch:
         here has the same effect as a failure on the read side, escalation
         goes blind for this IP. Fail-open must still redirect to the
         challenge page (BR-EVAL-007), but the failure must be logged."""
-        import importlib
         import logging
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         request = factory.get("/page/")
@@ -541,11 +459,6 @@ class TestVerdictDispatch:
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_challenged_verdict_on_challenge_path_passes_through(self):
         """Challenge verdict on /waf/challenge/ must not redirect to itself (loop prevention)."""
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         for path in ["/waf/challenge/", "/waf/verify/"]:
@@ -575,11 +488,6 @@ class TestVerdictDispatch:
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_blocked_verdict_on_challenge_path_still_blocks(self):
         """Blocked IPs must NOT be able to access /waf/challenge/ or /waf/verify/."""
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         for path in ["/waf/challenge/", "/waf/verify/"]:
@@ -607,12 +515,6 @@ class TestVerdictDispatch:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_allowed_verdict_passes_to_get_response(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         response = self._run_with_verdict("allowed")
 
         assert response.status_code == 200
@@ -620,12 +522,6 @@ class TestVerdictDispatch:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_passed_verdict_passes_to_get_response(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         response = self._run_with_verdict("passed")
 
         assert response.status_code == 200
@@ -642,11 +538,6 @@ class TestFailOpen:
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_redis_unavailable_passes_request_through(self):
         """When _get_redis_client() returns None the request must pass through."""
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         request = factory.get("/page/")
@@ -664,11 +555,6 @@ class TestFailOpen:
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_evaluation_error_passes_request_through(self):
         """An exception in evaluate_request must not surface — request passes through."""
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         request = factory.get("/page/")
@@ -702,12 +588,7 @@ class TestIpExtraction:
 
     @override_settings(DJANGO_WAF_TRUST_X_FORWARDED_FOR=True)
     def test_uses_first_xff_ip_when_trusted(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
         from django_waf.middleware import _extract_ip
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         request = factory.get("/")
@@ -719,12 +600,7 @@ class TestIpExtraction:
 
     @override_settings(DJANGO_WAF_TRUST_X_FORWARDED_FOR=False)
     def test_uses_remote_addr_when_xff_not_trusted(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
         from django_waf.middleware import _extract_ip
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         request = factory.get("/")
@@ -737,12 +613,7 @@ class TestIpExtraction:
 
     @override_settings(DJANGO_WAF_TRUST_X_FORWARDED_FOR=True)
     def test_falls_back_to_remote_addr_when_xff_absent(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
         from django_waf.middleware import _extract_ip
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         request = factory.get("/")
@@ -755,12 +626,7 @@ class TestIpExtraction:
 
     @override_settings(DJANGO_WAF_TRUST_X_FORWARDED_FOR=False)
     def test_uses_remote_addr_directly(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
         from django_waf.middleware import _extract_ip
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         request = factory.get("/")
@@ -783,11 +649,6 @@ class TestRequestLogging:
     @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_LOG_SAMPLE_RATE=1.0)
     def test_blocked_verdict_is_always_logged(self):
         """Security verdicts (blocked) are logged regardless of sample rate."""
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
 
         from django_waf.models import RequestLog
 
@@ -816,11 +677,6 @@ class TestRequestLogging:
     @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_LOG_SAMPLE_RATE=0.0)
     def test_allowed_verdict_not_logged_when_sample_rate_zero(self):
         """Allowed requests are skipped when the sample rate is 0.0."""
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
 
         from django_waf.models import RequestLog
 
@@ -858,12 +714,6 @@ class TestCountryBlocking:
     @pytest.mark.django_db
     @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_BLOCKED_COUNTRIES=["CN", "RU"])
     def test_request_from_blocked_country_returns_403(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/page/")
         request.user = MagicMock(is_authenticated=False)
@@ -879,12 +729,6 @@ class TestCountryBlocking:
     @pytest.mark.django_db
     @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_BLOCKED_COUNTRIES=["CN", "RU"])
     def test_request_from_unlisted_country_passes_through_to_normal_evaluation(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-
         factory = RequestFactory()
         request = factory.get("/page/")
         request.user = MagicMock(is_authenticated=False)
@@ -911,11 +755,6 @@ class TestCountryBlocking:
     @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_BLOCKED_COUNTRIES=["CN", "RU"])
     def test_empty_geoip_result_fails_open(self):
         """No GeoIP database / lookup failure returns '' — the request is not blocked."""
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
 
         factory = RequestFactory()
         request = factory.get("/page/")

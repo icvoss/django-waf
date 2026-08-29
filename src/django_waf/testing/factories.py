@@ -44,6 +44,7 @@ class BlockRuleFactory(factory.django.DjangoModelFactory):
     notes = ""
     review_status = ReviewStatus.NOT_APPLICABLE
     reviewed_at = None
+    detectors = ""
 
     class Meta:
         model = "django_waf.BlockRule"

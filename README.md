@@ -510,6 +510,7 @@ to get the full schedule:
 | `parse_access_log` | every 10 minutes |
 | `expire_rules` | every 30 minutes |
 | `update_ip_reputation` | every 6 hours |
+| `probe_detectors` | every hour |
 | `prune_request_logs` | daily 04:00 |
 | `prune_challenge_tokens` | daily 04:15 |
 | `sync_threat_feed` | daily 04:30 |
@@ -531,6 +532,16 @@ name) if you need different cadences.
 | `django_waf_sync_feed` | Fetch and import rules from the collective threat feed (`--dry-run`) |
 | `django_waf_export_rules` | Export `BlockRule`/`AllowRule` records to JSON (`--output`, `--source`, `--rule-type`) |
 | `django_waf_import_rules` | Import `BlockRule`/`AllowRule` records from JSON produced by `django_waf_export_rules` (`--merge`, `--replace`, `--dry-run`) |
+| `django_waf_probe_detectors` | Run the detector liveness probe against synthetic fixture traffic; exits non-zero if any detector is silent (`--exercise-writes`) |
+
+**A dead `probe_detectors` schedule is silent.** The task logs one line
+every hour: INFO when every detector is alive, WARNING naming any silent
+detector. This package is stateless and does not persist a last-run
+timestamp, so a paused Celery worker, a missing Beat entry, or a broken
+schedule produces no log line at all rather than a failure log. Alert on
+the *absence* of the hourly `django_waf.detector_probe` log line within
+your expected cadence, not only on its WARNING content: the probe cannot
+detect that it has stopped running from the inside.
 
 ## Dashboard
 

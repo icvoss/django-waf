@@ -630,13 +630,6 @@ class TestGateRunsWithinMiddlewareEnabledCheck:
     """Per PRD 2.1 / BR-SP-008: the gate check sits after the WAF's own
     enabled/exempt-path/exempt-host short-circuits. When the whole WAF
     middleware is disabled, the site-password gate does not run either.
-
-    DJANGO_WAF_SITE_PASSWORD_ENABLED is set directly via override_settings
-    (not patch.multiple) here because DJANGO_WAF_ENABLED must go through a
-    real importlib.reload(conf_mod) for the master kill switch to take
-    effect -- reload() re-executes the module body and would silently wipe
-    any patch.multiple-patched attributes in the same block (they are
-    class/module attribute patches, not settings-backed).
     """
 
     @override_settings(
@@ -645,17 +638,9 @@ class TestGateRunsWithinMiddlewareEnabledCheck:
         DJANGO_WAF_SITE_PASSWORD="letmein",
     )
     def test_gate_does_not_run_when_waf_disabled(self):
-        import importlib
-
-        import django_waf.conf as conf_mod
-
-        importlib.reload(conf_mod)
-        try:
-            client = Client()
-            response = client.get("/")
-            assert response.status_code == 200
-        finally:
-            importlib.reload(conf_mod)
+        client = Client()
+        response = client.get("/")
+        assert response.status_code == 200
 
 
 # ---------------------------------------------------------------------------

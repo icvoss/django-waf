@@ -12,10 +12,16 @@ Expected attempts is ``2 ** difficulty``. Thresholds:
 * ``> 24`` (~16M hashes, ~5–20s on phones) — Warning.
 * ``< 8``  (256 hashes, no real bot deterrence) — Warning.
 
+Silent when the WAF is disabled (``DJANGO_WAF_ENABLED = False``, #95): the
+challenge flow this check protects never runs when the master switch is
+off, so a difficulty misconfiguration behind it is not a live lockout.
+
 The signing-key check (``django_waf.W003``) was added in v0.11.0 alongside
 the form-protection subsystem. It surfaces when the package is falling
-back to a ``SECRET_KEY``-derived signing key — fine for development but
-worth a deliberate decision in production.
+back to a ``SECRET_KEY``-derived signing key, fine for development but
+worth a deliberate decision in production. Silent when the WAF is disabled
+(#95): no WAF token is ever signed with this key when the master switch is
+off.
 
 The feed-URL scheme check (``django_waf.W005``) warns when the threat feed
 is enabled but its URL is not ``https://``. The feed drives BlockRule
@@ -28,14 +34,18 @@ The middleware-ordering check (``django_waf.W004``) warns when
 ``MIDDLEWARE``, or when ``AuthenticationMiddleware`` is missing entirely.
 ``request.user`` is not available at that point, so the staff bypass
 silently fails and staff/superuser accounts can be blocked or challenged
-like anonymous traffic.
+like anonymous traffic. Silent when the WAF is disabled (#95): the staff
+bypass this check protects has nothing to bypass when the middleware is
+not evaluating requests.
 
 The site-password check (``django_waf.E003``) errors when
 ``DJANGO_WAF_SITE_PASSWORD_ENABLED`` is truthy but
 ``DJANGO_WAF_SITE_PASSWORD`` is empty. Per BR-SP-002 the gate fails closed
 at runtime in this state (every request is denied), so this is an Error
 rather than a Warning -- it flags an operator's site as permanently locked
-rather than a soft misconfiguration.
+rather than a soft misconfiguration. Silent when the WAF is disabled (#95):
+the site-password gate is evaluated by ``WafMiddleware``, so it cannot
+fail closed on a request the middleware never evaluates.
 
 The trust-level check (``django_waf.W006``) warns when
 ``DJANGO_WAF_TRUSTED_COOKIE_TRUST_LEVEL`` is set to anything other than
@@ -44,6 +54,14 @@ The trust-level check (``django_waf.W006``) warns when
 (``django_waf.services.trusted_user_service.get_trust_level`` coerces an
 unrecognised value to ``"staff"``), so this is a Warning about an
 ineffective setting, not an Error about a lockout.
+
+Deliberately NOT gated on ``DJANGO_WAF_ENABLED`` (#95): the trusted-user
+cookie is purely a request-time feature with no independent Celery path,
+which is the same rationale gating the other four checks in this module.
+It stays ungated because it is a Warning behind its own explicit opt-in
+flag (``DJANGO_WAF_TRUSTED_COOKIE_ENABLED``), so a disabled WAF combined
+with the feature flag left on cannot abort ``manage.py check`` the way an
+Error can; this is a considered exception, not an oversight.
 
 The Redis backend check (``django_waf.E004``) is silent when the WAF is
 disabled (``DJANGO_WAF_ENABLED = False``, #67), and otherwise errors when
@@ -100,6 +118,30 @@ be made, since neither of those is the misconfiguration this check exists
 to catch (see issue #67, where ``django_waf.E004`` wrongly fired under
 ``DJANGO_WAF_ENABLED = False`` with no Redis available; this check guards
 against repeating that).
+
+The middleware-presence check (``django_waf.E006``) errors when
+``DJANGO_WAF_ENABLED = True`` but ``WafMiddleware`` (or a subclass of it,
+matched by class name -- see the function docstring) is absent from
+``MIDDLEWARE`` entirely (#101). ``check_middleware_ordering``
+(``django_waf.W004``) only ever inspects ordering: it returns ``[]``
+unconditionally the moment ``WafMiddleware`` is not found in
+``MIDDLEWARE``, on the reasoning that there is no ordering to warn about.
+That silence was never a deliberate finding of "nothing wrong here"; it was
+simply the absence case no check was written for. A brickworkui.com
+production deployment had ``django_waf`` installed, ``DJANGO_WAF_ENABLED =
+True``, and no ``WafMiddleware`` anywhere in ``MIDDLEWARE`` for its entire
+deployed life, and ``manage.py check`` passed throughout: the WAF inspected
+no traffic at all while reporting a clean bill of health. This is an
+Error, not a Warning, for the same reason ``django_waf.E004`` is: a
+security control that reports healthy while blocking nothing is worse than
+one that refuses to start, and an operator who believes the WAF is live
+when it has never evaluated a single request is worse off than one told
+plainly at boot that it is not wired up. Gated on ``DJANGO_WAF_ENABLED``
+being ``True``: a disabled WAF is not expected to be in ``MIDDLEWARE`` at
+all (BR-EVAL-002 already makes a present-but-enabled middleware a total
+pass-through), so the absence of a middleware nobody asked to run is not a
+misconfiguration, matching the gating rationale #95 established for every
+other check in this module.
 """
 
 from __future__ import annotations
@@ -110,6 +152,15 @@ from django.core.checks import Error, Warning, register
 @register()
 def check_challenge_difficulty(app_configs, **kwargs):
     from django_waf import conf
+
+    # #95: the PoW challenge flow this check protects never runs when the
+    # WAF is switched off, so a difficulty misconfiguration behind it is
+    # not a live lockout. Without this, a settings profile that disables
+    # the WAF (e.g. under LocMemCache in a test or CI profile) can still
+    # abort manage.py check on E001/E002, exactly the class of boot-time
+    # false positive #95 was filed to close.
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
 
     messages = []
     # (name, value, allow_none) — desktop/mobile may be None to fall through
@@ -167,7 +218,7 @@ def check_challenge_difficulty(app_configs, **kwargs):
 @register()
 def check_signing_key(app_configs, **kwargs):
     """Warn when ``DJANGO_WAF_SIGNING_KEY`` is unset and the package falls back
-    to a ``SECRET_KEY``-derived value.
+    to a ``SECRET_KEY``-derived value, unless the WAF is disabled (#95).
 
     Falling back is supported — it's how v0.10.x → v0.11.0 upgrades stay
     seamless — but tying WAF signatures to ``SECRET_KEY`` means rotating
@@ -175,6 +226,12 @@ def check_signing_key(app_configs, **kwargs):
     warning nudges operators toward an explicit dedicated key.
     """
     from django_waf import conf
+
+    # #95: no WAF token (waf_pass, trusted-user cookie, form-protection
+    # render token) is ever signed with this key when the master switch is
+    # off, so an unset key is not a live weakness in that state.
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
 
     if not conf.DJANGO_WAF_SIGNING_KEY:
         return [
@@ -230,7 +287,7 @@ def check_feed_url_scheme(app_configs, **kwargs):
 @register()
 def check_middleware_ordering(app_configs, **kwargs):
     """Warn (``django_waf.W004``) when ``WafMiddleware`` runs before
-    Django's ``AuthenticationMiddleware``.
+    Django's ``AuthenticationMiddleware``, unless the WAF is disabled (#95).
 
     The staff dashboard bypass and any authenticated-user logic in the WAF
     middleware reads ``request.user``, which ``AuthenticationMiddleware``
@@ -262,6 +319,13 @@ def check_middleware_ordering(app_configs, **kwargs):
     from django.conf import settings
 
     from django_waf import conf
+
+    # #95: cheapest guard first. request.user has nothing to bypass when
+    # WafMiddleware never evaluates a request in the first place, so the
+    # ordering this check warns about is not a live defect when the WAF is
+    # switched off.
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
 
     if conf.DJANGO_WAF_TRUSTED_COOKIE_ENABLED:
         return []
@@ -301,9 +365,83 @@ def check_middleware_ordering(app_configs, **kwargs):
 
 
 @register()
+def check_middleware_present(app_configs, **kwargs):
+    """Error (``django_waf.E006``) when the WAF is enabled but
+    ``WafMiddleware`` is absent from ``MIDDLEWARE`` entirely (#101).
+
+    ``check_middleware_ordering`` (``django_waf.W004``) only ever warns
+    about *where* ``WafMiddleware`` sits relative to
+    ``AuthenticationMiddleware``; it returns ``[]`` the instant the
+    middleware is not found at all, because there is no ordering left to
+    judge. Nothing else registered in this module inspects ``MIDDLEWARE``
+    for the WAF's own presence, so a project that installs the app,
+    flips ``DJANGO_WAF_ENABLED = True``, and simply forgets the
+    ``MIDDLEWARE`` line gets a silent, fully inert WAF and a green
+    ``manage.py check`` -- exactly what happened on brickworkui.com for
+    its entire deployed life. A misordered WAF still inspects every
+    request; an absent one inspects none, which is the more serious
+    failure and the one this module had no check for.
+
+    Matching is by class name (the last dotted component ends with
+    ``"WafMiddleware"``), not exact dotted-path equality to
+    ``django_waf.middleware.WafMiddleware``. ``WafMiddleware`` is a plain
+    ``__init__``/``__call__`` class with no metaclass or registration
+    step, so subclassing it to add project-specific behaviour around
+    ``get_response`` is an ordinary, unremarkable way to use it, and such
+    a subclass is exactly as live as the base class: it still evaluates
+    every request. A subclass conventionally keeps ``WafMiddleware`` as a
+    suffix of its own name (``CustomWafMiddleware``, ``TenantWafMiddleware``)
+    rather than the exact name, so an equality match on the class name
+    would repeat the same false positive an exact dotted-path match would,
+    only one layer further out; a suffix match tolerates the rename a
+    subclass almost always makes. Matching by class name is cheap to state
+    and does not attempt to verify the subclass actually calls into
+    ``WafMiddleware`` behaviour (an ``isinstance`` check would need the
+    class imported and instantiated, which a system check must not do); a
+    project naming an unrelated class to end in ``WafMiddleware`` on
+    purpose is choosing a confusing name, not a case this check is obliged
+    to protect against.
+
+    Gated on ``DJANGO_WAF_ENABLED = True`` (#95's own precedent, and #95's
+    acceptance criterion for this exact case): when the WAF is switched
+    off, ``MIDDLEWARE`` is not expected to carry it at all, so absence is
+    not a misconfiguration to flag, only the enabled-but-inert combination
+    is.
+    """
+    from django.conf import settings
+
+    from django_waf import conf
+
+    # Cheapest guard first, matching every other check in this module: a
+    # disabled WAF has nothing to be inert about, so there is nothing here
+    # for #101 to catch.
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
+
+    middleware = list(getattr(settings, "MIDDLEWARE", []))
+    if any(entry.rsplit(".", 1)[-1].endswith("WafMiddleware") for entry in middleware):
+        return []
+
+    return [
+        Error(
+            "DJANGO_WAF_ENABLED is True but django_waf.middleware.WafMiddleware "
+            "(or a subclass of it) is not present in MIDDLEWARE -- the WAF is "
+            "installed and switched on but evaluates no traffic at all.",
+            hint=(
+                "Add 'django_waf.middleware.WafMiddleware' to MIDDLEWARE (see "
+                "the README for recommended placement), or set "
+                "DJANGO_WAF_ENABLED = False if this project is not meant to "
+                "run the WAF yet."
+            ),
+            id="django_waf.E006",
+        )
+    ]
+
+
+@register()
 def check_site_password_configured(app_configs, **kwargs):
     """Error (``django_waf.E003``) when the site-password gate is enabled
-    with an empty password.
+    with an empty password, unless the WAF is disabled (#95).
 
     Per BR-SP-002, this configuration fails closed at runtime -- every
     gated request is denied, effectively taking the whole site offline.
@@ -311,6 +449,15 @@ def check_site_password_configured(app_configs, **kwargs):
     than merely weakening a defence.
     """
     from django_waf import conf
+
+    # #95: the site-password gate is evaluated by WafMiddleware (BR-SP-008),
+    # so it cannot fail closed on a request the middleware never evaluates.
+    # This is the same class of false positive #67 fixed for E004: a
+    # settings profile that switches the WAF off (a test or CI profile
+    # under LocMemCache, say) is not misconfigured for having no password
+    # set, it simply is not using the feature this check guards.
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
 
     if not conf.DJANGO_WAF_SITE_PASSWORD_ENABLED:
         return []
@@ -348,6 +495,12 @@ def check_trusted_cookie_trust_level(app_configs, **kwargs):
     """
     from django_waf import conf
 
+    # #95: NOT gated on DJANGO_WAF_ENABLED, unlike E001/E002/W001/W002/W003/
+    # E003. This is a considered exception, not an oversight: it is a
+    # Warning behind its own explicit opt-in flag
+    # (DJANGO_WAF_TRUSTED_COOKIE_ENABLED), so it cannot abort manage.py
+    # check the way an Error can, and the module docstring records why it
+    # stays ungated.
     if not conf.DJANGO_WAF_TRUSTED_COOKIE_ENABLED:
         return []
 

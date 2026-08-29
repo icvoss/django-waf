@@ -56,22 +56,9 @@ def _disable_waf_middleware(settings):
     These tests exercise the DRF API layer (permissions, serializers,
     viewsets), not WAF request evaluation, so there's no need to route
     through the real evaluator (and its Redis-only cache writes) at all.
-
-    django_waf.conf.DJANGO_WAF_ENABLED is a module-level constant read once
-    at conf.py's first import, so flipping settings.DJANGO_WAF_ENABLED alone
-    doesn't reach WafMiddleware (which reads conf.DJANGO_WAF_ENABLED, not
-    django.conf.settings directly). Reload conf to pick up the override, and
-    reload again on teardown to restore it for other test modules — same
-    pattern used throughout test_middleware.py.
     """
-    import importlib
-
-    import django_waf.conf as conf_mod
-
     settings.DJANGO_WAF_ENABLED = False
-    importlib.reload(conf_mod)
     yield
-    importlib.reload(conf_mod)
 
 
 # ---------------------------------------------------------------------------
@@ -108,9 +95,23 @@ def _waf_admin_user(**kwargs):
 
 class TestApiDisabled:
     def test_returns_503_when_disabled(self):
+        """The per-request WafApiEnabledMixin gate, not the urlconf mount.
+
+        django_waf.urls reads DJANGO_WAF_API_ENABLED once, at first URL
+        dispatch for the whole process (see the module docstring in
+        django_waf/urls.py): if that dispatch happened to be THIS test's
+        own patched-False request, the routes would never mount at all and
+        this would 404 rather than 503, testing the wrong layer entirely.
+        A throwaway unpatched request first guarantees the routes are
+        already mounted (from a real, unpatched DJANGO_WAF_API_ENABLED),
+        so the patch below can only affect the per-request 503 gate in
+        api/viewsets.py, the thing this test actually exercises.
+        """
         superuser = _make_user(username="super1", is_staff=True, is_superuser=True)
         client = APIClient()
         client.force_authenticate(user=superuser)
+
+        client.get("/waf/api/block-rules/")
 
         with patch("django_waf.conf.DJANGO_WAF_API_ENABLED", False):
             response = client.get("/waf/api/block-rules/")
