@@ -227,6 +227,23 @@ class BlockRule(BaseModel):
         verbose_name=_("reviewed at"),
         help_text=_("Set when review_status transitions to confirmed or rejected."),
     )
+    detectors = models.CharField(
+        max_length=255,
+        blank=True,
+        db_index=True,
+        verbose_name=_("detectors"),
+        help_text=_(
+            "Comma-separated, sorted set of anomaly detector names that have ever caused a "
+            "write to this row (e.g. 'detect_cloud_spray,detect_unsolved_challenges'). Additive, "
+            "never overwritten: multiple detectors can independently target the same "
+            "(rule_type, pattern, source=AUTO, action) shape, most commonly a shared subnet "
+            "pattern, and each detector's own write only adds its name rather than replacing "
+            "the set. Blank for admin and feed-sourced rules, and for auto-generated rules "
+            "created before this field existed. Lets a detector's own promotion logic recognise "
+            "a rule it has itself previously written, even after another detector has since "
+            "written to the same row (#97)."
+        ),
+    )
 
     objects = BlockRuleManager()
 

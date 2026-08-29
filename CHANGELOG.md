@@ -5,6 +5,47 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`detect_unsolved_challenges`'s subnet staging could not reach its own
+  CHALLENGE stage on a default deployment** (closes #97). The detector's
+  two-stage promotion (a first crossing of a subnet creates a CHALLENGE
+  rule; only a repeat crossing promotes to BLOCK) checked for a prior
+  active CHALLENGE rule by rule shape alone, not by which detector created
+  it. `detect_subnet_burst` and `detect_cloud_spray` both run by default
+  and both create AUTO/CIDR/CHALLENGE rules for the same subnet pattern,
+  so their rules were counted as `detect_unsolved_challenges`'s own prior
+  crossing: measured live, 9 of 10 subnet rules from this detector were
+  promoted straight to BLOCK instead of staging through CHALLENGE first.
+  This defeated the staging that exists specifically as a false-positive
+  control: issue #82 measured that blocking on this signal without
+  staging would have caught at least 35.6% real users, including genuine
+  Bingbot and Applebot, on the deployment it was measured against. A
+  subnet's two-stage promotion now recognises only a CHALLENGE rule
+  `detect_unsolved_challenges` itself created; another detector reaching
+  the same conclusion about a subnet no longer accelerates this
+  detector's own promotion to BLOCK.
+
+  **Migration note**: this fix adds a new field, `BlockRule.detectors`
+  (migration `0006_blockrule_detector`), recording which detector(s)
+  created or refreshed an auto-generated rule. It is a set, not a single
+  value: several detectors can independently target the same rule (most
+  commonly a shared subnet pattern), and a rule created by one detector
+  and later touched by another carries both names, never overwriting one
+  with the other. This is what lets `detect_unsolved_challenges`
+  recognise its own prior CHALLENGE rule even after a different detector
+  has since refreshed the same row. Existing rows backfill to blank.
+  Practical effect: for a subnet whose CHALLENGE rule already existed
+  before you upgrade, `detect_unsolved_challenges`'s next run against
+  that subnet will not recognise its own prior rule (since the backfilled
+  value cannot say who created it) and will create or refresh a CHALLENGE
+  rule again rather than promoting to BLOCK. This costs at most one extra
+  CHALLENGE stage per pre-existing subnet rule, once, and is intentional:
+  it fails safe toward the less disruptive action, consistent with the
+  discipline this fix restores.
+
 ## [2.1.0] - 2026-08-29
 
 No breaking API changes and no migration in this release, unlike 2.0.0. If
