@@ -12,6 +12,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db import connection
 from django.utils import timezone
 
 from django_waf.enums import (
@@ -1846,6 +1847,17 @@ class TestDetectSubnetBurstBranches:
 
         assert created == []
 
+    @pytest.mark.skipif(
+        connection.vendor != "sqlite",
+        reason=(
+            "Needs a malformed value in RequestLog.ip_address, which only a permissive "
+            "backend allows. GenericIPAddressField is backed by PostgreSQL's inet type, "
+            "which rejects '999.999.999.999' at insert, so this precondition is "
+            "unreachable there and the _get_subnet_prefix ValueError guard it exercises "
+            "is correspondingly unreachable via this column. The guard is kept because "
+            "sqlite deployments can reach it; this test can only run where it is real."
+        ),
+    )
     def test_invalid_ip_in_logs_is_skipped(self, db):
         """RequestLog entries with invalid IP addresses are silently skipped."""
         import django_waf.conf as conf_mod
@@ -2676,6 +2688,14 @@ class TestBuildTelemetryPayload:
         subnet_cidrs = [s["cidr"] for s in payload["subnets"]]
         assert "192.0.2.0/24" in subnet_cidrs
 
+    @pytest.mark.skipif(
+        connection.vendor != "sqlite",
+        reason=(
+            "Needs a malformed value in RequestLog.ip_address; PostgreSQL's inet type "
+            "rejects it at insert. See the matching skip on "
+            "TestDetectSubnetBurstBranches.test_invalid_ip_in_logs_is_skipped."
+        ),
+    )
     def test_invalid_ip_in_logs_is_skipped(self, db):
         """RequestLog entries with invalid IPs are skipped during subnet aggregation."""
         from django_waf.services.threat_feed import build_telemetry_payload

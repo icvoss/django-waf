@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The test suite now runs against real PostgreSQL in CI** (#72). Every
+  one of the 1245 tests ran on sqlite in-memory, which is materially more
+  permissive than the PostgreSQL consumers deploy on: it does not
+  validate `GenericIPAddressField` values on write, and it differs on
+  constraint and transaction behaviour. Any `bulk_create` or
+  field-validation claim was therefore unverifiable against a real
+  deployment, and a regression test for that class of defect would pass
+  whether or not the defect was fixed.
+
+  A dedicated `test-postgres` CI leg now runs the full suite against
+  PostgreSQL 16. `tests/settings.py` selects the backend from
+  `DJANGO_WAF_TEST_DB`, defaulting to sqlite so a local run needs no
+  database server and nothing changes for existing contributors.
+
+  This immediately surfaced two tests that had passed on sqlite for their
+  whole life by inserting `999.999.999.999` into `RequestLog.ip_address`
+  to exercise a `ValueError` guard. PostgreSQL's `inet` type rejects that
+  at insert, so both the precondition and the guard it was proving are
+  unreachable there via that column. The guards are kept, since a sqlite
+  deployment can still reach them, and both tests are now skipped on any
+  backend that cannot construct their precondition rather than passing
+  against a state production cannot produce.
+
+
 - **Cloud-spray detection catches diffuse residential-proxy botnets**
   (#68, #69, BR-ANOM-002b). `detect_cloud_spray` grouped on two keys the
   attacker controls, which left the detector purpose-built for

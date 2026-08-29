@@ -1,5 +1,7 @@
 """Django settings for django-waf tests."""
 
+import os
+
 SECRET_KEY = "django-waf-test-secret-key"  # noqa: S105
 DEBUG = True
 ALLOWED_HOSTS = ["*"]
@@ -47,13 +49,39 @@ TEMPLATES = [
     },
 ]
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": ":memory:",
+# The suite runs on sqlite by default, which keeps a local run dependency-free,
+# but sqlite is materially more permissive than the PostgreSQL that consumers
+# actually deploy on. It does not validate GenericIPAddressField values on
+# bulk_create, and it differs on constraint and transaction behaviour, so a
+# regression test for a defect of that class can pass on sqlite whether or not
+# the defect is fixed (issue #72). Setting DJANGO_WAF_TEST_DB=postgres runs the
+# same suite against a real PostgreSQL server; CI does this on a dedicated leg.
+if os.environ.get("DJANGO_WAF_TEST_DB") == "postgres":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ.get("POSTGRES_DB", "django_waf_test"),
+            "USER": os.environ.get("POSTGRES_USER", "postgres"),
+            "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "postgres"),
+            "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
+            "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        }
+    }
 
+# Schema is built directly from the models rather than by running migrations,
+# which is faster but means the suite cannot see a model-vs-migration
+# divergence: that is exactly how issue #105 shipped a BlockRule.detectors
+# default that disagreed with migration 0006 and broke makemigrations --check
+# for every consumer. tests/test_migrations.py covers that gap explicitly by
+# running the autodetector, and it handles this setting deliberately; read it
+# before changing anything here.
 MIGRATION_MODULES = {
     "django_waf": None,
     "contenttypes": None,

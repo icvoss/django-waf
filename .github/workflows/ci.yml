@@ -116,6 +116,62 @@ jobs:
         env:
           DJANGO_WAF_TEST_REDIS_URL: redis://localhost:6379/0
 
+  # Dedicated leg, not part of the matrix above. The matrix runs entirely on
+  # sqlite in-memory, which is materially more permissive than the PostgreSQL
+  # consumers actually deploy on: it does not validate GenericIPAddressField
+  # values on write, and it differs on constraint and transaction behaviour.
+  # That gap is not theoretical. Two tests in test_services.py passed on
+  # sqlite for their whole life by inserting '999.999.999.999' into
+  # RequestLog.ip_address to exercise a ValueError guard; PostgreSQL's inet
+  # type rejects that at insert, so the precondition, and the guard it was
+  # proving, are unreachable there via that column. Any bulk_create or
+  # field-validation claim was unverifiable against a real deployment before
+  # this leg existed (issue #72).
+  #
+  # One leg, not a matrix dimension: backend divergence is a property of the
+  # backend, not of the Python/Django pair, so multiplying it across the
+  # matrix would multiply CI time for no extra defect-catching power. Same
+  # reasoning as the Redis leg above.
+  test-postgres:
+    name: Test (real PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: django_waf_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev,celery]" "psycopg[binary]>=3.1"
+
+      - name: Test against real PostgreSQL
+        run: pytest tests/ -q --color=yes
+        env:
+          DJANGO_WAF_TEST_DB: postgres
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5432"
+          POSTGRES_DB: django_waf_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+
   lint:
     runs-on: ubuntu-latest
     steps:
