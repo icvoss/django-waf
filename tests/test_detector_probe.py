@@ -85,7 +85,7 @@ class TestRunDetectorProbeFalsifiability:
         query's own matching logic is what breaks), is pinning the
         fixture's size independently of the setting the query reads: this
         test wraps _build_ua_rotation_fixture with its explicit
-        distinct_ua_count=20 (the builder's own decoupling parameter, added
+        distinct_ua_count=25 (the builder's own decoupling parameter, added
         for exactly this purpose) while raising the threshold to 9999, so
         the fixture no longer tracks the query's own threshold. The real
         query then runs, real RequestLog rows exist, and it genuinely finds
@@ -93,6 +93,17 @@ class TestRunDetectorProbeFalsifiability:
         the production failure the probe exists to catch (2.0.0's subnet
         query silently stopped matching real rows): a real query, real
         rows, a real empty result.
+
+        25 is deliberately above the query's REAL, un-raised default
+        threshold of 20 (``distinct_ua_count__gt=20``), not merely "some
+        number below 9999": pinning at exactly 20 would fail the query's
+        strict ``__gt`` comparison even with the raise removed (20 is not
+        greater than 20), which would make this test pass whether or not
+        conf.DJANGO_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS was ever monkeypatched,
+        the same class of vacuity this test exists to rule out. 25 clears
+        the real default (25 > 20, so with the raise removed the query
+        WOULD match and the test would correctly fail), so the raise to
+        9999 is the only thing that makes the query miss.
 
         The other four detectors are untouched (their own _build_*_fixture
         helpers still run for real, at their own conf-derived defaults) and
@@ -107,7 +118,7 @@ class TestRunDetectorProbeFalsifiability:
         monkeypatch.setattr(
             detector_probe_mod,
             "_build_ua_rotation_fixture",
-            lambda *, now, conf: real_builder(now=now, conf=conf, distinct_ua_count=20),
+            lambda *, now, conf: real_builder(now=now, conf=conf, distinct_ua_count=25),
         )
 
         result = run_detector_probe(dry_run=True)
@@ -156,14 +167,26 @@ class TestRunDetectorProbeFalsifiability:
         (``count < min_count and count <= burst_threshold: continue``), an
         absolute floor (DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT)
         and a 3x-median ratio, either of which is sufficient to trigger a
-        match (issue #80). Pinning the fixture's request count to a fixed 5
+        match (issue #80). Pinning the fixture's request count to a fixed 31
         (via the builder's total_requests parameter) while raising the
         floor to 9999 defeats the first gate; the second gate (median
         ratio) is also checked here rather than assumed: with the other
         four detectors' fixtures present in the same window, the median
         across all subnets stays low enough (the pinned subnet's own count
-        of 5 does not exceed 3x that median either), so neither gate fires
+        of 31 does not exceed 3x that median either), so neither gate fires
         and the real query genuinely returns [].
+
+        31, not a smaller number such as 5, is deliberately chosen to be one
+        ABOVE the real, un-raised default floor of 30
+        (DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT's default):
+        with the floor at its real default, this fixture's count of 31
+        clears ``count < min_count`` (31 is not less than 30) and so WOULD
+        create a rule, and the test would correctly fail, if the raise to
+        9999 were ever removed or not actually reaching the query. A
+        fixture pinned below the real default (e.g. 5) fails the floor gate
+        whether or not the setting is raised at all, which would make this
+        assertion pass regardless of whether the monkeypatched conf value
+        is real, live conf read by the query.
         """
         from django_waf import conf
         from django_waf.services import detector_probe as detector_probe_mod
@@ -174,7 +197,7 @@ class TestRunDetectorProbeFalsifiability:
         monkeypatch.setattr(
             detector_probe_mod,
             "_build_subnet_burst_fixture",
-            lambda *, now, conf: real_builder(now=now, conf=conf, total_requests=5),
+            lambda *, now, conf: real_builder(now=now, conf=conf, total_requests=31),
         )
 
         result = run_detector_probe(dry_run=True)
@@ -193,12 +216,24 @@ class TestRunDetectorProbeFalsifiability:
         Layer under test: the full real path. run_all_detectors is NOT
         patched, and detect_unsolved_challenges is NOT patched.
 
-        Pins the fixture to a fixed 2 challenged rows (via the builder's
+        Pins the fixture to a fixed 5 challenged rows (via the builder's
         challenged_count parameter) while raising
         DJANGO_WAF_UNSOLVED_MIN_CHALLENGED to 9999, so the per-IP
         candidates = [row for row in challenged_by_ip if
         row["challenged_count"] >= min_challenged] gate genuinely excludes
         the fixture IP, and the real query returns [] for the per-IP path.
+
+        5, not a smaller number such as 2, is deliberately chosen to be
+        ABOVE the real, un-raised default of 3
+        (DJANGO_WAF_UNSOLVED_MIN_CHALLENGED's default): with the setting at
+        its real default, this fixture's count of 5 clears
+        ``challenged_count >= min_challenged`` (5 >= 3) and so WOULD create
+        a rule, and the test would correctly fail, if the raise to 9999
+        were ever removed or not actually reaching the query. A fixture
+        pinned below the real default (e.g. 2, which fails 2 >= 3 on its
+        own) fails the gate whether or not the setting is raised at all,
+        which would make this assertion pass regardless of whether the
+        monkeypatched conf value is real, live conf read by the query.
 
         This targets the per-IP path specifically, not the subnet path
         (which uses different settings, DJANGO_WAF_UNSOLVED_SUBNET_MIN_
@@ -218,7 +253,7 @@ class TestRunDetectorProbeFalsifiability:
         monkeypatch.setattr(
             detector_probe_mod,
             "_build_unsolved_challenge_fixture",
-            lambda *, now, conf: real_builder(now=now, conf=conf, challenged_count=2),
+            lambda *, now, conf: real_builder(now=now, conf=conf, challenged_count=5),
         )
 
         result = run_detector_probe(dry_run=True)
@@ -240,11 +275,25 @@ class TestRunDetectorProbeFalsifiability:
         DJANGO_WAF_CLOUD_SPRAY_MIN_IPS gates the detector twice: the
         UA-level distinct-IP aggregation (``.filter(distinct_ips__gte=
         min_ips)``) and the subsequent per-IP recheck (``len(suspicious_ips)
-        < min_ips: continue``). Pinning the fixture to a fixed 5 distinct
+        < min_ips: continue``). Pinning the fixture to a fixed 21 distinct
         IPs (via the builder's distinct_ip_count parameter) while raising
         the setting to 9999 defeats both gates in one move, since both read
         the same setting: the UA never even reaches the results returned by
         the first query, so the real query genuinely returns [].
+
+        21, not a smaller number such as 5, is deliberately chosen to be
+        ABOVE the real, un-raised default of 20
+        (DJANGO_WAF_CLOUD_SPRAY_MIN_IPS's default): with the setting at its
+        real default, this fixture's 21 distinct IPs clears
+        ``distinct_ips__gte=min_ips`` (21 >= 20) and so WOULD create a rule,
+        and the test would correctly fail, if the raise to 9999 were ever
+        removed or not actually reaching the query. A fixture pinned below
+        the real default (e.g. 5, which fails 5 >= 20 on its own) fails the
+        gate whether or not the setting is raised at all, which would make
+        this assertion pass regardless of whether the monkeypatched conf
+        value is real, live conf read by the query. All 21 IPs still share
+        one /24 (the fixture's own contiguous range), so the subsequent
+        per-subnet ``count < 2: continue`` gate remains trivially cleared.
         """
         from django_waf import conf
         from django_waf.services import detector_probe as detector_probe_mod
@@ -255,7 +304,7 @@ class TestRunDetectorProbeFalsifiability:
         monkeypatch.setattr(
             detector_probe_mod,
             "_build_cloud_spray_fixture",
-            lambda *, now, conf: real_builder(now=now, conf=conf, distinct_ip_count=5),
+            lambda *, now, conf: real_builder(now=now, conf=conf, distinct_ip_count=21),
         )
 
         result = run_detector_probe(dry_run=True)

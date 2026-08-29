@@ -278,9 +278,7 @@ def _build_subnet_burst_fixture(*, now, conf, total_requests: int | None = None)
     )
 
 
-def _build_challenge_farm_fixture(
-    *, now, conf, challenge_failures: int = 11, challenge_passes: int = 0
-) -> None:
+def _build_challenge_farm_fixture(*, now, conf, challenge_failures: int = 11, challenge_passes: int = 0) -> None:
     """BR-ANOM-003: a single IP with more than 10 challenge failures and
     fewer than 2 passes within a 24-hour window (detect_challenge_farms'
     default window_hours=24). Sourced from IPReputation, not RequestLog.
