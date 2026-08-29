@@ -118,6 +118,30 @@ be made, since neither of those is the misconfiguration this check exists
 to catch (see issue #67, where ``django_waf.E004`` wrongly fired under
 ``DJANGO_WAF_ENABLED = False`` with no Redis available; this check guards
 against repeating that).
+
+The middleware-presence check (``django_waf.E006``) errors when
+``DJANGO_WAF_ENABLED = True`` but ``WafMiddleware`` (or a subclass of it,
+matched by class name -- see the function docstring) is absent from
+``MIDDLEWARE`` entirely (#101). ``check_middleware_ordering``
+(``django_waf.W004``) only ever inspects ordering: it returns ``[]``
+unconditionally the moment ``WafMiddleware`` is not found in
+``MIDDLEWARE``, on the reasoning that there is no ordering to warn about.
+That silence was never a deliberate finding of "nothing wrong here"; it was
+simply the absence case no check was written for. A brickworkui.com
+production deployment had ``django_waf`` installed, ``DJANGO_WAF_ENABLED =
+True``, and no ``WafMiddleware`` anywhere in ``MIDDLEWARE`` for its entire
+deployed life, and ``manage.py check`` passed throughout: the WAF inspected
+no traffic at all while reporting a clean bill of health. This is an
+Error, not a Warning, for the same reason ``django_waf.E004`` is: a
+security control that reports healthy while blocking nothing is worse than
+one that refuses to start, and an operator who believes the WAF is live
+when it has never evaluated a single request is worse off than one told
+plainly at boot that it is not wired up. Gated on ``DJANGO_WAF_ENABLED``
+being ``True``: a disabled WAF is not expected to be in ``MIDDLEWARE`` at
+all (BR-EVAL-002 already makes a present-but-enabled middleware a total
+pass-through), so the absence of a middleware nobody asked to run is not a
+misconfiguration, matching the gating rationale #95 established for every
+other check in this module.
 """
 
 from __future__ import annotations
@@ -338,6 +362,80 @@ def check_middleware_ordering(app_configs, **kwargs):
         ]
 
     return []
+
+
+@register()
+def check_middleware_present(app_configs, **kwargs):
+    """Error (``django_waf.E006``) when the WAF is enabled but
+    ``WafMiddleware`` is absent from ``MIDDLEWARE`` entirely (#101).
+
+    ``check_middleware_ordering`` (``django_waf.W004``) only ever warns
+    about *where* ``WafMiddleware`` sits relative to
+    ``AuthenticationMiddleware``; it returns ``[]`` the instant the
+    middleware is not found at all, because there is no ordering left to
+    judge. Nothing else registered in this module inspects ``MIDDLEWARE``
+    for the WAF's own presence, so a project that installs the app,
+    flips ``DJANGO_WAF_ENABLED = True``, and simply forgets the
+    ``MIDDLEWARE`` line gets a silent, fully inert WAF and a green
+    ``manage.py check`` -- exactly what happened on brickworkui.com for
+    its entire deployed life. A misordered WAF still inspects every
+    request; an absent one inspects none, which is the more serious
+    failure and the one this module had no check for.
+
+    Matching is by class name (the last dotted component ends with
+    ``"WafMiddleware"``), not exact dotted-path equality to
+    ``django_waf.middleware.WafMiddleware``. ``WafMiddleware`` is a plain
+    ``__init__``/``__call__`` class with no metaclass or registration
+    step, so subclassing it to add project-specific behaviour around
+    ``get_response`` is an ordinary, unremarkable way to use it, and such
+    a subclass is exactly as live as the base class: it still evaluates
+    every request. A subclass conventionally keeps ``WafMiddleware`` as a
+    suffix of its own name (``CustomWafMiddleware``, ``TenantWafMiddleware``)
+    rather than the exact name, so an equality match on the class name
+    would repeat the same false positive an exact dotted-path match would,
+    only one layer further out; a suffix match tolerates the rename a
+    subclass almost always makes. Matching by class name is cheap to state
+    and does not attempt to verify the subclass actually calls into
+    ``WafMiddleware`` behaviour (an ``isinstance`` check would need the
+    class imported and instantiated, which a system check must not do); a
+    project naming an unrelated class to end in ``WafMiddleware`` on
+    purpose is choosing a confusing name, not a case this check is obliged
+    to protect against.
+
+    Gated on ``DJANGO_WAF_ENABLED = True`` (#95's own precedent, and #95's
+    acceptance criterion for this exact case): when the WAF is switched
+    off, ``MIDDLEWARE`` is not expected to carry it at all, so absence is
+    not a misconfiguration to flag, only the enabled-but-inert combination
+    is.
+    """
+    from django.conf import settings
+
+    from django_waf import conf
+
+    # Cheapest guard first, matching every other check in this module: a
+    # disabled WAF has nothing to be inert about, so there is nothing here
+    # for #101 to catch.
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
+
+    middleware = list(getattr(settings, "MIDDLEWARE", []))
+    if any(entry.rsplit(".", 1)[-1].endswith("WafMiddleware") for entry in middleware):
+        return []
+
+    return [
+        Error(
+            "DJANGO_WAF_ENABLED is True but django_waf.middleware.WafMiddleware "
+            "(or a subclass of it) is not present in MIDDLEWARE -- the WAF is "
+            "installed and switched on but evaluates no traffic at all.",
+            hint=(
+                "Add 'django_waf.middleware.WafMiddleware' to MIDDLEWARE (see "
+                "the README for recommended placement), or set "
+                "DJANGO_WAF_ENABLED = False if this project is not meant to "
+                "run the WAF yet."
+            ),
+            id="django_waf.E006",
+        )
+    ]
 
 
 @register()

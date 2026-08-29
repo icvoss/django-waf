@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `django_waf.E006`: a new system check that errors when
+  `DJANGO_WAF_ENABLED = True` but `WafMiddleware` (or a subclass of it,
+  matched by class name) is absent from `MIDDLEWARE` entirely (#101).
+  `django_waf.W004` only ever warns about ordering once `WafMiddleware`
+  is found in `MIDDLEWARE`; nothing previously checked for its outright
+  absence. A brickworkui.com production deployment had `django_waf`
+  installed and `DJANGO_WAF_ENABLED = True` with no `WafMiddleware` in
+  `MIDDLEWARE` for its entire deployed life, and `manage.py check` passed
+  throughout: the WAF inspected no traffic at all while reporting a clean
+  bill of health. This is an Error, matching `django_waf.E004`'s
+  rationale: a security control that reports healthy while blocking
+  nothing is worse than one that refuses to start.
+
 ### Fixed
 
 - `django_waf.E003` (the site-password gate, BR-SP-002), `django_waf.E001`,
