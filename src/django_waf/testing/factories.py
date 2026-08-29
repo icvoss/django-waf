@@ -133,7 +133,18 @@ class ChallengeTokenFactory(factory.django.DjangoModelFactory):
     nonce = ""
     status = ChallengeStatus.PENDING
     expires_at = factory.LazyFunction(lambda: timezone.now() + timezone.timedelta(hours=24))
-    solved_at = None
+    # challenge_service.verify_challenge_solution() unconditionally sets
+    # solved_at on the solve path (BR-CHAL, see challenge_service.py), so a
+    # production-shaped SOLVED token always carries a timestamp. EXPIRED and
+    # FAILED never touch solved_at (update_fields=["status"] only), so None
+    # stays correct for every other status. A caller who passes solved_at
+    # explicitly, including an explicit None, still wins: that is a normal
+    # keyword override and takes precedence over this class-level default.
+    solved_at = factory.Maybe(
+        factory.LazyAttribute(lambda o: o.status == ChallengeStatus.SOLVED),
+        yes_declaration=factory.LazyFunction(timezone.now),
+        no_declaration=None,
+    )
 
     class Meta:
         model = "django_waf.ChallengeToken"
