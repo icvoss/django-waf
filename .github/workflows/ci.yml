@@ -106,10 +106,27 @@ jobs:
         with:
           python-version: "3.13"
 
+      # Same trap as the matrix legs (#98): django-celery-beat caps at
+      # Django<6.1, so installing the celery extra after Django 6.1 silently
+      # downgrades it to 6.0.x at exit 0. Verified on a green main run of
+      # this very job, which logged "Successfully installed Django-6.1"
+      # followed by "Successfully installed Django-6.0.8". Only beat carries
+      # the cap; celery itself installs cleanly on 6.1, and tasks.py imports
+      # shared_task at module scope, so celery must stay.
       - name: Install dependencies
         run: |
           pip install "Django~=6.1.0"
-          pip install -e ".[dev,celery]"
+          pip install -e ".[dev]" "celery>=5.3"
+
+      - name: Assert the installed Django is the version this leg claims
+        run: |
+          got="$(python -c 'import django; print(".".join(map(str, django.VERSION[:2])))')"
+          echo "requested Django 6.1, resolved ${got}"
+          if [ "${got}" != "6.1" ]; then
+            echo "::error::Django 6.1 was requested but ${got} is installed."
+            echo "::error::A dependency has silently downgraded Django (see issue #98)."
+            exit 1
+          fi
 
       - name: Test against real Redis 6.0
         run: pytest tests/ -v --tb=short --color=yes --ds=tests.settings_redis -m redis_integration
