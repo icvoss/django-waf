@@ -737,3 +737,35 @@ DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED: int = getattr(settings, "DJANGO_WAF_U
 # detector catches a materially smaller, still-clearly-distributed pool
 # rather than only the extreme case already seen.
 DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS: int = getattr(settings, "DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS", 10)
+
+# ---------------------------------------------------------------------------
+# Verify-endpoint rate limit (issue #81)
+# ---------------------------------------------------------------------------
+# POST /waf/verify/ accepts proof-of-work solutions with no rate limit of
+# its own. Each POST costs a signature check and Redis work, so unbounded
+# it is a cheap way to consume server resources; hardening, not a response
+# to observed abuse (production data showed zero failed challenges over 7
+# days at the time this was added).
+#
+# DJANGO_WAF_RATE_LIMIT_PATHS cannot cover this path in the WAF's own
+# recommended deployment shape: the challenge and verify paths are
+# typically listed in DJANGO_WAF_EXEMPT_PATHS (a challenged user must
+# always be able to reach them to clear themselves), and
+# WafMiddleware.__call__ returns on the exempt-path match before rule
+# evaluation, where check_rate_limit runs, is ever reached. So VerifyView
+# calls django_waf.services.rate_limiter.check_verify_rate_limit directly,
+# using its own dedicated Redis key, independent of the general per-path
+# and global IP windows.
+#
+# The default sits well above the 2 to 3 round trips a real client needs
+# (GET the challenge, POST the solution, follow the redirect) and above
+# retry traffic from a NAT gateway or corporate proxy legitimately serving
+# many simultaneous solvers behind one IP (#82 measured that a coarse
+# per-IP signal there would have caught over a third of real users on a
+# production deployment). 20 solves per 5 minutes covers a genuine burst
+# of shared-egress traffic while still bounding a farm's unbounded solve
+# rate. A breach degrades to a 429 with an accurate Retry-After (matching
+# the existing throttle response shape) rather than a block, so a false
+# positive is always recoverable.
+DJANGO_WAF_VERIFY_RATE_LIMIT_MAX: int = getattr(settings, "DJANGO_WAF_VERIFY_RATE_LIMIT_MAX", 20)
+DJANGO_WAF_VERIFY_RATE_LIMIT_WINDOW_SECONDS: int = getattr(settings, "DJANGO_WAF_VERIFY_RATE_LIMIT_WINDOW_SECONDS", 300)

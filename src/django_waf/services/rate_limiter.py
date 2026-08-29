@@ -121,6 +121,64 @@ def _check_path_rate_limit(
     return None
 
 
+def check_verify_rate_limit(ip_address: str, redis_client) -> RateLimitResult:
+    """Check the dedicated solve-rate limit for POST /waf/verify/ (#81).
+
+    Deliberately independent of ``DJANGO_WAF_RATE_LIMIT_PATHS`` and
+    ``check_rate_limit``'s path-prefix matching. That machinery is inert
+    for the verify path in the deployment shape the WAF itself
+    recommends: the challenge and verify paths are typically listed in
+    ``DJANGO_WAF_EXEMPT_PATHS`` so a challenged user can always clear
+    themselves, and ``WafMiddleware.__call__`` returns on the exempt-path
+    match, checked before rule evaluation (see ``middleware.py``, where
+    ``check_rate_limit`` runs), before ``evaluate_request`` is ever
+    called. A naive entry in ``DJANGO_WAF_RATE_LIMIT_PATHS`` for the
+    verify path would never be evaluated. ``VerifyView.post`` therefore
+    calls this function directly, after the middleware has already let
+    the request through.
+
+    Uses the same sliding-window sorted-set algorithm as
+    ``_check_path_rate_limit``, keyed independently
+    (``waf:rate:verify:{ip}``) so it never shares state with, or is
+    affected by, the general per-path or global IP rate limits.
+
+    Args:
+        ip_address: Client IP address string.
+        redis_client: Configured Redis client instance.
+
+    Returns:
+        A ``RateLimitResult`` with ``window="verify"`` if
+        ``DJANGO_WAF_VERIFY_RATE_LIMIT_MAX`` was exceeded within
+        ``DJANGO_WAF_VERIFY_RATE_LIMIT_WINDOW_SECONDS``, else
+        ``exceeded=False``.
+    """
+    from django_waf import conf  # lazy, avoids circular import at module load
+
+    max_requests = conf.DJANGO_WAF_VERIFY_RATE_LIMIT_MAX
+    window_seconds = conf.DJANGO_WAF_VERIFY_RATE_LIMIT_WINDOW_SECONDS
+
+    now = time.time()
+    key = f"waf:rate:verify:{ip_address}"
+    cutoff = now - window_seconds
+
+    pipe = redis_client.pipeline()
+    pipe.zadd(key, {str(now): now})
+    pipe.zremrangebyscore(key, 0, cutoff)
+    pipe.zcard(key)
+    pipe.zrange(key, 0, 0, withscores=True)
+    pipe.expire(key, window_seconds + 10)
+    results = pipe.execute()
+
+    count = results[2]
+    oldest_in_window = results[3]
+
+    if count > max_requests:
+        retry_after = _retry_after_from_oldest(oldest_in_window, window_seconds, now)
+        return RateLimitResult(exceeded=True, window="verify", retry_after=retry_after)
+
+    return RateLimitResult(exceeded=False, window=None, retry_after=None)
+
+
 def check_rate_limit(
     ip_address: str,
     redis_client,

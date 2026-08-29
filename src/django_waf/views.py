@@ -226,6 +226,10 @@ class VerifyView(NoIndexResponseMixin, View):
     Access: AllowAny.
     Every response path (redirect on success, JSON 400 on failure) carries
     X-Robots-Tag: noindex, nofollow, noarchive (NoIndexResponseMixin).
+    Rate-limited independently of DJANGO_WAF_RATE_LIMIT_PATHS (#81): see
+    django_waf.services.rate_limiter.check_verify_rate_limit. A breach
+    returns 429 with Retry-After rather than blocking, fail-open on Redis
+    errors (BR-EVAL-007).
     """
 
     def post(self, request: HttpRequest) -> HttpResponse:
@@ -265,6 +269,29 @@ class VerifyView(NoIndexResponseMixin, View):
             # See ChallengeView.get: a direct hit on /waf/verify/ with Redis
             # unavailable is a misconfiguration, not the normal path (#44).
             return JsonResponse({"error": _("This site is temporarily unavailable.")}, status=503)
+
+        # Dedicated per-IP solve-rate limit (#81). Runs ahead of
+        # verify_challenge_solution so a breach skips the signature check
+        # and PoW verification work entirely, not just the redirect.
+        # DJANGO_WAF_RATE_LIMIT_PATHS cannot cover this endpoint: see
+        # django_waf.services.rate_limiter.check_verify_rate_limit for the
+        # ordering evidence. Fails open on any Redis error, consistent with
+        # BR-EVAL-007: a rate-limiter outage must never block a legitimate
+        # user from clearing a challenge, only an unbounded solve rate does.
+        try:
+            from django_waf.services.rate_limiter import check_verify_rate_limit
+
+            rate_result = check_verify_rate_limit(ip, redis_client)
+        except Exception:
+            logger.warning("django-waf: verify rate-limit check failed for %s, failing open", ip)
+        else:
+            if rate_result.exceeded:
+                throttle_response = JsonResponse(
+                    {"error": _("Too many verification attempts. Please retry later.")}, status=429
+                )
+                retry_after = rate_result.retry_after
+                throttle_response["Retry-After"] = str(retry_after) if retry_after is not None else "60"
+                return throttle_response
 
         try:
             verify_challenge_solution(token, nonce, ip, redis_client)
