@@ -514,6 +514,10 @@ _CELERY_BEAT_INTERVAL_ENTRIES: dict = {
         "task": "django_waf.tasks.update_ip_reputation",
         "schedule": 21600.0,  # every 6 hours
     },
+    "django-waf-probe-detectors": {
+        "task": "django_waf.tasks.probe_detectors",
+        "schedule": 3600.0,  # every hour (BR-ANOM-012)
+    },
 }
 
 if crontab is not None:

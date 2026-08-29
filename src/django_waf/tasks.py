@@ -16,6 +16,7 @@ Scheduled tasks (Celery Beat):
   - sync_threat_feed        — daily 04:30
   - report_threat_telemetry — daily 05:00
   - update_geoip_database   — weekly (Sunday 03:00 UTC recommended)
+  - probe_detectors: hourly (BR-ANOM-012)
 """
 
 from __future__ import annotations
@@ -573,6 +574,74 @@ def update_geoip_database() -> dict:
     except GeoIPError as exc:
         logger.warning("django-waf: update_geoip_database skipped — %s", exc)
         return {"skipped": True, "error": str(exc)}
+
+
+@shared_task
+def probe_detectors() -> dict:
+    """Run the detector liveness probe (BR-ANOM-012) and report the result.
+
+    Delegates to ``services.detector_probe.run_detector_probe``, which
+    builds synthetic fixture traffic guaranteed to cross every anomaly
+    detector's own configured threshold and reports which detectors did,
+    and did not, produce a rule against it. Real recent traffic cannot be
+    used for this: ``run_all_detectors`` returning zero is the normal,
+    healthy, overwhelmingly common result on a quiet site, indistinguishable
+    from a dead detector, which is exactly how 2.0.0's subnet-detection
+    regression went unnoticed for 13 hours.
+
+    Freshness of this task's OWN execution is the consumer's job, not this
+    package's: a dead Celery Beat entry, a paused worker, or a broken
+    schedule produces no log line at all, which looks identical to "the
+    task has simply never needed to run" from inside this function. This
+    package stays stateless (CHK-OPEN-005) and does not persist a last-run
+    timestamp, so a consumer wiring alerting to this probe MUST alert on
+    the ABSENCE of the structured log line below within the expected
+    cadence, not only on its WARNING content: a probe that cannot itself
+    detect that it stopped running is not a safety net for that failure
+    mode, only for a detector that runs and returns nothing.
+
+    Runs with ``dry_run=True`` (the default from ``run_detector_probe``):
+    no ``BlockRule`` is ever created, activated, or refreshed, and the
+    ``anomaly_detected`` signal is never emitted from a scheduled run. Use
+    the ``django_waf_probe_detectors --exercise-writes`` management command
+    for the opt-in real-write mode; this task deliberately does not expose
+    it, since a signal wired to a paging system firing on a schedule from
+    synthetic data would be a self-inflicted incident.
+
+    This task never raises: unlike most tasks in this module, its entire
+    purpose is unattended liveness reporting, so a task that itself crashes
+    defeats the reason it exists (a crashed Celery task is a silent no-op
+    to Beat in the same way a missing log line is, from an operator's
+    perspective, unless task-failure alerting is separately wired). Any
+    exception is logged at ERROR with the traceback and reported as a
+    failure result rather than propagated.
+
+    Returns:
+        On success, the dict ``run_detector_probe`` returns (BR-ANOM-012):
+        one key per detector name with ``alive``/``rules_reported``, plus
+        ``all_alive``, ``silent_detectors``, and ``dry_run``. On failure,
+        ``{"all_alive": False, "silent_detectors": [...], "error": ...}``,
+        with every named detector reported as not alive by omission: a
+        probe that could not run proves liveness for nothing.
+
+    Scheduled: hourly.
+    """
+    from django_waf.services.anomaly_detector import DETECTOR_NAMES
+    from django_waf.services.detector_probe import run_detector_probe
+
+    try:
+        # run_detector_probe itself logs the all-alive INFO line or the
+        # silent-detectors WARNING line; this task does not re-log the same
+        # outcome, mirroring detect_anomalies's thin delegation to
+        # run_all_detectors (which likewise does its own logging).
+        return run_detector_probe(dry_run=True)
+    except Exception:
+        logger.exception("django-waf: probe_detectors failed to run")
+        return {
+            "all_alive": False,
+            "silent_detectors": sorted(DETECTOR_NAMES),
+            "error": "probe_detectors raised; see traceback in the preceding log record",
+        }
 
 
 @shared_task(bind=True, ignore_result=True)

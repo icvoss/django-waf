@@ -5,6 +5,33 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Detector liveness probe** (BR-ANOM-012). Three defects this cycle (a
+  `getdel` call reporting success 40,936 times while doing nothing, the
+  2.0.0 subnet detector producing 0 rules for 13 hours, and #97's staging
+  skip) all passed tests, review and release. A scheduled probe asserting
+  the detectors still produce rules would have caught each within the
+  hour. `services.detector_probe.run_detector_probe()` builds synthetic
+  fixture traffic, shaped to provably cross every anomaly detector's own
+  configured threshold using RFC 5737 TEST-NET IP ranges, and reports
+  which detectors did (and did not) produce a rule against it. Real
+  recent traffic cannot be used for this: `run_all_detectors` returning
+  zero is the normal, healthy result on a quiet site, indistinguishable
+  from a dead detector. Everything runs inside a transaction that is
+  unconditionally rolled back, so no synthetic row is ever committed. New
+  `probe_detectors` Celery task (hourly) and `django_waf_probe_detectors`
+  management command (`--exercise-writes` for the opt-in real-write mode;
+  exits non-zero on a silent detector, for cron wrappers and k8s liveness
+  probes). No environment guard gates this probe, on the same principle
+  as #97's fix: a check silently inert in one environment is the next
+  regression, not a safety net for it. A dead Celery Beat entry for this
+  task produces no log line at all; consumers must alert on the absence
+  of the hourly log line, not only on its content, since this package
+  stays stateless and does not persist a last-run timestamp.
+
 ## [2.1.0] - 2026-08-29
 
 No breaking API changes and no migration in this release, unlike 2.0.0. If
