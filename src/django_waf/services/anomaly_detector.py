@@ -255,58 +255,96 @@ def detect_challenge_farms(window_hours: int = 24, dry_run: bool = False) -> lis
 
 def detect_unsolved_challenges(
     window_minutes: int = 60,
-    min_challenged: int = 3,
-    referer_ratio: float = 0.8,
+    min_challenged: int | None = None,
+    referer_ratio: float | None = None,
     dry_run: bool = False,
 ) -> list:
-    """Detect IPs that receive challenges but never solve them.
+    """Detect IPs, and subnets, that receive challenges but never solve them.
 
-    Composite detector combining three signals:
-    1. IP has >= min_challenged challenged verdicts in the window
-    2. IP has zero solved ChallengeTokens (ever)
+    Per issue #84, traced against a live deployment: the signal is
+    ABANDONMENT (a challenge issued and never attempted), not failure, and
+    it concentrates by subnet far more sharply than by IP. An attacker
+    rotating ~120 addresses per /24 leaves almost no individual IP reaching
+    ``min_challenged`` within the window, while the /24 in aggregate is
+    unmistakable (thousands of abandoned challenges, 100+ distinct IPs).
+    This detector therefore runs two parallel aggregations:
+
+    Per-IP path (unchanged in shape from before #84):
+    1. IP has >= min_challenged challenged verdicts in the window.
+    2. IP has no ChallengeToken solved within the configured recency
+       window (DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS). Before
+       #84 this was unbounded, granting permanent immunity from a single
+       solve at any point in history.
     3. Majority (>= referer_ratio) of the IP's requests have empty referer
        on paths other than "/"
 
-    The three-way conjunction gives high-confidence bot classification with
-    near-zero false-positive risk: real users always solve JS challenges,
-    and real browsing always produces referer headers from search engines
-    or internal navigation.
+    Creates an IP-exact BLOCK rule directly (unchanged: an IP that clears
+    all three per-IP signals is already high-confidence).
+
+    Subnet path (new, #84):
+    1. The /24 (IPv4) or /48 (IPv6) subnet's total challenged-verdict count
+       across the window meets DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED,
+       AND the number of DISTINCT contributing IPs meets
+       DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS. Both are required so one noisy
+       host cannot escalate its neighbours: a single IP alone can never
+       cross the distinct-IP floor no matter its own challenge count.
+    2. The subnet is exempted if any of its contributing IPs solved a
+       challenge within the recency window (same bound as the per-IP path,
+       for the same reason: an occasional solve from a rotating pool must
+       not grant the whole /24 permanent immunity).
+
+    The empty-referer requirement is deliberately NOT applied to the subnet
+    path: it is evaluated per-IP against a specific IP's non-root request
+    mix, and a subnet aggregate has no single "the subnet's referer" to
+    test. Composing distinct-IP weighting with challenge-before-block
+    staging (see ``_get_or_create_auto_rule``'s two-stage promotion below)
+    is what keeps the subnet path false-positive-safe without it, per
+    issue #84's stated discipline.
+
+    A subnet clearing its threshold is never blocked directly: the first
+    crossing creates (or refreshes) a CHALLENGE rule. Only a REPEAT
+    crossing, detected by an already-active auto CHALLENGE rule for the
+    same subnet, promotes it to BLOCK. This matters more here than for the
+    per-IP path because abandonment has a legitimate cause: a real user who
+    closes the tab or whose JavaScript is blocked abandons a challenge
+    exactly as a bot does, so a single crossing is not enough evidence to
+    block outright. Issue #82 measured that a coarse signal here would have
+    caught at least 35.6% real users on the same deployment.
 
     Args:
         window_minutes: Time window to analyse (default 60).
-        min_challenged: Minimum challenged verdicts to consider (default 3).
+        min_challenged: Minimum challenged verdicts for the per-IP path.
+                        Defaults to DJANGO_WAF_UNSOLVED_MIN_CHALLENGED.
         referer_ratio: Fraction of non-root requests with empty referer
-                       required to trigger (default 0.8).
+                       required to trigger the per-IP path. Defaults to
+                       DJANGO_WAF_UNSOLVED_REFERER_RATIO.
         dry_run: When True (#38), collects what would be created without
                  writing any BlockRule or emitting the anomaly_detected signal.
 
     Returns:
         List of BlockRule instances that were created (or, in dry-run, would
-        have been created).
+        have been created). May include both IP and CIDR rules.
     """
-    from django.db.models import Count, Q
+    from django.db.models import Count
 
     from django_waf import conf
-    from django_waf.enums import (
-        AnomalyType,
-        ChallengeStatus,
-        RequestLogSource,
-        RuleAction,
-        RuleType,
-        Verdict,
-    )
+    from django_waf.enums import ChallengeStatus, RequestLogSource, Verdict
     from django_waf.models import ChallengeToken, RequestLog
 
-    cutoff = timezone.now() - timedelta(minutes=window_minutes)
+    effective_min_challenged = min_challenged if min_challenged is not None else conf.DJANGO_WAF_UNSOLVED_MIN_CHALLENGED
+    effective_referer_ratio = referer_ratio if referer_ratio is not None else conf.DJANGO_WAF_UNSOLVED_REFERER_RATIO
 
-    # Step 1: IPs with >= min_challenged challenged verdicts in window.
+    cutoff = timezone.now() - timedelta(minutes=window_minutes)
+    solve_exemption_cutoff = timezone.now() - timedelta(hours=conf.DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS)
+
+    # All challenged verdicts in the window, per IP, with their counts.
     # Scoped to source=middleware (#32): a nginx_log row's verdict is
     # inferred from the access-log status code, not observed by
     # rule_engine.evaluate_request. The nginx access log records the same
     # request middleware already logged, so counting both would double the
     # apparent challenged_count for every IP and distort this detector's
-    # threshold check.
-    challenged_ips = (
+    # threshold checks.
+    challenged_by_ip = list(
         RequestLog.objects.filter(
             timestamp__gte=cutoff,
             verdict=Verdict.CHALLENGED,
@@ -314,30 +352,87 @@ def detect_unsolved_challenges(
         )
         .values("ip_address")
         .annotate(challenged_count=Count("id"))
-        .filter(challenged_count__gte=min_challenged)
     )
 
-    # Prefetch all IPs with solved challenges in one query (fixes N+1)
+    all_challenged_ips = [row["ip_address"] for row in challenged_by_ip]
+
+    # IPs with a SOLVED ChallengeToken within the recency window (#84).
+    # Before #84 this had no time bound at all, so a single solve at any
+    # point in an IP's history granted permanent immunity; traced live,
+    # that removed half the candidates in a 60-minute window.
     # order_by() clears ChallengeToken.Meta.ordering (-issued_at) before
     # distinct(): without it, Django appends issued_at to the SELECT, so
     # DISTINCT applies to (ip_address, issued_at) and this returns one row
     # per solved token rather than one row per IP (#59).
-    challenged_ip_list = [row["ip_address"] for row in challenged_ips]
     solved_ips = set(
         ChallengeToken.objects.filter(
-            ip_address__in=challenged_ip_list,
+            ip_address__in=all_challenged_ips,
             status=ChallengeStatus.SOLVED,
+            solved_at__gte=solve_exemption_cutoff,
         )
         .order_by()
         .values_list("ip_address", flat=True)
         .distinct()
     )
 
+    created_rules = []
+    expiry = timezone.now() + timedelta(hours=conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS)
+
+    created_rules.extend(
+        _detect_unsolved_challenges_per_ip(
+            challenged_by_ip=challenged_by_ip,
+            solved_ips=solved_ips,
+            cutoff=cutoff,
+            window_minutes=window_minutes,
+            min_challenged=effective_min_challenged,
+            referer_ratio=effective_referer_ratio,
+            expiry=expiry,
+            dry_run=dry_run,
+        )
+    )
+    created_rules.extend(
+        _detect_unsolved_challenges_by_subnet(
+            challenged_by_ip=challenged_by_ip,
+            solved_ips=solved_ips,
+            window_minutes=window_minutes,
+            expiry=expiry,
+            dry_run=dry_run,
+        )
+    )
+
+    return created_rules
+
+
+def _detect_unsolved_challenges_per_ip(
+    *,
+    challenged_by_ip: list,
+    solved_ips: set,
+    cutoff,
+    window_minutes: int,
+    min_challenged: int,
+    referer_ratio: float,
+    expiry,
+    dry_run: bool,
+) -> list:
+    """The per-IP half of detect_unsolved_challenges. See that function's
+    docstring for the three-signal contract this implements unchanged.
+    """
+    from django.db.models import Count, Q
+
+    from django_waf.enums import AnomalyType, RuleAction, RuleType
+    from django_waf.models import RequestLog
+
+    candidates = [row for row in challenged_by_ip if row["challenged_count"] >= min_challenged]
+    if not candidates:
+        return []
+
+    candidate_ips = [row["ip_address"] for row in candidates]
+
     # Prefetch referer stats for all candidate IPs in two queries
     non_root_counts = dict(
         RequestLog.objects.filter(
             timestamp__gte=cutoff,
-            ip_address__in=challenged_ip_list,
+            ip_address__in=candidate_ips,
         )
         .exclude(path="/")
         .values("ip_address")
@@ -347,7 +442,7 @@ def detect_unsolved_challenges(
     empty_referer_counts = dict(
         RequestLog.objects.filter(
             timestamp__gte=cutoff,
-            ip_address__in=challenged_ip_list,
+            ip_address__in=candidate_ips,
         )
         .exclude(path="/")
         .filter(Q(referer="") | Q(referer__isnull=True))
@@ -357,9 +452,8 @@ def detect_unsolved_challenges(
     )
 
     created_rules = []
-    expiry = timezone.now() + timedelta(hours=conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS)
 
-    for row in challenged_ips:
+    for row in candidates:
         ip = row["ip_address"]
 
         if ip in solved_ips:
@@ -411,6 +505,114 @@ def detect_unsolved_challenges(
                     ip,
                     row["challenged_count"],
                     empty_referer_ratio * 100,
+                )
+
+    return created_rules
+
+
+def _detect_unsolved_challenges_by_subnet(
+    *,
+    challenged_by_ip: list,
+    solved_ips: set,
+    window_minutes: int,
+    expiry,
+    dry_run: bool,
+) -> list:
+    """The subnet half of detect_unsolved_challenges (#84). See that
+    function's docstring for the two-signal, two-stage contract this
+    implements.
+    """
+    from django_waf import conf
+    from django_waf.enums import AnomalyType, RuleAction, RuleType
+    from django_waf.models import BlockRule, RuleSource
+
+    min_subnet_challenged = conf.DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED
+    min_subnet_ips = conf.DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS
+
+    # Aggregate every challenged IP (not only per-IP candidates: a subnet's
+    # abandonment can be real even when no single contributing IP reaches
+    # min_challenged, which is exactly the gap #84 measured) into subnets,
+    # tracking both the total challenged count and the set of distinct
+    # contributing IPs.
+    subnet_totals: dict[str, int] = {}
+    subnet_ips: dict[str, set] = {}
+    for row in challenged_by_ip:
+        ip = row["ip_address"]
+        try:
+            subnet = _get_subnet_prefix(ip)
+        except ValueError:
+            continue
+        subnet_totals[subnet] = subnet_totals.get(subnet, 0) + row["challenged_count"]
+        subnet_ips.setdefault(subnet, set()).add(ip)
+
+    created_rules = []
+
+    for subnet, total in subnet_totals.items():
+        distinct_ips = subnet_ips[subnet]
+        if total < min_subnet_challenged or len(distinct_ips) < min_subnet_ips:
+            continue
+
+        # Exempt a subnet if any of its contributing IPs solved a challenge
+        # within the recency window (same bound and rationale as the per-IP
+        # path): an occasional solve from a rotating pool must not grant
+        # the whole /24 permanent immunity.
+        if distinct_ips & solved_ips:
+            continue
+
+        details = {
+            "subnet_challenged_count": total,
+            "distinct_ips": len(distinct_ips),
+            "window_minutes": window_minutes,
+        }
+        confidence = _scaled_confidence(
+            observed=total,
+            threshold=min_subnet_challenged,
+            span=min_subnet_challenged * 2,
+        )
+
+        # Two-stage promotion (#84, issue #82's false-positive discipline):
+        # a subnet never goes straight to BLOCK on one crossing. Detect a
+        # repeat crossing as "this subnet already has an active auto
+        # CHALLENGE rule from this detector" and promote to BLOCK only
+        # then; a first crossing creates (or refreshes) the CHALLENGE rule.
+        # This existence check is a read, so it runs identically under
+        # dry_run: BR-ANOM-006 requires a dry run to report what a real run
+        # WOULD do, and only the write below is conditioned on dry_run.
+        already_challenged = BlockRule.objects.filter(
+            rule_type=RuleType.CIDR,
+            pattern=subnet,
+            source=RuleSource.AUTO,
+            action=RuleAction.CHALLENGE,
+            is_active=True,
+        ).exists()
+        stage_action = RuleAction.BLOCK if already_challenged else RuleAction.CHALLENGE
+
+        rule, created = _get_or_create_auto_rule(
+            name=f"Auto: unsolved challenges from {subnet} ({len(distinct_ips)} IPs)",
+            rule_type=RuleType.CIDR,
+            match_type="cidr",
+            pattern=subnet,
+            action=stage_action,
+            expiry=expiry,
+            dry_run=dry_run,
+            detector_name="detect_unsolved_challenges",
+            confidence=confidence,
+            evidence=details,
+        )
+        if created:
+            created_rules.append(rule)
+            if not dry_run:
+                _emit_anomaly_signal(
+                    rule=rule,
+                    anomaly_type=AnomalyType.UNSOLVED_CHALLENGE,
+                    details=details,
+                )
+                logger.info(
+                    "django-waf: auto-created unsolved challenge %s rule for %s (challenged=%d, ips=%d)",
+                    stage_action,
+                    subnet,
+                    total,
+                    len(distinct_ips),
                 )
 
     return created_rules

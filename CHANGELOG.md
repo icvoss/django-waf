@@ -5,6 +5,52 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **`detect_unsolved_challenges` was starved of candidates by an attacker
+  spreading traffic across a subnet.** Traced against a live deployment
+  (issue #84): an attacker rotating roughly 120 addresses per /24 leaves
+  almost no individual IP reaching the challenge-count threshold within the
+  detection window, even though the subnet in aggregate abandoned
+  thousands of challenges from over 100 distinct IPs in a week. The
+  detector now runs a parallel subnet-grain aggregation alongside the
+  existing per-IP one: a /24 (or /48 for IPv6) whose total challenged-verdict
+  count and number of distinct contributing IPs both clear a configurable
+  threshold is treated as a candidate even when no individual IP within it
+  ever reaches the per-IP threshold. The distinct-IP requirement is
+  independent of the total count, so one noisy host can never escalate its
+  neighbours by itself. A first subnet-level crossing creates a CHALLENGE
+  rule; only a repeat crossing of the same subnet, detected against an
+  already-active auto-generated CHALLENGE rule, promotes it to BLOCK.
+  Abandonment has legitimate causes (a real user closing the tab or
+  blocking JavaScript looks identical to a bot at this signal), so a
+  subnet is never blocked on a single crossing.
+
+- **The solved-challenge exemption had no time bound.** `solved_ips`
+  exempted an IP from this detector permanently after a single solved
+  challenge at any point in its history. Traced live, this removed half
+  of the candidates that otherwise met every other signal. The exemption
+  is now scoped to `DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS`
+  (default 24 hours); the same bound applies to the new subnet path, so an
+  occasional solve from a rotating pool of addresses cannot grant a whole
+  subnet permanent immunity either.
+
+### Added
+
+- `DJANGO_WAF_UNSOLVED_MIN_CHALLENGED`, `DJANGO_WAF_UNSOLVED_REFERER_RATIO`,
+  `DJANGO_WAF_UNSOLVED_SOLVE_EXEMPTION_WINDOW_HOURS`,
+  `DJANGO_WAF_UNSOLVED_SUBNET_MIN_CHALLENGED`, and
+  `DJANGO_WAF_UNSOLVED_SUBNET_MIN_IPS` settings for tuning
+  `detect_unsolved_challenges`, matching every other detector threshold in
+  the package. The two existing thresholds were previously only reachable
+  as function-parameter defaults; an operator can now tune all five
+  without calling the detector directly. `min_challenged` and
+  `referer_ratio` remain accepted keyword arguments on
+  `detect_unsolved_challenges` and default to the new settings, so
+  existing callers and the dry-run management command are unaffected.
+
 ## [2.0.0] - 2026-08-28
 
 ### Security
