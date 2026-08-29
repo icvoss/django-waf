@@ -112,8 +112,6 @@ class TestRunDetectorProbeFalsifiability:
         from django_waf import conf
         from django_waf.services import detector_probe as detector_probe_mod
 
-        monkeypatch.setattr(conf, "DJANGO_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS", 9999)
-
         real_builder = detector_probe_mod._build_ua_rotation_fixture
         monkeypatch.setattr(
             detector_probe_mod,
@@ -121,7 +119,8 @@ class TestRunDetectorProbeFalsifiability:
             lambda *, now, conf: real_builder(now=now, conf=conf, distinct_ua_count=25),
         )
 
-        result = run_detector_probe(dry_run=True)
+        with patch.object(conf, "DJANGO_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS", 9999):
+            result = run_detector_probe(dry_run=True)
 
         assert result["all_alive"] is False
         assert result["silent_detectors"] == ["detect_ua_rotation"]
@@ -191,8 +190,6 @@ class TestRunDetectorProbeFalsifiability:
         from django_waf import conf
         from django_waf.services import detector_probe as detector_probe_mod
 
-        monkeypatch.setattr(conf, "DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT", 9999)
-
         real_builder = detector_probe_mod._build_subnet_burst_fixture
         monkeypatch.setattr(
             detector_probe_mod,
@@ -200,7 +197,8 @@ class TestRunDetectorProbeFalsifiability:
             lambda *, now, conf: real_builder(now=now, conf=conf, total_requests=31),
         )
 
-        result = run_detector_probe(dry_run=True)
+        with patch.object(conf, "DJANGO_WAF_ANOMALY_THRESHOLD_SUBNET_BURST_MIN_COUNT", 9999):
+            result = run_detector_probe(dry_run=True)
 
         assert result["all_alive"] is False
         assert result["silent_detectors"] == ["detect_subnet_burst"]
@@ -247,8 +245,6 @@ class TestRunDetectorProbeFalsifiability:
         from django_waf import conf
         from django_waf.services import detector_probe as detector_probe_mod
 
-        monkeypatch.setattr(conf, "DJANGO_WAF_UNSOLVED_MIN_CHALLENGED", 9999)
-
         real_builder = detector_probe_mod._build_unsolved_challenge_fixture
         monkeypatch.setattr(
             detector_probe_mod,
@@ -256,7 +252,8 @@ class TestRunDetectorProbeFalsifiability:
             lambda *, now, conf: real_builder(now=now, conf=conf, challenged_count=5),
         )
 
-        result = run_detector_probe(dry_run=True)
+        with patch.object(conf, "DJANGO_WAF_UNSOLVED_MIN_CHALLENGED", 9999):
+            result = run_detector_probe(dry_run=True)
 
         assert result["all_alive"] is False
         assert result["silent_detectors"] == ["detect_unsolved_challenges"]
@@ -298,8 +295,6 @@ class TestRunDetectorProbeFalsifiability:
         from django_waf import conf
         from django_waf.services import detector_probe as detector_probe_mod
 
-        monkeypatch.setattr(conf, "DJANGO_WAF_CLOUD_SPRAY_MIN_IPS", 9999)
-
         real_builder = detector_probe_mod._build_cloud_spray_fixture
         monkeypatch.setattr(
             detector_probe_mod,
@@ -307,7 +302,8 @@ class TestRunDetectorProbeFalsifiability:
             lambda *, now, conf: real_builder(now=now, conf=conf, distinct_ip_count=21),
         )
 
-        result = run_detector_probe(dry_run=True)
+        with patch.object(conf, "DJANGO_WAF_CLOUD_SPRAY_MIN_IPS", 9999):
+            result = run_detector_probe(dry_run=True)
 
         assert result["all_alive"] is False
         assert result["silent_detectors"] == ["detect_cloud_spray"]
