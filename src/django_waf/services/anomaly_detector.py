@@ -769,7 +769,8 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
 
     Identifies UAs shared by many distinct IPs (>= DJANGO_WAF_CLOUD_SPRAY_MIN_IPS)
     where each IP makes only 1-3 requests with no referer. This pattern is
-    characteristic of cloud-hosted bot farms that evade per-IP rate limits.
+    characteristic of cloud-hosted bot farms and diffuse residential-proxy
+    botnets that evade per-IP rate limits.
 
     A referer that is a bare origin with no path (``BARE_ORIGIN_REFERER_RE``,
     e.g. "https://example.com") is treated the same as a missing referer:
@@ -777,10 +778,27 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
     after the host, so a spoofed static bare-origin referer is otherwise
     invisible to this detector (issue #24).
 
-    Flags subnets rather than individual IPs — cloud providers allocate
-    contiguous blocks, so a single CIDR catches the cluster efficiently.
-    Aggregation uses ``_get_subnet_prefix`` (the /24 network for IPv4, the
-    /48 network for IPv6), shared with ``detect_subnet_burst``.
+    Two independent rule-creation paths run per spray UA, because no single
+    grouping key catches both threat shapes (issue #68):
+
+    Subnet path (always on): flags subnets rather than individual IPs, since
+    cloud providers allocate contiguous blocks and a single CIDR catches
+    that cluster efficiently. Aggregation uses ``_get_subnet_prefix`` (the
+    /24 network for IPv4, the /48 network for IPv6), shared with
+    ``detect_subnet_burst``, and requires at least 2 suspicious IPs sharing
+    a subnet before flagging it. This path structurally cannot catch a
+    residential-proxy botnet that puts one IP per /24: issue #69's live
+    reproduction had 217 IPs spread over 216 distinct subnets, so 215 of
+    216 subnets never cleared this floor and zero rules were created.
+
+    UA path (opt-in via DJANGO_WAF_CLOUD_SPRAY_UA_RULE, default False):
+    flags the exact UA string itself once it alone clears
+    DJANGO_WAF_CLOUD_SPRAY_MIN_IPS distinct suspicious IPs, independent of
+    how those IPs are distributed across subnets. This is what catches the
+    diffuse-spray shape the subnet path misses. It is opt-in and staged at
+    CHALLENGE because a shared UA is a coarse signal: issue #82's
+    production measurement (1,544,473 rows) puts the false-positive floor
+    at >= 35.6% real users, including genuine Bingbot and Applebot.
 
     Args:
         window_minutes: Time window to analyse (default 30).
@@ -800,6 +818,8 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
     cutoff = timezone.now() - timedelta(minutes=window_minutes)
     min_ips = conf.DJANGO_WAF_CLOUD_SPRAY_MIN_IPS
     max_per_ip = conf.DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP
+    top_n = conf.DJANGO_WAF_CLOUD_SPRAY_TOP_N
+    ua_rule_enabled = conf.DJANGO_WAF_CLOUD_SPRAY_UA_RULE
 
     # Step 1: Find UAs used by many distinct IPs with no referer (or a
     # spoofed bare-origin referer, which is indistinguishable from missing).
@@ -812,7 +832,7 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
         .values("user_agent")
         .annotate(distinct_ips=Count("ip_address", distinct=True))
         .filter(distinct_ips__gte=min_ips)
-        .order_by("-distinct_ips")[:5]
+        .order_by("-distinct_ips")[:top_n]
     )
 
     created_rules = []
@@ -838,7 +858,54 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
         if len(suspicious_ips) < min_ips:
             continue
 
-        # Step 3: Aggregate into subnets (/24 IPv4, /48 IPv6) and create rules
+        # Step 3a (diffuse-spray UA path, issue #68): the UA alone already
+        # cleared min_ips distinct suspicious IPs, independent of how those
+        # IPs are distributed across subnets. This catches the shape the
+        # subnet path structurally cannot: one IP per /24 residential-proxy
+        # spray, where every subnet count is 1 and never clears the
+        # count < 2 floor below. Opt-in (default False) and staged at
+        # CHALLENGE, see the docstring for why.
+        if ua_rule_enabled:
+            ua_confidence = _scaled_confidence(observed=len(suspicious_ips), threshold=min_ips, span=min_ips * 2)
+            ua_details = {
+                "distinct_ips": len(suspicious_ips),
+                "user_agent": ua[:200],
+                "window_minutes": window_minutes,
+            }
+            # No length guard on `pattern`: RequestLog.user_agent is
+            # max_length=1024 (models.py) and BlockRule.pattern is
+            # max_length=2048, so `ua` (read from RequestLog) can never
+            # overflow pattern. Truncating it here would create a rule
+            # whose exact-match pattern never matches the real UA again,
+            # a silent dead rule, so the full string is always written.
+            ua_rule, ua_created = _get_or_create_auto_rule(
+                name=f"Auto: cloud spray UA ({len(suspicious_ips)} IPs, UA: {ua[:40]})",
+                rule_type=RuleType.UA,
+                match_type="exact",
+                pattern=ua,
+                action=RuleAction.CHALLENGE,
+                expiry=expiry,
+                dry_run=dry_run,
+                detector_name="detect_cloud_spray",
+                confidence=ua_confidence,
+                evidence=ua_details,
+            )
+            if ua_created:
+                created_rules.append(ua_rule)
+                if not dry_run:
+                    _emit_anomaly_signal(
+                        rule=ua_rule,
+                        anomaly_type=AnomalyType.CLOUD_SPRAY,
+                        details=ua_details,
+                    )
+                    logger.info(
+                        "django-waf: auto-created cloud spray UA rule for %s (%d IPs)",
+                        ua[:40],
+                        len(suspicious_ips),
+                    )
+
+        # Step 3b (subnet path): aggregate into subnets (/24 IPv4, /48
+        # IPv6) and create rules for cloud-contiguous clusters.
         subnet_counts: dict[str, int] = {}
         for ip in suspicious_ips:
             try:

@@ -5,6 +5,46 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Cloud-spray detection catches diffuse residential-proxy botnets**
+  (#68, #69, BR-ANOM-002b). `detect_cloud_spray` grouped on two keys the
+  attacker controls, which left the detector purpose-built for
+  distributed spray largely inert against it. It groups by exact
+  user-agent string, so rotating a pool of UAs divides each bucket's
+  distinct-IP count; and its subnet aggregation required at least 2
+  suspicious IPs per /24, which assumes cloud-contiguous allocation.
+  Measured live: one UA shared by 217 distinct IPs occupied 216 distinct
+  subnets, so 215 of 216 were discarded and the detector created zero
+  rules against the flood it exists to catch. Raising the log sample rate
+  was investigated and ruled out as the cause; the signal is present in
+  the retained rows and the grouping discards it.
+
+  A second, opt-in rule path now keys on the user agent itself once it
+  alone clears `DJANGO_WAF_CLOUD_SPRAY_MIN_IPS` distinct suspicious IPs,
+  independent of how those IPs distribute across subnets. The subnet path
+  and its 2-IP floor are unchanged.
+
+- `DJANGO_WAF_CLOUD_SPRAY_UA_RULE` (default `False`). Enables the UA path
+  above. Off by default: a user agent shared by many IPs has legitimate
+  causes (a corporate NAT, a carrier CGNAT range, a popular app's
+  embedded webview), so no existing consumer's enforcement behaviour
+  changes on upgrade. Rules from this path are created with
+  `action=challenge` and never `block`, because a shared UA is a coarse
+  signal: a production measurement over 1,544,473 requests put the
+  false-positive floor for acting on it at no less than 35.6% real users,
+  including genuine Bingbot and Applebot. CHALLENGE rules are excluded
+  from `for_nginx()`, so these rules are enforced by `WafMiddleware`
+  only and the matched user-agent string never reaches a rendered nginx
+  configuration.
+
+- `DJANGO_WAF_CLOUD_SPRAY_TOP_N` (default 5). Replaces a hardcoded cap on
+  how many spray user agents a single run inspects. The previous
+  hardcoded limit silently discarded the long tail of exactly the
+  rotated-UA pool the detector is meant to catch.
+
 ## [2.2.0] - 2026-08-29
 
 ### Added

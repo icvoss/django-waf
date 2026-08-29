@@ -565,6 +565,22 @@ def _DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP() -> int:
     return _get_setting("DJANGO_WAF_CLOUD_SPRAY_MAX_REQUESTS_PER_IP", 3)
 
 
+# Top-N spray UAs (ranked by distinct suspicious IPs) considered per
+# detect_cloud_spray run, replacing the previous hardcoded [:5] cap.
+def _DJANGO_WAF_CLOUD_SPRAY_TOP_N() -> int:
+    return _get_setting("DJANGO_WAF_CLOUD_SPRAY_TOP_N", 5)
+
+
+# Enable detect_cloud_spray's diffuse-spray UA path: when a UA alone clears
+# DJANGO_WAF_CLOUD_SPRAY_MIN_IPS distinct suspicious IPs, create a single
+# CHALLENGE rule for that exact UA, independent of subnet clustering.
+# Default False: a shared UA can be a corporate NAT, a CGNAT range, or an
+# embedded webview, so this is opt-in and does not change behaviour for an
+# existing consumer on upgrade.
+def _DJANGO_WAF_CLOUD_SPRAY_UA_RULE() -> bool:
+    return _get_setting("DJANGO_WAF_CLOUD_SPRAY_UA_RULE", False)
+
+
 # Per-path rate limits: {path_prefix: (max_requests, window_seconds)}.
 # Longest-prefix match wins; checked before the global IP windows.
 def _DJANGO_WAF_RATE_LIMIT_PATHS() -> dict:
