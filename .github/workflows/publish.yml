@@ -93,14 +93,14 @@ jobs:
 
       - name: Install the built wheel and test dependencies
         run: |
-          pip install dist/*.whl
+          # The package comes from the wheel; the `[dev,celery]` extras
+          # resolve their own test dependencies (and the package's declared
+          # runtime deps), so the extras stay the single source of truth and
+          # cannot rot the way a hand-listed set does. A hand-list predating
+          # an API layer is exactly how icv-identity's v0.6.0rc1 publish gate
+          # failed.
+          pip install "$(ls dist/*.whl)[dev,celery]"
           pip install "Django~=5.2.0"
-          # Test dependencies only, matching the `dev` and `celery` extras.
-          # The package itself comes from the wheel above, so this must never
-          # be `pip install -e .` or `.[dev,celery]`: either puts the source
-          # tree back on sys.path and silently defeats the whole point of
-          # this job.
-          pip install pytest pytest-django pytest-cov factory-boy fakeredis djangorestframework celery django-celery-beat
 
       # THE TRAP, usually: two mechanisms can put src/ ahead of site-packages
       # (a job env PYTHONPATH, and pyproject's pythonpath under
