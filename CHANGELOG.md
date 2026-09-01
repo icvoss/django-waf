@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-01
+
+### Fixed
+
+- **`BlockRule.detectors` field default restored to match its own migration**
+  (#105, #107, closes #115). The `v2.2.0` tag was cut roughly 76 minutes
+  before #107 merged to `main`, so the published 2.2.0 wheel still carried
+  the pre-fix `models.py`: the `detectors` field had no `default=""` while
+  migration `0006_blockrule_detectors.py` already recorded one. Every
+  consumer who installed `django-waf==2.2.0` and ran
+  `manage.py makemigrations --check --dry-run`, a standard merge-blocking CI
+  gate, got a spurious `AlterField` diff for a field inside an installed
+  package, with no local remedy: the migration that would settle it has to
+  live in the package. Fixed on the model side rather than with a new
+  `AlterField` migration, since the migration graph already records
+  `default=""` and only `deconstruct()`, never DDL, differed between the two.
+
+  **Upgrading from 2.2.0**: the `makemigrations --check` drift disappears on
+  upgrade to this release; no new migration runs and no data is affected.
+  If you added a local workaround (an `AlterField` migration of your own, or
+  an exclusion for `django_waf` in your CI's drift check), it can be
+  removed.
+
 ### Added
 
 - **The test suite now runs against real PostgreSQL in CI** (#72). Every
@@ -68,6 +91,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   how many spray user agents a single run inspects. The previous
   hardcoded limit silently discarded the long tail of exactly the
   rotated-UA pool the detector is meant to catch.
+
+  **Upgrading from 2.2.0**: no change to detection behaviour unless you set
+  `DJANGO_WAF_CLOUD_SPRAY_UA_RULE = True`, since it defaults off. If you do
+  enable it, `detect_cloud_spray` gains a second, independent rule path
+  that can create CHALLENGE (never BLOCK) rules keyed on a shared user
+  agent alone; the existing subnet-based path and its behaviour are
+  unchanged. `DJANGO_WAF_CLOUD_SPRAY_TOP_N` (default 5) now governs how
+  many spray user agents a run inspects, replacing a previous hardcoded
+  cap of the same value, so a default deployment sees no change there
+  either.
 
 ## [2.2.0] - 2026-08-29
 
