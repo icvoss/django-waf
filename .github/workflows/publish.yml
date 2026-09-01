@@ -80,14 +80,72 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      # Gate on the ARTEFACT, not the source tree (icvoss/icv-oss-umbrella#543).
+      # An editable install puts src/ on sys.path, so the suite runs against
+      # the working tree and never touches the wheel being published: a module
+      # missing from packages.find, an absent py.typed, a template or data file
+      # left out of the wheel, all pass every leg and ship broken. Build the
+      # wheel here and install THAT.
+      - name: Build the wheel this job will test
         run: |
-          python -m pip install --upgrade pip
-          pip install "Django~=5.2.0"
-          pip install -e ".[dev,celery]"
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist/
 
+      - name: Install the built wheel and test dependencies
+        run: |
+          # The package comes from the wheel; the `[dev,celery]` extras
+          # resolve their own test dependencies (and the package's declared
+          # runtime deps), so the extras stay the single source of truth and
+          # cannot rot the way a hand-listed set does. A hand-list predating
+          # an API layer is exactly how icv-identity's v0.6.0rc1 publish gate
+          # failed.
+          pip install "$(ls dist/*.whl)[dev,celery]"
+          pip install "Django~=5.2.0"
+
+      # THE TRAP, usually: two mechanisms can put src/ ahead of site-packages
+      # (a job env PYTHONPATH, and pyproject's pythonpath under
+      # [tool.pytest.ini_options]). NEITHER applies here. This repo's
+      # pythonpath is `["."]`, the repo root, not `src`: it exists so
+      # `tests.settings` resolves as a package, and there is no job env
+      # PYTHONPATH to also fix. Verified by experiment (build the wheel,
+      # install it, import both django_waf and icv_waf with pythonpath
+      # untouched): both resolve from site-packages. So this repo needs no
+      # pytest path override, and adding `-o pythonpath=tests` would BREAK
+      # it, because tests import `tests.settings` from the repo root, not
+      # from a tests/ dir added to the path. The guard below still runs to
+      # prove both shipped modules resolve from the wheel, and to fail the
+      # job if a future change reintroduces a src-shadowing path.
+      - name: Confirm pytest resolves the package from the wheel
+        run: |
+          cat > _wheel_guard.py <<'PY'
+          import os
+
+          import django_waf
+          import icv_waf
+
+
+          def test_django_waf_resolves_from_the_installed_wheel():
+              origin = os.path.realpath(django_waf.__file__)
+              assert "site-packages" in origin, (
+                  f"the source tree shadowed the wheel: {origin}"
+              )
+
+
+          def test_icv_waf_resolves_from_the_installed_wheel():
+              origin = os.path.realpath(icv_waf.__file__)
+              assert "site-packages" in origin, (
+                  f"the source tree shadowed the wheel: {origin}"
+              )
+          PY
+          python -m pytest _wheel_guard.py -q
+          rm _wheel_guard.py
+
+      # --cov=src measured the source tree, which is no longer what this job
+      # runs (the test above installs the built wheel and never touches src/
+      # on this runner). Measure the installed packages instead so coverage
+      # reports against what the wheel actually ships.
       - name: Run tests
-        run: pytest --cov=src --cov-report=term-missing
+        run: pytest --cov=django_waf --cov=icv_waf --cov-report=term-missing
 
   # 3. Build wheel and sdist
   build:
