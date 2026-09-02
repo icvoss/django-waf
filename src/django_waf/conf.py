@@ -717,6 +717,14 @@ _CELERY_BEAT_INTERVAL_ENTRIES: dict = {
         "task": "django_waf.tasks.probe_detectors",
         "schedule": 3600.0,  # every hour (BR-ANOM-012)
     },
+    "django-waf-probe-flush-path": {
+        "task": "django_waf.tasks.probe_flush_path",
+        "schedule": 3600.0,  # every hour (#100): flush itself runs every 5
+        # minutes, so an hourly probe gives ample margin to catch
+        # sustained breakage well inside a day without adding alert noise
+        # on the same cadence as the thing it checks, matching the
+        # detector probe's own precedent above.
+    },
 }
 
 if crontab is not None:

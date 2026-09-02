@@ -92,6 +92,7 @@ ignore = ["S101", "S104", "S105", "S106", "S107", "S311", "S603", "S607"]
 "tests/test_testing_fixtures.py" = ["F811"]
 "tests/test_redis_fallback.py" = ["F811"]
 "tests/test_flush_rule_hit_counts.py" = ["F811"]
+"tests/test_flush_probe.py" = ["F811"]
 
 [tool.mypy]
 python_version = "3.11"

@@ -756,6 +756,68 @@ def flush_rule_hit_counts(self) -> dict:
     return {"flushed": flushed, "keys_seen": keys_seen, "errors": errors}
 
 
+@shared_task
+def probe_flush_path() -> dict:
+    """Run the flush-path liveness probe (#100) and report the result.
+
+    Delegates to ``services.flush_probe.run_flush_probe``, which drives a
+    real counter through the real producer
+    (``rule_engine._record_rule_hit``) and the real consumer
+    (``flush_rule_hit_counts`` above), then asserts the counter
+    demonstrably reached the database. This exists because
+    ``flush_rule_hit_counts`` used to call Redis ``GETDEL`` (needs Redis
+    6.2+); production ran 6.0.16, every call raised, a bare except
+    swallowed it, and 40,936 scheduled task runs reported success while
+    flushing nothing. ``{"flushed": 0, "keys_seen": 0, "errors": 0}`` is
+    both the healthy result on a quiet site AND what that defect produced,
+    so real traffic cannot distinguish them; a counter this probe writes
+    itself can.
+
+    Mirrors ``probe_detectors``'s own freshness note: this package stays
+    stateless and does not persist a last-run timestamp, so a consumer
+    wiring alerting to this probe must alert on the ABSENCE of the
+    structured log line ``run_flush_probe`` emits within the expected
+    cadence, not only on its WARNING content.
+
+    This task never raises: like ``probe_detectors``, its entire purpose
+    is unattended liveness reporting, so a task that itself crashes
+    defeats the reason it exists. Any exception is logged at ERROR with
+    the traceback and reported as a failure result rather than propagated.
+
+    Returns:
+        On success, the dict ``run_flush_probe`` returns: ``alive``,
+        ``flushed``, ``keys_seen``, ``errors``, ``hit_count_delta``,
+        ``key_deleted``, ``failure_reason``. On failure, the same shape
+        with ``alive=False`` and ``failure_reason`` naming that the task
+        itself raised: a probe that could not run proves liveness for
+        nothing.
+
+    Scheduled: hourly, matching the detector probe's own cadence
+    (BR-ANOM-012 precedent). The flush task itself runs every 5 minutes,
+    so an hourly probe gives ample margin to catch sustained breakage
+    well inside a single day, without adding alert noise on the same
+    schedule as the thing it is checking.
+    """
+    from django_waf.services.flush_probe import run_flush_probe
+
+    try:
+        # run_flush_probe itself logs the alive INFO line or the failure
+        # WARNING line; this task does not re-log the same outcome,
+        # mirroring probe_detectors's thin delegation above.
+        return run_flush_probe()
+    except Exception as exc:
+        logger.exception("django-waf: probe_flush_path failed to run")
+        return {
+            "alive": False,
+            "flushed": 0,
+            "keys_seen": 0,
+            "errors": 0,
+            "hit_count_delta": 0,
+            "key_deleted": False,
+            "failure_reason": f"probe_flush_path raised: {exc}",
+        }
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
