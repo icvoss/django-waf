@@ -126,6 +126,29 @@ class TestFlushRuleHitCountsAgainstRealRedis:
         assert real_redis_client.get(f"waf:rule_hits:{rule.id}") is None
 
 
+@pytest.mark.django_db
+class TestFlushProbeAgainstRealRedis:
+    """The flush-path liveness probe (#100), against a real Redis 6.0
+    server: the exact server version whose GETDEL rejection caused the
+    original 40,936-run silent failure. Proves ``run_flush_probe`` reports
+    ``alive=True`` against the server the original defect actually failed
+    on, not merely against fakeredis (which, per this file's own module
+    docstring, accepts GETDEL unconditionally regardless of the requested
+    version and so cannot distinguish a working flush path from the
+    original bug).
+    """
+
+    def test_probe_reports_alive_against_a_real_redis_60_server(self, real_redis_client):
+        from django_waf.services.flush_probe import run_flush_probe
+
+        result = run_flush_probe()
+
+        assert result["alive"] is True
+        assert result["hit_count_delta"] == 1
+        assert result["key_deleted"] is True
+        assert result["failure_reason"] is None
+
+
 class TestRedisVersionCheckAgainstRealRedis:
     """get_redis_server_version (redis_client.py) reads via INFO, a command
     fakeredis does not implement at all (confirmed against the pinned

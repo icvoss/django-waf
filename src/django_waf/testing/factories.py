@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 
 import factory
@@ -133,7 +134,7 @@ class ChallengeTokenFactory(factory.django.DjangoModelFactory):
     difficulty = 4
     nonce = ""
     status = ChallengeStatus.PENDING
-    expires_at = factory.LazyFunction(lambda: timezone.now() + timezone.timedelta(hours=24))
+    expires_at = factory.LazyFunction(lambda: timezone.now() + timedelta(hours=24))
     # challenge_service.verify_challenge_solution() unconditionally sets
     # solved_at on the solve path (BR-CHAL, see challenge_service.py), so a
     # production-shaped SOLVED token always carries a timestamp. EXPIRED and

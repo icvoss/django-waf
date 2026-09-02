@@ -11,7 +11,7 @@ non-Redis fixtures.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -103,7 +103,14 @@ def block_rule(db) -> BlockRule:
     """Create and return a default BlockRule instance via BlockRuleFactory."""
     from django_waf.testing.factories import BlockRuleFactory
 
-    return BlockRuleFactory()
+    # factory-boy's FactoryMetaClass.__call__ (factory/base.py) carries no
+    # return annotation, so mypy falls back to treating BlockRuleFactory()
+    # as constructing a BlockRuleFactory instance, the factory class itself,
+    # rather than the Django model instance ``factory.create()`` actually
+    # returns at runtime. cast() states what is genuinely returned rather
+    # than widening this fixture's own signature to something looser than
+    # what every caller of it actually receives.
+    return cast("BlockRule", BlockRuleFactory())
 
 
 @pytest.fixture
@@ -111,7 +118,7 @@ def allow_rule(db) -> AllowRule:
     """Create and return a default AllowRule instance via AllowRuleFactory."""
     from django_waf.testing.factories import AllowRuleFactory
 
-    return AllowRuleFactory()
+    return cast("AllowRule", AllowRuleFactory())
 
 
 @pytest.fixture
@@ -119,4 +126,4 @@ def challenge_token(db) -> ChallengeToken:
     """Create and return a default ChallengeToken instance via ChallengeTokenFactory."""
     from django_waf.testing.factories import ChallengeTokenFactory
 
-    return ChallengeTokenFactory()
+    return cast("ChallengeToken", ChallengeTokenFactory())

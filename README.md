@@ -648,9 +648,23 @@ pytest --cov=src --cov-report=term-missing
 ruff check src/ tests/
 ruff format src/ tests/
 
-# Type check
-mypy src/
+# Type check. PYTHONPATH=. is required, not optional: the django-stubs
+# plugin resolves `django_settings_module = "tests.settings"` as a dotted
+# path from the repo root, and without it mypy exits 2 having checked
+# nothing at all, which reads like a pass when scripted.
+PYTHONPATH=. mypy src/
 ```
+
+Every one of these runs in CI (`.github/workflows/ci.yml`): `ruff check` and
+`ruff format --check` in the `lint` job, `mypy` in the `typecheck` job, and the
+suite across the Python/Django matrix plus dedicated legs for real Redis and
+real PostgreSQL. A branch green on `pytest` alone is not verified.
+
+## Type information for consumers
+
+The package ships a PEP 561 `py.typed` marker, so a project that type-checks
+its own code sees the real annotations on everything it imports from
+`django_waf` rather than `Any`.
 
 ## Licence
 

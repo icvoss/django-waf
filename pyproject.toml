@@ -63,7 +63,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-django_waf = ["templates/**/*.html", "conf/nginx/*.conf.example"]
+django_waf = ["py.typed", "templates/**/*.html", "conf/nginx/*.conf.example"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
@@ -92,11 +92,20 @@ ignore = ["S101", "S104", "S105", "S106", "S107", "S311", "S603", "S607"]
 "tests/test_testing_fixtures.py" = ["F811"]
 "tests/test_redis_fallback.py" = ["F811"]
 "tests/test_flush_rule_hit_counts.py" = ["F811"]
+"tests/test_flush_probe.py" = ["F811"]
 
 [tool.mypy]
 python_version = "3.11"
 plugins = ["mypy_django_plugin.main"]
 strict = false
+
+# These third-party packages ship no type stubs and no py.typed marker, so
+# mypy cannot analyse their public interfaces. This suppresses noise about
+# THEIR missing types, not ours: it does not affect how mypy checks imports
+# from our own modules or from packages that do ship types.
+[[tool.mypy.overrides]]
+module = ["rest_framework.*", "celery.*", "django_redis.*"]
+ignore_missing_imports = true
 
 [tool.django-stubs]
 django_settings_module = "tests.settings"

@@ -10,11 +10,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from django.http import HttpResponse
+    from django.http import HttpResponseBase
     from django.test import Client
 
 
-def create_blocked_request(client: Client, path: str = "/", ip: str = "192.0.2.99") -> HttpResponse:
+def create_blocked_request(client: Client, path: str = "/", ip: str = "192.0.2.99") -> HttpResponseBase:
     """Create a block rule for ``ip`` and issue a GET request from it.
 
     Args:
@@ -40,7 +40,7 @@ def create_blocked_request(client: Client, path: str = "/", ip: str = "192.0.2.9
     return client.get(path, REMOTE_ADDR=ip)
 
 
-def create_challenged_request(client: Client, path: str = "/", ua: str = "python-requests/2.28") -> HttpResponse:
+def create_challenged_request(client: Client, path: str = "/", ua: str = "python-requests/2.28") -> HttpResponseBase:
     """Create a challenge-action rule for ``ua`` and issue a GET request with it.
 
     Args:

@@ -1587,7 +1587,14 @@ def _deduplicate_block_rules(**lookup) -> int:
     qs = BlockRule.objects.filter(**lookup).order_by("-created_at")
     if qs.count() <= 1:
         return 0
-    keep_pk = qs.first().pk
+    # Fetch the row to keep once rather than re-querying with .first(): the
+    # count() check above is not atomic with what follows, so a concurrent
+    # delete could empty the queryset between the two calls. Guard against
+    # that directly instead of assuming .first() still returns a row.
+    newest = qs.first()
+    if newest is None:
+        return 0
+    keep_pk = newest.pk
     deleted, _ = qs.exclude(pk=keep_pk).delete()
     logger.info("django-waf: deleted %d duplicate BlockRule rows for %s", deleted, lookup)
     return deleted

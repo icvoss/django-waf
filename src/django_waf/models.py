@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db import models
@@ -419,7 +420,7 @@ class RequestLogManager(models.Manager):
 
     def recent(self, hours: int = 24) -> models.QuerySet:
         """Return log entries from the last N hours."""
-        cutoff = timezone.now() - timezone.timedelta(hours=hours)
+        cutoff = timezone.now() - timedelta(hours=hours)
         return self.filter(timestamp__gte=cutoff)
 
     def for_ip(self, ip: str) -> models.QuerySet:
@@ -432,7 +433,7 @@ class RequestLogManager(models.Manager):
 
     def purgeable(self, days: int = 30) -> models.QuerySet:
         """Return log entries older than N days, suitable for deletion."""
-        cutoff = timezone.now() - timezone.timedelta(days=days)
+        cutoff = timezone.now() - timedelta(days=days)
         return self.filter(timestamp__lt=cutoff)
 
     def from_middleware(self) -> models.QuerySet:

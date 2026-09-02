@@ -64,6 +64,7 @@ class TestCeleryBeatScheduleDefault:
             "django_waf.tasks.report_threat_telemetry",
             "django_waf.tasks.update_geoip_database",
             "django_waf.tasks.probe_detectors",
+            "django_waf.tasks.probe_flush_path",
         }
         actual_tasks = {entry["task"] for entry in conf_mod.DJANGO_WAF_CELERY_BEAT_SCHEDULE.values()}
         assert actual_tasks == expected_tasks

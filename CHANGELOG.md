@@ -5,6 +5,79 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A liveness probe for the Redis hit-count flush path** (#100, BR-LIFE-005).
+  The companion to the detector probe shipped in 2.2.0, covering the
+  subsystem that one cannot reach. `flush_rule_hit_counts` called Redis
+  `GETDEL`, which needs 6.2+; production ran 6.0.16, every call raised into
+  a bare except, and 40,936 scheduled task runs reported success while
+  flushing nothing. The defect survived tests, review and release because
+  `{"flushed": 0, "keys_seen": 0, "errors": 0}` is simultaneously the
+  healthy result on a quiet site, the Redis-unreachable result, and what
+  the bug produced. Zero against unknown traffic is ambiguous; zero against
+  a counter the probe just wrote itself is not.
+
+  `run_flush_probe()` (`services/flush_probe.py`) drives one hit end to end
+  through the real producer (`rule_engine._record_rule_hit`) and the real
+  consumer (`flush_rule_hit_counts`), then asserts it reached
+  `BlockRule.hit_count`. It calls the real producer deliberately: the key
+  literal `waf:rule_hits:` is duplicated with no shared constant between
+  producer and consumer, so a probe hardcoding a third copy could not
+  detect the two drifting apart. Ships with an hourly `probe_flush_path`
+  task and beat entry, plus a `django_waf_probe_flush_path` management
+  command that exits non-zero on a dead path, for a cron or k8s wrapper.
+
+  Safe to run against a live site, which took work rather than luck.
+  `flush_rule_hit_counts` scans `waf:rule_hits:*` and flushes every key it
+  finds, so the probe's own run also sweeps up real counters, whose
+  database updates would land inside the probe's rolled-back transaction
+  while their Redis keys were deleted regardless. The probe therefore
+  snapshots every other key first and restores each one afterwards, to
+  Redis only and never to the row, leaving the count pending for the next
+  scheduled flush. Restoring both double-counts, which an implementation of
+  this probe did before review caught it: a real counter of 5 reached
+  `hit_count = 10` after one probe run plus one flush.
+
+- **A PEP 561 `py.typed` marker** (#108). The package has always been
+  annotated but never advertised it, so a consumer type-checking its own
+  code saw `Any` for everything imported from `django_waf`. Verified on the
+  built wheel rather than the source tree: against the published 2.4.0
+  wheel a consumer's mypy reports `import-untyped` and `Revealed type is
+  "Any"`, and against this build it resolves the real signature.
+
+- **A `typecheck` CI job** (#111), with mypy and django-stubs pinned
+  exactly, as the `lint` job already pins ruff. mypy was configured with
+  the django-stubs plugin and documented in the README, but no workflow ran
+  it, so a type regression could reach `main` with every check green. The
+  job asserts mypy analysed 80+ source files before trusting its exit
+  status: without `PYTHONPATH=.` the plugin cannot resolve
+  `django_settings_module = "tests.settings"` and mypy exits 2 having
+  checked nothing at all, a no-op that reads as a pass when scripted.
+
+### Fixed
+
+- **`_deduplicate_block_rules` could raise `AttributeError` on a
+  concurrent delete** (#111). It called `.pk` on the result of
+  `qs.first()`, which is `None` if the queryset empties between the
+  `qs.count() <= 1` guard and the fetch. Found by the mypy pass rather than
+  in production; it now fetches once and returns early.
+
+- **`verify_challenge_solution` accepted a `None` difficulty** (#111),
+  passing it into the proof-of-work check rather than rejecting it. It now
+  raises `ChallengeInvalidError`, since a difficulty that was never issued
+  cannot be verified against.
+
+### Changed
+
+- mypy now reports zero errors across 86 source files, down from 31 in 19
+  (#111). Third-party stub noise (`rest_framework.*`, `celery.*`,
+  `django_redis.*`) is suppressed with a per-module override rather than a
+  blanket `ignore_missing_imports`, which would also silence genuine
+  missing-import findings in this package's own code.
+
 ## [2.4.0] - 2026-09-02
 
 ### Added

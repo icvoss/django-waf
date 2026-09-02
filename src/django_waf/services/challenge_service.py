@@ -14,9 +14,21 @@ import json
 import logging
 import secrets
 import time
+from datetime import timedelta
+from typing import TYPE_CHECKING
 
 from django.conf import settings
 from django.utils import timezone
+
+if TYPE_CHECKING:
+    # Import for annotations only: the runtime import of ChallengeToken is
+    # deferred inside each function body (see issue_challenge and
+    # verify_challenge_solution below) to avoid importing django_waf.models
+    # before Django app registry setup. A TYPE_CHECKING-guarded import lets
+    # mypy resolve the return type without reintroducing that ordering
+    # requirement at runtime; `from __future__ import annotations` above
+    # means the annotation itself is never evaluated eagerly either.
+    from django_waf.models import ChallengeToken
 
 logger = logging.getLogger("django_waf.challenge_service")
 
@@ -113,7 +125,7 @@ def _digest_has_leading_zero_bits(digest: bytes, bits: int) -> bool:
     return (digest[full_bytes] & mask) == 0
 
 
-def issue_challenge(ip_address: str, redis_client, *, user_agent: str = "") -> object:
+def issue_challenge(ip_address: str, redis_client, *, user_agent: str = "") -> ChallengeToken:
     """Create a new challenge token for the given IP address.
 
     Stores the token in both the DB and Redis. Emits challenge_issued signal.
@@ -133,7 +145,7 @@ def issue_challenge(ip_address: str, redis_client, *, user_agent: str = "") -> o
     token = secrets.token_hex(64)
     difficulty = _pick_difficulty(user_agent)
     ttl = conf.DJANGO_WAF_CHALLENGE_COOKIE_TTL
-    expires_at = timezone.now() + timezone.timedelta(seconds=ttl)
+    expires_at = timezone.now() + timedelta(seconds=ttl)
 
     challenge_token = ChallengeToken.objects.create(
         token=token,
@@ -236,6 +248,17 @@ def verify_challenge_solution(
         raise ChallengeMismatchError(f"Challenge was issued to {stored_ip}, not {ip_address}.")
 
     # --- Proof-of-work verification (BR-CHAL-002, BR-CHAL-003) ---
+    # difficulty is always set by one of the two lookup branches above: the
+    # Redis branch on a successful JSON parse, or the DB branch from the
+    # model's PositiveSmallIntegerField (which has a default and is never
+    # null), which itself raises ChallengeInvalidError before reaching here
+    # if the token does not exist. A None here would mean neither branch
+    # ran, which is a genuine bug in the lookup logic above rather than a
+    # legitimate runtime state, so it fails loudly instead of silently
+    # defaulting to a difficulty value that was never actually issued.
+    if difficulty is None:
+        raise ChallengeInvalidError("Challenge token has no associated difficulty.")
+
     digest = hashlib.sha256(f"{token}{nonce}".encode()).digest()
     if not _digest_has_leading_zero_bits(digest, difficulty):
         # Solution incorrect

@@ -199,3 +199,58 @@ jobs:
       - run: pip install "ruff==0.15.22"
       - run: ruff check src/ tests/
       - run: ruff format --check src/ tests/
+
+  # Dedicated leg. mypy is configured in pyproject.toml with the django-stubs
+  # plugin and documented in the README as the project's type gate, but until
+  # issue #111 no workflow ran it, so a type regression could reach main with
+  # every check green. The declared bar and the enforced bar had diverged.
+  #
+  # PYTHONPATH=. is load-bearing, not decoration. [tool.django-stubs] sets
+  # django_settings_module = "tests.settings", a dotted path resolved from the
+  # repo root. Without the repo root on the path the plugin cannot import the
+  # settings module, and mypy exits 2 having checked NOTHING. That failure is
+  # easy to misread as a pass when a run is scripted, so this leg asserts the
+  # file count below rather than trusting the exit status alone.
+  #
+  # mypy and django-stubs are pinned exactly, like ruff in the lint leg above:
+  # a type checker that floats will fail a branch that has not changed, on
+  # somebody else's release, in a job nobody touched.
+  typecheck:
+    name: Type check (mypy + django-stubs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # The api, celery and geoip extras are installed so the optional-import
+      # modules (django_waf.api.*, tasks.py, the GeoIP service) are actually
+      # analysed. Without them mypy skips those files as unresolvable imports
+      # and the gate silently covers less than it appears to.
+      - name: Install dependencies
+        run: pip install -e ".[dev,celery,api,geoip]" "mypy==2.3.1" "django-stubs==6.1.0"
+
+      # Guard against the exit-2-checked-nothing failure described above: a
+      # real run analyses the whole src/ tree. If this count collapses, the
+      # gate has stopped checking rather than started passing.
+      # Match on the "N source files" suffix, which BOTH summary forms end
+      # with: "Success: no issues found in 86 source files" on a clean run,
+      # and "Found 3 errors in 2 files (checked 86 source files)" otherwise.
+      # An earlier version of this guard keyed on the word "checked", which
+      # appears only in the second form, so it extracted 0 on exactly the
+      # runs that passed and failed this job on its first green tree.
+      - name: Assert mypy actually analysed the source tree
+        run: |
+          summary="$(PYTHONPATH=. mypy src/ 2>&1 | tail -1)"
+          echo "mypy summary: ${summary}"
+          count="$(printf '%s' "${summary}" | grep -oE '[0-9]+ source files?' | grep -oE '^[0-9]+' || echo 0)"
+          echo "mypy analysed ${count} source files"
+          if [ "${count}" -lt 80 ]; then
+            echo "::error::mypy analysed only ${count} source files; expected 80+."
+            echo "::error::The run is a no-op, not a pass (see issue #111: missing PYTHONPATH exits 2 having checked nothing)."
+            exit 1
+          fi
+
+      - name: Type check
+        run: PYTHONPATH=. mypy src/
