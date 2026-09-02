@@ -31,6 +31,18 @@ from django.core.exceptions import ImproperlyConfigured
 if TYPE_CHECKING:  # pragma: no cover
     from django_waf.forms.protection import FormEvaluationResult, FormProtection
 
+    # Typing-only base: at runtime ProtectedForm is a bare mixin (see the
+    # class definition below), always combined by the consumer as
+    # `class ContactForm(ProtectedForm, forms.Form)`. Deriving from
+    # forms.Form here, under TYPE_CHECKING only, tells the checker what
+    # every real usage guarantees (a host class providing Form.clean() and
+    # Form.data) without adding forms.Form to the runtime MRO, which would
+    # change attribute resolution order and __init__ behaviour for
+    # subclasses that also inherit it directly.
+    _ProtectedFormBase = forms.Form
+else:
+    _ProtectedFormBase = object
+
 
 logger = logging.getLogger("django_waf.forms")
 
@@ -42,7 +54,7 @@ logger = logging.getLogger("django_waf.forms")
 _BLOCKED_MESSAGE = "Submission rejected. Please try again."
 
 
-class ProtectedForm:
+class ProtectedForm(_ProtectedFormBase):
     """Django Form mixin that runs WAF defences during clean().
 
     Usage::

@@ -23,13 +23,16 @@ keeping djangorestframework an optional dependency (the [api] extra).
 
 import logging
 
-from django.urls import include, path
+from django.urls import URLPattern, URLResolver, include, path
 
 from django_waf import conf, views
 
 app_name = "django_waf"
 
-urlpatterns = [
+# Annotated explicitly rather than left to inference: the base list is all
+# path() calls (URLPattern), but the optional API block below appends an
+# include() result (URLResolver), so the list genuinely holds both types.
+urlpatterns: list[URLPattern | URLResolver] = [
     # -----------------------------------------------------------------------
     # Challenge flow — AllowAny
     # -----------------------------------------------------------------------

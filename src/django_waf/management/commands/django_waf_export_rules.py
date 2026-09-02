@@ -47,14 +47,14 @@ class Command(BaseCommand):
         allow_rules: list[dict] = []
 
         if rule_type in ("block", "all"):
-            qs = BlockRule.objects.all()
+            block_qs = BlockRule.objects.all()
             if source != "all":
-                qs = qs.filter(source=source)
-            block_rules = [_serialise_block_rule(rule) for rule in qs]
+                block_qs = block_qs.filter(source=source)
+            block_rules = [_serialise_block_rule(rule) for rule in block_qs]
 
         if rule_type in ("allow", "all"):
-            qs = AllowRule.objects.all()
-            allow_rules = [_serialise_allow_rule(rule) for rule in qs]
+            allow_qs = AllowRule.objects.all()
+            allow_rules = [_serialise_allow_rule(rule) for rule in allow_qs]
 
         payload = {
             "version": 1,

@@ -381,17 +381,17 @@ class SitePasswordVerifyView(NoIndexResponseMixin, View):
                 require_https=request.is_secure(),
             ):
                 safe_next = next_param
-            response = redirect(safe_next)
-            sp.set_verified_cookie(response, request)
-            return response
+            redirect_response = redirect(safe_next)
+            sp.set_verified_cookie(redirect_response, request)
+            return redirect_response
 
         ip = _get_ip(request)
         redis_client = _get_redis_client()
         throttled = sp.record_guess_throttle_hit(ip, redis_client)
         if throttled:
-            response = HttpResponse(_("Too many attempts. Please retry later."), status=429)
-            response["Retry-After"] = "60"
-            return response
+            throttle_response = HttpResponse(_("Too many attempts. Please retry later."), status=429)
+            throttle_response["Retry-After"] = "60"
+            return throttle_response
 
         return render(
             request,

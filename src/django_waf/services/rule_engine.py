@@ -781,14 +781,25 @@ def _resolve_and_confirm_rdns(ip_address: str, rdns_pattern: str) -> bool:
 
 
 def _action_to_verdict(action: str) -> str:
-    """Map a RuleAction value to the corresponding Verdict value."""
+    """Map a RuleAction value to the corresponding Verdict value.
+
+    ``action`` is typed as ``str`` rather than ``RuleAction`` because callers
+    genuinely pass a plain string here: the value comes from a cached rule
+    dict built from serialised data (see ``_check_block_rules``), not a live
+    model instance, and an unrecognised value is a legitimate input this
+    function must handle by falling back to ``Verdict.BLOCKED`` rather than
+    raising (proven by test_action_to_verdict_unknown_defaults_to_blocked).
+    The mapping itself is keyed by ``RuleAction`` value, so the lookup is
+    done against ``.value`` strings rather than widening the dict to accept
+    arbitrary strings as valid ``RuleAction`` keys.
+    """
     from django_waf.enums import RuleAction, Verdict
 
     mapping = {
-        RuleAction.BLOCK: Verdict.BLOCKED,
-        RuleAction.CHALLENGE: Verdict.CHALLENGED,
-        RuleAction.THROTTLE: Verdict.THROTTLED,
-        RuleAction.LOG_ONLY: Verdict.LOGGED,
+        RuleAction.BLOCK.value: Verdict.BLOCKED,
+        RuleAction.CHALLENGE.value: Verdict.CHALLENGED,
+        RuleAction.THROTTLE.value: Verdict.THROTTLED,
+        RuleAction.LOG_ONLY.value: Verdict.LOGGED,
     }
     return mapping.get(action, Verdict.BLOCKED)
 

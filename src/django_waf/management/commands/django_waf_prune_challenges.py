@@ -27,6 +27,8 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options) -> None:
+        from datetime import timedelta
+
         from django.utils import timezone
 
         from django_waf.enums import ChallengeStatus
@@ -38,7 +40,7 @@ class Command(BaseCommand):
         if hours < 1:
             raise CommandError("--hours must be a positive integer.")
 
-        cutoff = timezone.now() - timezone.timedelta(hours=hours)
+        cutoff = timezone.now() - timedelta(hours=hours)
         purgeable_qs = ChallengeToken.objects.filter(
             status__in=[ChallengeStatus.PENDING, ChallengeStatus.FAILED],
             expires_at__lt=cutoff,
