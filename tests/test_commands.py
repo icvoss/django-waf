@@ -204,6 +204,46 @@ class TestDetectAnomaliesCommand:
         assert "No anomalies detected" in out.getvalue()
 
     @pytest.mark.django_db
+    def test_total_rules_created_key_is_not_double_counted(self):
+        """Issue #99: run_all_detectors' real return dict carries a
+        total_rules_created key ALONGSIDE the six per-detector keys (see
+        its own return statement). Before this fix, the command's
+        `for detector_name, rules_created in results.items()` loop iterated
+        that key too, printing it as if it were a seventh detector AND
+        adding its value a second time to total_created, exactly doubling
+        the reported total. A live run during the wave-2 investigation
+        printed "unsolved_challenge_rules: would create 2" then
+        "total_rules_created: would create 2" and concluded "Would have
+        created 4 rule(s)" for what was actually 2 real rules.
+
+        Uses the real int-shaped result dict run_all_detectors actually
+        returns (int counts, not lists of mock rule objects, unlike the
+        other tests in this class, which predate #99's own key and use a
+        two-key stand-in dict that never exercised this bug), so the
+        total_rules_created key is genuinely present, exactly as it always
+        is on a real call.
+        """
+        results = {
+            "ua_rotation_rules": 0,
+            "subnet_burst_rules": 0,
+            "challenge_farm_rules": 0,
+            "unsolved_challenge_rules": 2,
+            "cloud_spray_rules": 0,
+            "scraper_404_rules": 0,
+            "total_rules_created": 2,
+        }
+        mock_detect = self._autospec_detector(return_value=results)
+
+        with patch("django_waf.services.anomaly_detector.run_all_detectors", mock_detect):
+            out = StringIO()
+            call_command("django_waf_detect_anomalies", "--dry-run", stdout=out)
+
+        output = out.getvalue()
+        assert "Would have created 2 rule(s)." in output
+        assert "Would have created 4 rule(s)." not in output
+        assert "total_rules_created" not in output
+
+    @pytest.mark.django_db
     def test_service_exception_raises_command_error(self):
         """A service exception is converted to CommandError."""
         mock_detect = self._autospec_detector(side_effect=ValueError("bad window"))
@@ -396,6 +436,322 @@ class TestPruneChallengesCommand:
         call_command("django_waf_prune_challenges", "--hours=24", stdout=out)
 
         assert "Deleted 0 challenge token(s)" in out.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# django_waf_prune_rules
+# ---------------------------------------------------------------------------
+
+
+class TestPruneRulesCommand:
+    """Tests for the ``django_waf_prune_rules`` management command.
+
+    The command inverts the other two prune commands' default: no flags
+    means report-only, ``--execute`` is required to actually delete. Every
+    test below therefore asserts the table is non-empty first (so a
+    survival assertion is never vacuous against an empty queryset), and at
+    least one test proves the predicate has teeth by inducing a genuine
+    deletion rather than only ever watching rows survive.
+    """
+
+    @staticmethod
+    def _stale_kwargs(days_expired: int = 100):
+        """Kwargs for a BlockRule that qualifies for deletion outright."""
+        from django_waf.enums import ReviewStatus, RuleSource
+
+        return {
+            "source": RuleSource.AUTO,
+            "is_active": False,
+            "expires_at": timezone.now() - timezone.timedelta(days=days_expired),
+            "review_status": ReviewStatus.NOT_APPLICABLE,
+        }
+
+    @pytest.mark.django_db
+    def test_dry_run_is_the_default_and_deletes_nothing(self):
+        """No flags at all: reports the count, deletes nothing."""
+        from django_waf.testing.factories import BlockRuleFactory
+
+        BlockRuleFactory(**self._stale_kwargs())
+        BlockRuleFactory(**self._stale_kwargs())
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 2
+
+        out = StringIO()
+        call_command("django_waf_prune_rules", "--days=90", stdout=out)
+
+        assert BlockRule.objects.count() == 2
+        output = out.getvalue()
+        assert "dry-run" in output
+        assert "2 block rule(s)" in output
+        assert "--execute" in output
+
+    @pytest.mark.django_db
+    def test_explicit_dry_run_flag_matches_default(self):
+        """--dry-run is accepted as a no-op synonym for the default behaviour."""
+        from django_waf.testing.factories import BlockRuleFactory
+
+        BlockRuleFactory(**self._stale_kwargs())
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        out = StringIO()
+        call_command("django_waf_prune_rules", "--dry-run", "--days=90", stdout=out)
+
+        assert BlockRule.objects.count() == 1
+        assert "1 block rule(s)" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_execute_deletes_matching_rows(self):
+        """--execute performs the deletion the dry-run count promised.
+
+        Proves the predicate has teeth: a genuinely stale row is actually
+        removed by a real run, not merely reported.
+        """
+        from django_waf.testing.factories import BlockRuleFactory
+
+        stale = BlockRuleFactory(**self._stale_kwargs())
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        dry_run_out = StringIO()
+        call_command("django_waf_prune_rules", "--days=90", stdout=dry_run_out)
+        assert "1 block rule(s)" in dry_run_out.getvalue()
+        assert BlockRule.objects.filter(pk=stale.pk).exists()
+
+        execute_out = StringIO()
+        call_command("django_waf_prune_rules", "--days=90", "--execute", stdout=execute_out)
+
+        assert not BlockRule.objects.filter(pk=stale.pk).exists()
+        assert "Deleted 1 block rule(s)" in execute_out.getvalue()
+
+    @pytest.mark.django_db
+    def test_active_rule_survives_execute(self):
+        """An active rule is never deleted, even with --execute."""
+        from django_waf.testing.factories import BlockRuleFactory
+
+        kwargs = self._stale_kwargs()
+        kwargs["is_active"] = True
+        active = BlockRuleFactory(**kwargs)
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        call_command("django_waf_prune_rules", "--days=90", "--execute")
+
+        assert BlockRule.objects.filter(pk=active.pk).exists()
+
+    @pytest.mark.django_db
+    def test_unexpired_rule_survives_execute(self):
+        """A rule whose expiry has not passed is never deleted."""
+        from django_waf.testing.factories import BlockRuleFactory
+
+        kwargs = self._stale_kwargs()
+        kwargs["expires_at"] = timezone.now() + timezone.timedelta(days=1)
+        unexpired = BlockRuleFactory(**kwargs)
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        call_command("django_waf_prune_rules", "--days=90", "--execute")
+
+        assert BlockRule.objects.filter(pk=unexpired.pk).exists()
+
+    @pytest.mark.django_db
+    def test_pending_review_rule_survives_execute(self):
+        """A rule still PENDING review is never deleted."""
+        from django_waf.enums import ReviewStatus
+        from django_waf.testing.factories import BlockRuleFactory
+
+        kwargs = self._stale_kwargs()
+        kwargs["review_status"] = ReviewStatus.PENDING
+        pending = BlockRuleFactory(**kwargs)
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        call_command("django_waf_prune_rules", "--days=90", "--execute")
+
+        assert BlockRule.objects.filter(pk=pending.pk).exists()
+
+    @pytest.mark.django_db
+    def test_confirmed_rule_survives_execute(self):
+        """A rule an operator CONFIRMED is never deleted."""
+        from django_waf.enums import ReviewStatus
+        from django_waf.testing.factories import BlockRuleFactory
+
+        kwargs = self._stale_kwargs()
+        kwargs["review_status"] = ReviewStatus.CONFIRMED
+        confirmed = BlockRuleFactory(**kwargs)
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        call_command("django_waf_prune_rules", "--days=90", "--execute")
+
+        assert BlockRule.objects.filter(pk=confirmed.pk).exists()
+
+    @pytest.mark.django_db
+    def test_rejected_rule_survives_execute(self):
+        """A rule an operator REJECTED is never deleted.
+
+        Deliberate: a rejection is a decision the operator already made
+        once. Deleting the row loses the record of that decision, so the
+        next time a detector re-observes the same pattern it recreates the
+        rule and the operator has to reject it again.
+        """
+        from django_waf.enums import ReviewStatus
+        from django_waf.testing.factories import BlockRuleFactory
+
+        kwargs = self._stale_kwargs()
+        kwargs["review_status"] = ReviewStatus.REJECTED
+        rejected = BlockRuleFactory(**kwargs)
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        call_command("django_waf_prune_rules", "--days=90", "--execute")
+
+        assert BlockRule.objects.filter(pk=rejected.pk).exists()
+
+    @pytest.mark.django_db
+    def test_expired_unreviewed_rule_is_deleted_by_execute(self):
+        """An EXPIRED_UNREVIEWED rule IS deleted: the counterpart to the REJECTED test above.
+
+        expire_rules (BR-ANOM-010) moves a rule here when it was PENDING
+        and its expires_at passed with nobody reviewing it. Unlike
+        REJECTED, nobody made an explicit decision about the pattern, so
+        there is no operator judgement to preserve and this row is safe to
+        reclaim once stale.
+        """
+        from django_waf.enums import ReviewStatus
+        from django_waf.testing.factories import BlockRuleFactory
+
+        kwargs = self._stale_kwargs()
+        kwargs["review_status"] = ReviewStatus.EXPIRED_UNREVIEWED
+        expired_unreviewed = BlockRuleFactory(**kwargs)
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        call_command("django_waf_prune_rules", "--days=90", "--execute")
+
+        assert not BlockRule.objects.filter(pk=expired_unreviewed.pk).exists()
+
+    @pytest.mark.django_db
+    def test_admin_sourced_rule_survives_execute(self):
+        """A hand-authored admin rule is never deleted regardless of age or state.
+
+        source scoping is deliberate: an operator's own rule is not the
+        self-regenerating auto-detector output this retention path exists
+        to bound.
+        """
+        from django_waf.enums import ReviewStatus
+        from django_waf.enums import RuleSource as RuleSourceEnum
+        from django_waf.testing.factories import BlockRuleFactory
+
+        admin_rule = BlockRuleFactory(
+            source=RuleSourceEnum.ADMIN,
+            is_active=False,
+            expires_at=timezone.now() - timezone.timedelta(days=100),
+            review_status=ReviewStatus.NOT_APPLICABLE,
+        )
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        call_command("django_waf_prune_rules", "--days=90", "--execute")
+
+        assert BlockRule.objects.filter(pk=admin_rule.pk).exists()
+
+    @pytest.mark.django_db
+    def test_feed_sourced_rule_survives_execute(self):
+        """A feed-sourced rule is never deleted regardless of age or state."""
+        from django_waf.enums import ReviewStatus
+        from django_waf.enums import RuleSource as RuleSourceEnum
+        from django_waf.testing.factories import BlockRuleFactory
+
+        feed_rule = BlockRuleFactory(
+            source=RuleSourceEnum.FEED,
+            is_active=False,
+            expires_at=timezone.now() - timezone.timedelta(days=100),
+            review_status=ReviewStatus.NOT_APPLICABLE,
+        )
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        call_command("django_waf_prune_rules", "--days=90", "--execute")
+
+        assert BlockRule.objects.filter(pk=feed_rule.pk).exists()
+
+    @pytest.mark.django_db
+    def test_window_boundary_just_inside_survives_and_just_outside_is_deleted(self):
+        """A row just inside the retention window survives; just outside is deleted."""
+        from django_waf.testing.factories import BlockRuleFactory
+
+        cutoff = timezone.now() - timezone.timedelta(days=90)
+        just_inside = BlockRuleFactory(**{**self._stale_kwargs(), "expires_at": cutoff + timezone.timedelta(hours=1)})
+        just_outside = BlockRuleFactory(**{**self._stale_kwargs(), "expires_at": cutoff - timezone.timedelta(hours=1)})
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 2
+
+        call_command("django_waf_prune_rules", "--days=90", "--execute")
+
+        assert BlockRule.objects.filter(pk=just_inside.pk).exists()
+        assert not BlockRule.objects.filter(pk=just_outside.pk).exists()
+
+    @pytest.mark.django_db
+    def test_zero_days_raises_command_error(self):
+        """--days=0 is rejected with a CommandError."""
+        with pytest.raises(CommandError, match="positive integer"):
+            call_command("django_waf_prune_rules", "--days=0")
+
+    @pytest.mark.django_db
+    def test_no_stale_rules_reports_zero(self):
+        """When nothing is stale the dry-run reports zero."""
+        from django_waf.testing.factories import BlockRuleFactory
+
+        BlockRuleFactory()  # active, admin, default factory state, not stale
+
+        out = StringIO()
+        call_command("django_waf_prune_rules", "--days=90", stdout=out)
+
+        assert "0 block rule(s)" in out.getvalue()
+
+    @pytest.mark.django_db
+    def test_default_retention_uses_conf_value(self):
+        """When --days is omitted the command reads DJANGO_WAF_RULE_RETENTION_DAYS from conf."""
+        from django_waf import conf
+        from django_waf.testing.factories import BlockRuleFactory
+
+        default_days = conf.DJANGO_WAF_RULE_RETENTION_DAYS
+        kwargs = self._stale_kwargs()
+        kwargs["expires_at"] = timezone.now() - timezone.timedelta(days=default_days + 1)
+        stale = BlockRuleFactory(**kwargs)
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        call_command("django_waf_prune_rules", "--execute")
+
+        assert not BlockRule.objects.filter(pk=stale.pk).exists()
 
 
 # ---------------------------------------------------------------------------

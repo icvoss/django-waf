@@ -57,6 +57,12 @@ def _run_observe_only_detector_names_check():
     return check_observe_only_detector_names(app_configs=None)
 
 
+def _run_detector_wiring_check():
+    from django_waf.checks import check_detector_wiring
+
+    return check_detector_wiring(app_configs=None)
+
+
 def _run_redis_backend_check():
     from django_waf.checks import check_redis_backend
 
@@ -586,6 +592,74 @@ class TestObserveOnlyDetectorNamesCheck:
 
         assert len(messages) == 1
         assert messages[0].id == "django_waf.W008"
+
+
+class TestDetectorWiringCheck:
+    """W009 warns when anomaly_detector.DETECTOR_NAMES and
+    DETECTOR_NAME_TO_RESULT_KEY disagree on membership (wave 2, #99's
+    sibling defect class): a detector hand-added to one dict and not the
+    other reads as a permanently silent detector to
+    django_waf_probe_detectors and the detector outcome report, rather
+    than the wiring bug it actually is.
+    """
+
+    def test_current_wiring_is_silent(self):
+        """The real, un-patched anomaly_detector module is the baseline
+        this check must pass against: if this fails, DETECTOR_NAMES and
+        DETECTOR_NAME_TO_RESULT_KEY have genuinely desynced in the
+        package, independent of anything this test class patches.
+        """
+        assert _run_detector_wiring_check() == []
+
+    def test_name_in_detector_names_missing_from_result_key_map_emits_w009(self):
+        """The more dangerous direction (see the check's own docstring):
+        a name added to DETECTOR_NAMES without a matching entry in
+        DETECTOR_NAME_TO_RESULT_KEY reads as a permanently silent detector
+        to run_detector_probe, indistinguishable from a genuinely dead one
+        without reading the code.
+        """
+        import django_waf.services.anomaly_detector as anomaly_detector_mod
+
+        broken_names = frozenset(anomaly_detector_mod.DETECTOR_NAMES | {"detect_phantom"})
+        with patch.object(anomaly_detector_mod, "DETECTOR_NAMES", broken_names):
+            messages = _run_detector_wiring_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W009"
+        assert "detect_phantom" in messages[0].msg
+
+    def test_result_key_entry_missing_from_detector_names_emits_w009(self):
+        """The reverse direction: a result-key entry with no matching
+        DETECTOR_NAMES member is invisible to W008 and observe-only mode
+        alike, with nothing else in the package catching it.
+        """
+        import django_waf.services.anomaly_detector as anomaly_detector_mod
+
+        broken_map = dict(anomaly_detector_mod.DETECTOR_NAME_TO_RESULT_KEY)
+        broken_map["detect_phantom"] = "phantom_rules"
+        with patch.object(anomaly_detector_mod, "DETECTOR_NAME_TO_RESULT_KEY", broken_map):
+            messages = _run_detector_wiring_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W009"
+        assert "detect_phantom" in messages[0].msg
+
+    def test_removing_a_name_from_the_result_key_map_also_trips_the_check(self):
+        """Confirmed falsifiable the other way too: dropping a real,
+        currently-wired name out of DETECTOR_NAME_TO_RESULT_KEY (rather
+        than adding a phantom one) reproduces the exact shape a careless
+        edit to the map would produce, and the check must still catch it.
+        """
+        import django_waf.services.anomaly_detector as anomaly_detector_mod
+
+        broken_map = dict(anomaly_detector_mod.DETECTOR_NAME_TO_RESULT_KEY)
+        del broken_map["detect_cloud_spray"]
+        with patch.object(anomaly_detector_mod, "DETECTOR_NAME_TO_RESULT_KEY", broken_map):
+            messages = _run_detector_wiring_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W009"
+        assert "detect_cloud_spray" in messages[0].msg
 
 
 class TestRedisBackendCheck:

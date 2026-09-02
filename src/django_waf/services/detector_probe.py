@@ -18,6 +18,29 @@ an unambiguous defect signal instead.
 No environment guard of any kind gates this module. #97's staging skip was
 exactly that class of defect: a probe that quietly does nothing in some
 environments is the next one.
+
+Historical BlockRule rows can still make a healthy detector report SILENT.
+An earlier revision of this module claimed the TEST-NET ranges below make a
+collision "only ever this probe's own prior run", never live traffic. That
+half of the claim holds for ``RequestLog``: the forced rollback guarantees
+no synthetic request row can ever survive a probe invocation. It does NOT
+hold for ``BlockRule``: an operator can seed a rule on a documentation
+range by hand or via ``django_waf_import_rules``, and a collective threat
+feed sync (``services.threat_feed.sync_feed``) has no way to know these
+ranges are reserved for this probe and could in principle write one too.
+``_get_or_create_auto_rule``'s dry-run existence check
+(``services.anomaly_detector``) matches on ``(rule_type, pattern,
+source=AUTO, action)`` alone, with no ``is_active`` or ``expires_at``
+filter, so ANY surviving ``source=AUTO`` row on a fixture's exact pattern,
+however old, however inactive, makes that detector's ``_get_or_create_auto_
+rule`` call report ``created=False``, and the forced rollback below cannot
+remove a row this probe never created in the first place. Fixed by
+threading ``count_refresh_as_created=True`` through to every detector (see
+``run_detector_probe`` below and ``_get_or_create_auto_rule``'s own
+docstring): the probe's liveness question is "did the detector's query
+fire", not "would a real run insert a brand new row", and a matched
+existing row is proof of the former even when it answers "no" to the
+latter.
 """
 
 from __future__ import annotations
@@ -30,12 +53,17 @@ from django.utils import timezone
 logger = logging.getLogger("django_waf.detector_probe")
 
 # TEST-NET ranges (RFC 5737 documentation ranges), one distinct block per
-# detector, so a leftover real BlockRule for the same pattern shape cannot
-# make _get_or_create_auto_rule report created=False (a false red) or,
-# under an inverted assertion, a false green. Real production traffic is
-# never sourced from these ranges, so a collision here can only be this
-# probe's own prior run (uncommitted, per the forced rollback below),
-# never live traffic.
+# detector, chosen so genuine production RequestLog traffic can never land
+# on the same pattern: real clients are never sourced from a documentation
+# range, and the forced rollback below guarantees no synthetic RequestLog
+# row this module writes can ever survive a probe invocation. This does
+# NOT extend to BlockRule: an operator can seed a source=AUTO rule on one
+# of these ranges by hand, via django_waf_import_rules, or via a collective
+# threat feed sync, and such a row is real, persisted, and entirely outside
+# this module's rollback. See the module docstring's "Historical BlockRule
+# rows" section for how count_refresh_as_created (threaded through every
+# detector call below) stops a leftover row like that from making a
+# healthy detector report a false SILENT.
 #
 # Sub-ranges within the three /24s are chosen so each detector's synthetic
 # IPs are disjoint from every other detector's, even though detect_subnet_burst
@@ -143,7 +171,26 @@ def run_detector_probe(dry_run: bool = True) -> dict:
             # exactly the window the fixture timestamps below are built
             # against. A probe passing a small override would silently
             # exercise a different window than it thinks for that one path.
-            result = run_all_detectors(dry_run=dry_run)
+            #
+            # count_refresh_as_created=True (always, never forwarded from
+            # this function's own argument): the probe's liveness question
+            # is "did the detector's query fire against its fixture", which
+            # is answered by a matched existing BlockRule exactly as well
+            # as a freshly inserted one. Without this, a leftover
+            # source=AUTO row on one of this module's TEST-NET patterns
+            # (an old probe run's own writes under --exercise-writes, an
+            # operator import, a threat feed sync) makes
+            # _get_or_create_auto_rule report created=False forever, and
+            # the probe would then misreport a healthy detector as SILENT
+            # on every subsequent run. See the module docstring's
+            # "Historical BlockRule rows" section and
+            # _get_or_create_auto_rule's own docstring. This is always True
+            # here regardless of the ``dry_run`` argument: the exercise-
+            # writes path (dry_run=False) still runs inside the same
+            # forced rollback below, so treating a refresh as "created"
+            # for reporting purposes carries no risk of a real row
+            # surviving either way.
+            result = run_all_detectors(dry_run=dry_run, count_refresh_as_created=True)
         finally:
             # Unconditional: even if fixture construction or detection raises,
             # nothing synthetic may survive this function. No branch below

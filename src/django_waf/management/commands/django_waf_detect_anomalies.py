@@ -33,16 +33,29 @@ class Command(BaseCommand):
         window_minutes: int | None = options["window_minutes"]
 
         if dry_run:
-            self.stdout.write(self.style.WARNING("[dry-run] Analysing anomalies — no rules will be created."))
+            self.stdout.write(self.style.WARNING("[dry-run] Analysing anomalies, no rules will be created."))
 
         try:
             results = run_all_detectors(window_minutes=window_minutes, dry_run=dry_run)
         except Exception as exc:
             raise CommandError(f"Anomaly detection failed: {exc}") from exc
 
-        # run_all_detectors returns a dict keyed by detector name.
+        # run_all_detectors returns a dict keyed by detector result name,
+        # PLUS a "total_rules_created" key holding the pre-summed total
+        # (see its own docstring/return statement). Issue #99: iterating
+        # results.items() unfiltered treated that total as if it were an
+        # eighth detector, both printing it as a fake "detector" line and
+        # adding it a second time to total_created, exactly doubling the
+        # reported count (a live run printed "unsolved_challenge_rules:
+        # would create 2" then "total_rules_created: would create 2" then
+        # concluded "Would have created 4 rule(s)"). total_rules_created is
+        # excluded here so total_created below is summed only from the
+        # real per-detector counts, matching what run_all_detectors itself
+        # already computed.
         total_created = 0
         for detector_name, rules_created in results.items():
+            if detector_name == "total_rules_created":
+                continue
             count = len(rules_created) if isinstance(rules_created, list) else int(rules_created)
             if count:
                 label = "would create" if dry_run else "created"

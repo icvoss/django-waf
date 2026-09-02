@@ -94,6 +94,48 @@ class BlockRuleManager(models.Manager):
         """Return active rules whose expiry time has passed."""
         return self.filter(is_active=True, expires_at__lte=timezone.now())
 
+    def stale(self, days: int) -> models.QuerySet:
+        """Return auto-generated rules safe to hard-delete under retention (wave 2, the rule-provenance wave).
+
+        A row qualifies only when ALL of the following hold:
+
+        - ``source=RuleSource.AUTO``. An operator's hand-authored ``admin``
+          rule or a ``feed``-sourced rule is a deliberate, reviewed
+          artefact; this retention path exists for the class of rows that
+          regenerate themselves on the next detector run (BR-ANOM-007's
+          ``update_or_create`` re-detection path), not for rows a human
+          typed in.
+        - ``is_active=False``: never delete an enforcing rule, quarantined
+          or otherwise. Mirrors ``expired()``'s own is_active gate.
+        - ``expires_at`` is set and at least ``days`` in the past. A rule
+          that never expires (``expires_at is None``) is excluded
+          unconditionally, regardless of ``is_active``: BR-ANOM-007's
+          quarantine path is the one way a ``source=AUTO`` row can be
+          ``is_active=False`` with no ``expires_at``, and that state means
+          "awaiting review", not "safe to reclaim".
+        - ``review_status`` is ``NOT_APPLICABLE`` or ``EXPIRED_UNREVIEWED``.
+          ``PENDING`` and ``CONFIRMED`` are excluded per this wave's plan.
+          ``REJECTED`` is also excluded, deliberately, and is the one
+          divergence from a literal reading of the plan (which named only
+          three states against a five-state enum): a ``REJECTED`` row
+          records an operator's explicit decision that this exact pattern
+          must not be blocked. Deleting it does not undo that decision, it
+          only erases the record of it, so the next time a detector
+          re-observes the same pattern it recreates the rule from
+          scratch and the operator has to reject it again. Keeping
+          ``REJECTED`` rows is the cheaper failure mode: a few extra
+          quarantined rows outlive the retention window, versus an
+          operator re-litigating a decision they already made once.
+        """
+        cutoff = timezone.now() - timedelta(days=days)
+        return self.filter(
+            source=RuleSource.AUTO,
+            is_active=False,
+            expires_at__isnull=False,
+            expires_at__lt=cutoff,
+            review_status__in=[ReviewStatus.NOT_APPLICABLE, ReviewStatus.EXPIRED_UNREVIEWED],
+        )
+
 
 def _validate_rule_pattern(rule_type: str, match_type: str, pattern: str) -> None:
     """Reject a catastrophic or invalid UA regex pattern on any save path.
