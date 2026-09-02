@@ -1080,6 +1080,90 @@ def _DJANGO_WAF_VERIFY_RATE_LIMIT_WINDOW_SECONDS() -> int:
 
 
 # ---------------------------------------------------------------------------
+# detect_scraper_404_ratio: residential-proxy scraper detection by 404 rate
+# ---------------------------------------------------------------------------
+# Traced against a live deployment (VendablyCSS, shopping.vendably.com,
+# django-waf 2.1.0, three-day window): a residential-proxy scraping botnet
+# defeated every existing detector at once. 10,874 distinct IPs spread across
+# roughly 9,700 distinct /24 subnets (about 1.1 IPs per /24, mean 1.42
+# requests per IP) evaded detect_subnet_burst's >= 30 req/subnet floor and
+# detect_unsolved_challenges's subnet path (>= 10 IPs/subnet). 15,426 distinct
+# User-Agent strings, one per request, meant no shared-UA grouping key
+# existed for detect_cloud_spray's UA path, and its subnet path needs >= 2
+# suspicious IPs sharing a subnet, which this shape almost never produces.
+# Every one of the botnet's 15,378 requests scored exactly 3.50
+# (fingerprint-derived only, zero matched a suspicious path pattern), landing
+# strictly between DJANGO_WAF_SCORE_THRESHOLD_LOG (2.5) and
+# DJANGO_WAF_SCORE_THRESHOLD_CHALLENGE (5.0), so every one was verdict=logged
+# and passed straight through to the application.
+#
+# The signal that does separate them is the 404 ratio. Filtering the same
+# window to IPs with >= 20 requests and >= 85% 404 responses yielded 14 IPs,
+# all confirmed scrapers (e.g. 31.58.20.59 at 100% over 32 requests,
+# 88.167.25.244 at 97% over 75, 103.59.160.242 at 92% over 115). A real
+# browser does not sustain a ~100% 404 rate over dozens of requests: a human
+# who hits a dead link navigates somewhere real, or gives up, long before
+# reaching that volume. The requested paths were stale internal URLs (old
+# category/merchant paths, with and without a trailing slash), i.e. a scrape
+# working from an outdated link graph, not a vulnerability scan probing for
+# known-bad paths (which DJANGO_WAF_SUSPICIOUS_PATH_PATTERNS already covers).
+
+
+# Minimum request count an IP must reach within the window before its 404
+# ratio is considered at all. 20 is comfortably below the smallest confirmed
+# scraper in the traced attack (32 requests) while high enough that a
+# handful of genuinely broken links from a real visitor's session cannot
+# alone qualify.
+def _DJANGO_WAF_SCRAPER_404_MIN_REQUESTS() -> int:
+    return _get_setting("DJANGO_WAF_SCRAPER_404_MIN_REQUESTS", 20)
+
+
+# Fraction of an IP's (non-WAF-rejected) requests that must be 404 before it
+# is flagged. 0.85 sits below every confirmed scraper measured (92-100%)
+# with margin, while comfortably above what a real visitor following a few
+# stale bookmarks or an old external link would ever sustain.
+def _DJANGO_WAF_SCRAPER_404_RATIO() -> float:
+    return _get_setting("DJANGO_WAF_SCRAPER_404_RATIO", 0.85)
+
+
+# Time window, in minutes, the detector aggregates over. 1440 (24 hours) is
+# deliberately wide, on the same precedent as
+# DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES (360, #93): a detector whose
+# attacker spreads volume thinly over time needs its own wider window, or
+# the fixed count/ratio thresholds it compares against are never reachable
+# regardless of how they are tuned. Simulated live against the traced
+# deployment, sweeping window x DJANGO_WAF_SCRAPER_404_MIN_REQUESTS at the
+# default 0.85 ratio, counting flagged IPs:
+#
+#   window   180m: minreq 10 ->  0, 15 ->  0, 20 ->  0, 30 ->  0
+#   window   360m: minreq 10 ->  3, 15 ->  2, 20 ->  1, 30 ->  1
+#   window   720m: minreq 10 ->  4, 15 ->  3, 20 ->  3, 30 ->  2
+#   window  1440m: minreq 10 -> 13, 15 -> 10, 20 ->  8, 30 ->  7
+#
+# At 180 minutes the detector catches nothing at all: this cohort's mean of
+# 1.42 requests per IP over the full 3-day trace means no individual IP
+# accumulates enough volume inside 3 hours to clear even the lowest
+# min_requests swept. 1440 (24 hours) is the smallest swept window at which
+# the default DJANGO_WAF_SCRAPER_404_MIN_REQUESTS=20 catches a materially
+# non-trivial, confirmed-scraper population (8 IPs), so it is the default
+# rather than a threshold change: the window, not the count/ratio
+# thresholds, was the wrong knob, exactly as it was for #93.
+def _DJANGO_WAF_SCRAPER_404_WINDOW_MINUTES() -> int:
+    return _get_setting("DJANGO_WAF_SCRAPER_404_WINDOW_MINUTES", 1440)
+
+
+# Whether a qualifying IP is auto-created at RuleAction.BLOCK rather than
+# RuleAction.CHALLENGE. Default False: a 404 ratio is a behavioural signal,
+# not proof of malice on its own (a broken external link farm or a stale
+# sitemap could theoretically produce the same shape), so this detector
+# follows the same staging precedent as detect_cloud_spray's UA path
+# (issue #82): a coarse aggregate signal is staged at CHALLENGE by default,
+# and an operator who has built confidence in the signal opts into BLOCK.
+def _DJANGO_WAF_SCRAPER_404_ACTION_BLOCK() -> bool:
+    return _get_setting("DJANGO_WAF_SCRAPER_404_ACTION_BLOCK", False)
+
+
+# ---------------------------------------------------------------------------
 # PEP 562 module-level __getattr__ / __dir__: call-time resolution (#75)
 # ---------------------------------------------------------------------------
 # Every DJANGO_WAF_* name above is a private ``_NAME()`` resolver function,

@@ -60,6 +60,7 @@ _UNSOLVED_CHALLENGE_IP = "192.0.2.50"
 _SUBNET_BURST_SUBNET_BASE = "198.51.100."  # .10-.15 used below
 _CHALLENGE_FARM_IP = "203.0.113.10"
 _CLOUD_SPRAY_SUBNET_BASE = "203.0.113."  # .20-.40 used below (21 IPs)
+_SCRAPER_404_IP = "192.0.2.90"
 
 _PROBE_UA = "django-waf-detector-probe/1.0"
 
@@ -203,6 +204,7 @@ def _build_fixture_traffic() -> None:
     _build_challenge_farm_fixture(now=now, conf=conf)
     _build_unsolved_challenge_fixture(now=now, conf=conf)
     _build_cloud_spray_fixture(now=now, conf=conf)
+    _build_scraper_404_fixture(now=now, conf=conf)
 
 
 def _build_ua_rotation_fixture(*, now, conf, distinct_ua_count: int | None = None) -> None:
@@ -394,5 +396,43 @@ def _build_cloud_spray_fixture(*, now, conf, distinct_ip_count: int | None = Non
                 referer="",
             )
             for i in range(distinct_ip_count)
+        ]
+    )
+
+
+def _build_scraper_404_fixture(*, now, conf, total_requests: int | None = None) -> None:
+    """BR-ANOM-014: a single IP with at least
+    DJANGO_WAF_SCRAPER_404_MIN_REQUESTS (default 20) requests within the
+    window, at least DJANGO_WAF_SCRAPER_404_RATIO (default 0.85) of them
+    404, all carrying a verdict that reached the application (allowed,
+    passed, or logged, never a WAF-produced verdict). Every row is built
+    with response_code=404 so the fixture's ratio is 100%, comfortably
+    clear of the default 85% floor.
+
+    ``total_requests`` defaults to ``conf.DJANGO_WAF_SCRAPER_404_MIN_
+    REQUESTS + 1``, for the same reason as the other config-derived
+    fixtures in this module: raising the threshold alone cannot falsify a
+    fixture that grows to match it. A falsifiability test that needs to
+    raise the threshold past a FIXED fixture size must pass an explicit
+    literal here.
+    """
+    from django_waf.enums import Verdict
+    from django_waf.models import RequestLog
+
+    if total_requests is None:
+        total_requests = conf.DJANGO_WAF_SCRAPER_404_MIN_REQUESTS + 1
+
+    RequestLog.objects.bulk_create(
+        [
+            RequestLog(
+                timestamp=now,
+                ip_address=_SCRAPER_404_IP,
+                user_agent=_PROBE_UA,
+                path=f"/scraper-404-fixture-path-{i}/",
+                method="GET",
+                verdict=Verdict.ALLOWED,
+                response_code=404,
+            )
+            for i in range(total_requests)
         ]
     )

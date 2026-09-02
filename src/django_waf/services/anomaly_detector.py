@@ -24,7 +24,7 @@ logger = logging.getLogger("django_waf.anomaly_detector")
 # check must therefore be treated the same as a missing referer (issue #24).
 BARE_ORIGIN_REFERER_RE = r"^https?://[^/]+$"
 
-# Single source of truth for the five detector function names, so
+# Single source of truth for the six detector function names, so
 # DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS (BR-ANOM-008) and the boot-time
 # check that validates it (checks.check_observe_only_detector_names,
 # django_waf.W008) cannot desync if a detector is ever renamed. Each
@@ -37,6 +37,7 @@ DETECTOR_NAMES = frozenset(
         "detect_challenge_farms",
         "detect_unsolved_challenges",
         "detect_cloud_spray",
+        "detect_scraper_404_ratio",
     }
 )
 
@@ -54,6 +55,7 @@ DETECTOR_NAME_TO_RESULT_KEY = {
     "detect_challenge_farms": "challenge_farm_rules",
     "detect_unsolved_challenges": "unsolved_challenge_rules",
     "detect_cloud_spray": "cloud_spray_rules",
+    "detect_scraper_404_ratio": "scraper_404_rules",
 }
 
 
@@ -956,6 +958,218 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
     return created_rules
 
 
+def detect_scraper_404_ratio(window_minutes: int | None = None, dry_run: bool = False) -> list:
+    """Detect IPs whose requests are overwhelmingly 404s (BR-ANOM-014).
+
+    Traced against a live deployment (VendablyCSS, shopping.vendably.com,
+    django-waf 2.1.0, three-day window): a residential-proxy scraping
+    botnet defeated every other detector at once. 10,874 distinct IPs
+    spread across roughly 9,700 distinct /24 subnets (about 1.1 IPs per
+    /24) evaded ``detect_subnet_burst``'s absolute floor and
+    ``detect_unsolved_challenges``'s subnet path (both need many IPs
+    concentrated in the same /24). 15,426 distinct User-Agent strings, one
+    per request, meant no shared UA existed for ``detect_cloud_spray`` to
+    key on. Every one of the botnet's requests scored exactly 3.50
+    (fingerprint-derived only, no suspicious path match), landing between
+    ``DJANGO_WAF_SCORE_THRESHOLD_LOG`` and ``DJANGO_WAF_SCORE_THRESHOLD_
+    CHALLENGE``, so every request was logged and passed through.
+
+    The signal that does separate them is the 404 ratio: filtering the same
+    window to IPs with >= ``DJANGO_WAF_SCRAPER_404_MIN_REQUESTS`` requests
+    and >= ``DJANGO_WAF_SCRAPER_404_RATIO`` of them 404 yielded 14 IPs, all
+    confirmed scrapers requesting stale internal URLs (old category/merchant
+    paths, with and without a trailing slash) from an outdated link graph,
+    not a vulnerability scan. A real browser does not sustain a ~100% 404
+    rate over dozens of requests.
+
+    Verdict scoping is the correctness-critical part of this detector, and
+    it was proven, not assumed: ``middleware.py``'s ``_handle_verdict``
+    returns a rejection response (``HttpResponseForbidden``/429/a redirect)
+    for ``Verdict.BLOCKED``, ``Verdict.CHALLENGED``, and
+    ``Verdict.THROTTLED`` *without ever calling* ``_get_response``, so a
+    row with one of those verdicts never reached a view and its
+    ``response_code`` reflects what the WAF itself returned, not a genuine
+    404 the *application* produced; production data confirms this
+    directly, blocked/challenged/throttled rows show exactly 0.0% 404 in
+    the traced deployment. This detector counts only rows whose verdict
+    shows the request reached the application AND was not already vetted
+    by an AllowRule: ``Verdict.ALLOWED`` and ``Verdict.LOGGED``.
+    ``Verdict.BLOCKED``, ``Verdict.CHALLENGED``, and ``Verdict.THROTTLED``
+    are excluded from both the numerator and the denominator, never only
+    one side: excluding them from the denominator alone while still
+    counting a stray 404 among them (there should not be any, since those
+    verdicts short-circuit before a view runs, but the exclusion is
+    unconditional rather than relying on that invariant holding forever).
+
+    ``Verdict.PASSED`` (an AllowRule match) is deliberately EXCLUDED, and
+    this is not a minor refinement: measured against the same production
+    trace over an identical window, excluding ``passed`` flagged zero IPs,
+    while including it flagged 10, every one a verified Bingbot IP (e.g.
+    40.77.167.132, 34 requests, 100% 404; 207.46.13.156, 25 requests, 100%
+    404), re-crawling roughly 14,897 dead URLs still present in its own
+    historical index, a stale-sitemap/HTTP 410 problem on the site's side,
+    not malicious behaviour. Including ``passed`` would have made this
+    detector auto-challenge (or, with ``DJANGO_WAF_SCRAPER_404_ACTION_
+    BLOCK=True``, auto-block) Bingbot on every deployment shaped like the
+    traced one, risking delisting. This is the same "AllowRules win"
+    precedence ``rule_engine.evaluate_request`` already applies at its
+    step 4, ahead of every BlockRule and every scoring path, applied here
+    at the counting stage rather than left to downstream staging alone.
+
+    Excluding ``passed`` does more than protect a legitimate crawler from
+    this detector's own count: it is what lets the detector *distinguish*
+    a real verified crawler from an impostor presenting the identical UA
+    string. In the same trace, 45.45.237.69 sent the genuine Googlebot
+    User-Agent (``Mozilla/5.0 (compatible; Googlebot/2.1;
+    +http://www.google.com/bot.html)``) and scored
+    ``fingerprint_verdict=browser`` on every row (27 requests, 89% 404),
+    yet its address is outside Google's published ranges, so it fails the
+    forward-confirmed reverse-DNS check the seeded Googlebot ``AllowRule``
+    requires (``verify_rdns=True``; see ``rule_engine._check_allow_rules``
+    / ``_verify_rdns``). It therefore never matches the AllowRule and never
+    gets ``verdict=passed``, unlike the genuine Googlebot IPs (66.249.x,
+    which produced 17,980 *distinct* 404 paths in the same trace, all
+    correctly excluded) in the same window, and this detector catches it.
+    Neither a UA-keyed rule (the UA string is byte-identical to the real
+    crawler's) nor an IP/CIDR-keyed rule (an impostor's address is not
+    stable) could separate the two; only "did this client actually earn an
+    AllowRule match, and is it 404ing" can. The same production trace also
+    showed this detector catching scrapers with no User-Agent at all
+    (e.g. 4.205.62.107, 446 requests, 100% 404, requesting
+    ``/agg.php``/``/cp2.php``/random-named PHP paths), a shape
+    ``detect_ua_rotation`` and ``detect_cloud_spray``'s UA path are
+    structurally blind to, since neither has any UA-derived signal to key
+    on when the header is empty.
+
+    Action staging: a qualifying IP is auto-created at
+    ``RuleAction.CHALLENGE``, promoted to ``RuleAction.BLOCK`` only when
+    ``DJANGO_WAF_SCRAPER_404_ACTION_BLOCK`` is ``True`` (default ``False``).
+    A 404 ratio is behavioural, not proof of malice by itself: a broken
+    external link farm, a stale sitemap, or a migrated URL scheme could in
+    principle produce the same shape for a legitimate-but-confused client.
+    This mirrors the package's own precedent for a coarse aggregate signal,
+    ``detect_cloud_spray``'s UA path (issue #82), which stages at CHALLENGE
+    by default for the same reason.
+
+    Args:
+        window_minutes: Time window to analyse. Defaults to
+                        DJANGO_WAF_SCRAPER_404_WINDOW_MINUTES.
+        dry_run: When True (#38), collects what would be created without
+                 writing any BlockRule or emitting the anomaly_detected signal.
+
+    Returns:
+        List of BlockRule instances that were created (or, in dry-run, would
+        have been created).
+    """
+    from django.db.models import Count, Q
+
+    from django_waf import conf
+    from django_waf.enums import AnomalyType, RuleAction, RuleType, Verdict
+    from django_waf.models import RequestLog
+
+    effective_window_minutes = (
+        window_minutes if window_minutes is not None else conf.DJANGO_WAF_SCRAPER_404_WINDOW_MINUTES
+    )
+    min_requests = conf.DJANGO_WAF_SCRAPER_404_MIN_REQUESTS
+    ratio_floor = conf.DJANGO_WAF_SCRAPER_404_RATIO
+    action = RuleAction.BLOCK if conf.DJANGO_WAF_SCRAPER_404_ACTION_BLOCK else RuleAction.CHALLENGE
+
+    cutoff = timezone.now() - timedelta(minutes=effective_window_minutes)
+
+    # Only verdicts that show the request reached the application AND were
+    # not already vetted by an AllowRule (see docstring). This is applied
+    # once, as the base filter for the whole aggregation, so a WAF-produced
+    # verdict cannot enter the denominator OR the numerator for any IP.
+    # Verdict.PASSED (an AllowRule match, e.g. a verified crawler) is
+    # deliberately excluded, not merely tolerated: it is what stops a
+    # legitimate high-404-volume crawler (Bingbot re-crawling its own stale
+    # index, measured at up to 100% 404 over dozens of requests in
+    # production) from ever being counted at all, rather than relying on
+    # downstream staging to save it.
+    reached_app = Q(verdict__in=(Verdict.ALLOWED, Verdict.LOGGED))
+
+    # The floor (total >= min_requests) is applied in the database: it is a
+    # simple integer comparison with no precision concerns. The ratio
+    # comparison (count_404 / total >= ratio_floor) is applied in Python
+    # below, after fetching the two integer counts, rather than as a third
+    # database filter: comparing a computed float ratio in the database
+    # would require either a float division expression (backend-dependent
+    # rounding behaviour) or a cross-multiplied integer comparison
+    # (total * ratio_floor, which reintroduces the same float on the
+    # right-hand side since ratio_floor is itself a float setting). Doing
+    # the division once in Python, on already-fetched small integers, is
+    # exact, backend-independent, and the same ratio value is needed again
+    # immediately afterwards for the evidence dict and the confidence
+    # calculation, so a third query would not avoid the computation, only
+    # move it.
+    candidates = (
+        RequestLog.objects.filter(reached_app, timestamp__gte=cutoff)
+        .values("ip_address")
+        .annotate(
+            total=Count("id"),
+            count_404=Count("id", filter=Q(response_code=404)),
+        )
+        .filter(total__gte=min_requests)
+    )
+
+    created_rules = []
+    expiry = timezone.now() + timedelta(hours=conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS)
+
+    for row in candidates:
+        total = row["total"]
+        count_404 = row["count_404"]
+        ratio = count_404 / total
+        if ratio < ratio_floor:
+            continue
+
+        ip = row["ip_address"]
+        details = {
+            "total_requests": total,
+            "count_404": count_404,
+            "ratio": round(ratio, 2),
+            "window_minutes": effective_window_minutes,
+        }
+        # Span is the ratio's own remaining headroom above the floor, up to
+        # the ratio's hard ceiling of 1.0: a bounded [0, 1] value has no
+        # natural "threshold * N" span the way a request-count detector
+        # does, so the span is the distance from the floor to the maximum
+        # possible ratio instead. A detection right at the floor scores 0.5
+        # (the shared coin-flip floor every detector uses); a detection at
+        # ratio=1.0 (the observed shape: several of the traced IPs were
+        # exactly 100%) approaches, but per _scaled_confidence's own cap,
+        # never reaches, the ceiling.
+        confidence = _scaled_confidence(observed=ratio, threshold=ratio_floor, span=1 - ratio_floor)
+
+        rule, created = _get_or_create_auto_rule(
+            name=f"Auto: scraper 404 ratio from {ip}",
+            rule_type=RuleType.IP,
+            match_type="exact",
+            pattern=ip,
+            action=action,
+            expiry=expiry,
+            dry_run=dry_run,
+            detector_name="detect_scraper_404_ratio",
+            confidence=confidence,
+            evidence=details,
+        )
+        if created:
+            created_rules.append(rule)
+            if not dry_run:
+                _emit_anomaly_signal(
+                    rule=rule,
+                    anomaly_type=AnomalyType.SCRAPER_404,
+                    details=details,
+                )
+                logger.info(
+                    "django-waf: auto-created scraper 404 ratio rule for %s (ratio=%.0f%%, total=%d)",
+                    ip,
+                    ratio * 100,
+                    total,
+                )
+
+    return created_rules
+
+
 def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) -> dict:
     """Run all anomaly detectors and return a summary of findings.
 
@@ -979,8 +1193,8 @@ def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) 
     Returns:
         Dict with keys: ua_rotation_rules, subnet_burst_rules,
         challenge_farm_rules, unsolved_challenge_rules, cloud_spray_rules,
-        total_rules_created. In dry-run these counts describe what WOULD be
-        created, not what was created.
+        scraper_404_rules, total_rules_created. In dry-run these counts
+        describe what WOULD be created, not what was created.
     """
     if window_minutes is None:
         ua_rules = detect_ua_rotation(dry_run=dry_run)
@@ -988,6 +1202,7 @@ def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) 
         farm_rules = detect_challenge_farms(dry_run=dry_run)
         unsolved_rules = detect_unsolved_challenges(dry_run=dry_run)
         spray_rules = detect_cloud_spray(dry_run=dry_run)
+        scraper_404_rules = detect_scraper_404_ratio(dry_run=dry_run)
     else:
         window_hours = max(1, -(-window_minutes // 60))  # ceiling division
         ua_rules = detect_ua_rotation(window_minutes=window_minutes, dry_run=dry_run)
@@ -995,17 +1210,26 @@ def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) 
         farm_rules = detect_challenge_farms(window_hours=window_hours, dry_run=dry_run)
         unsolved_rules = detect_unsolved_challenges(window_minutes=window_minutes, dry_run=dry_run)
         spray_rules = detect_cloud_spray(window_minutes=window_minutes, dry_run=dry_run)
+        scraper_404_rules = detect_scraper_404_ratio(window_minutes=window_minutes, dry_run=dry_run)
 
-    total = len(ua_rules) + len(subnet_rules) + len(farm_rules) + len(unsolved_rules) + len(spray_rules)
+    total = (
+        len(ua_rules)
+        + len(subnet_rules)
+        + len(farm_rules)
+        + len(unsolved_rules)
+        + len(spray_rules)
+        + len(scraper_404_rules)
+    )
     logger.info(
         "django-waf anomaly detection%s: ua_rotation=%d subnet_burst=%d "
-        "challenge_farm=%d unsolved_challenge=%d cloud_spray=%d total=%d",
+        "challenge_farm=%d unsolved_challenge=%d cloud_spray=%d scraper_404=%d total=%d",
         " (dry-run)" if dry_run else "",
         len(ua_rules),
         len(subnet_rules),
         len(farm_rules),
         len(unsolved_rules),
         len(spray_rules),
+        len(scraper_404_rules),
         total,
     )
 
@@ -1015,6 +1239,7 @@ def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) 
         "challenge_farm_rules": len(farm_rules),
         "unsolved_challenge_rules": len(unsolved_rules),
         "cloud_spray_rules": len(spray_rules),
+        "scraper_404_rules": len(scraper_404_rules),
         "total_rules_created": total,
     }
 

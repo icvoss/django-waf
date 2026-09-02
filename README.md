@@ -52,7 +52,8 @@ path) before relying on this package as a site's only defence layer.
   generates the variables; you wire the enforcement, see
   [nginx Integration](#nginx-integration)
 - **Anomaly detection**: auto-creates expiring rules for UA rotation, subnet
-  bursts, and challenge farms
+  bursts, challenge farms, unsolved challenges, cloud spray, and scraper
+  404-ratio patterns
 - **Collective threat feed**: opt-in sync of anonymised threat intelligence
   across deployments
 - **Staff dashboard**: HTMX-powered real-time analytics with anomaly management
@@ -226,6 +227,10 @@ without any feed.
 | `DJANGO_WAF_SUSPICIOUS_PATH_SCORE` | `3.0` | Score added per suspicious path match |
 | `DJANGO_WAF_ANOMALY_QUARANTINE_AUTO_RULES` | `False` | When `True`, a newly-created auto-generated rule is created inactive and `pending` review rather than enforcing immediately (BR-ANOM-007). Default `False` deliberately, not a mirror of the threat-feed equivalent: flipping it would silently stop enforcement on every existing deployment on upgrade |
 | `DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS` | `[]` | Detector function names (e.g. `["detect_cloud_spray"]`) that always create quarantined rules regardless of the setting above, for building trust in one detector without quarantining all of them (BR-ANOM-008). An unrecognised name is flagged by `django_waf.W008` at boot |
+| `DJANGO_WAF_SCRAPER_404_MIN_REQUESTS` | `20` | Minimum request count an IP must reach in the window before its 404 ratio is considered (BR-ANOM-014) |
+| `DJANGO_WAF_SCRAPER_404_RATIO` | `0.85` | Fraction of an IP's application-reaching requests that must be 404 before it is flagged |
+| `DJANGO_WAF_SCRAPER_404_WINDOW_MINUTES` | `1440` | Detection window in minutes for `detect_scraper_404_ratio` |
+| `DJANGO_WAF_SCRAPER_404_ACTION_BLOCK` | `False` | When `True`, a qualifying IP is auto-created at `action=block` instead of the default `action=challenge` |
 
 Auto-generated rules that are created quarantined, or that a detector in
 `DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS` creates, appear in the
