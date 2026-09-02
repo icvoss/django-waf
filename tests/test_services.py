@@ -1690,6 +1690,7 @@ class TestRunAllDetectors:
             "challenge_farm_rules",
             "unsolved_challenge_rules",
             "cloud_spray_rules",
+            "scraper_404_rules",
             "total_rules_created",
         }
 

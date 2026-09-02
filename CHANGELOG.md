@@ -7,6 +7,166 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A sixth anomaly detector, `detect_scraper_404_ratio`, catches a
+  residential-proxy scraping botnet that defeated every existing detector
+  at once** (BR-ANOM-014). Traced against a live deployment (VendablyCSS,
+  shopping.vendably.com, django-waf 2.1.0, three-day window): 10,874
+  distinct IPs spread across roughly 9,700 distinct /24 subnets (about 1.1
+  IPs per /24, mean 1.42 requests per IP) evaded `detect_subnet_burst`'s
+  absolute floor (needs >= 30 requests per subnet) and
+  `detect_unsolved_challenges`'s subnet path (needs >= 10 IPs per subnet).
+  15,426 distinct User-Agent strings, one per request, meant no shared UA
+  existed for `detect_cloud_spray` to group on, and its subnet path also
+  needed at least 2 suspicious IPs sharing a subnet, which this shape
+  almost never produced. All 15,378 of the botnet's requests scored
+  exactly 3.50 (fingerprint-derived only; zero matched a suspicious path
+  pattern), landing strictly between `DJANGO_WAF_SCORE_THRESHOLD_LOG`
+  (2.5) and `DJANGO_WAF_SCORE_THRESHOLD_CHALLENGE` (5.0), so every request
+  was `verdict=logged`, passed straight through to the application.
+
+  The one signal that does separate the botnet from real traffic is the
+  404 ratio. Filtering the same window to IPs with >= 20 requests and
+  >= 85% of them 404 yielded 14 IPs, all confirmed scrapers, for example
+  31.58.20.59 at 100% over 32 requests, 88.167.25.244 at 97% over 75, and
+  103.59.160.242 at 92% over 115. A real browser does not sustain a
+  ~100% 404 rate over dozens of requests: a human who hits a dead link
+  navigates somewhere real, or gives up, long before reaching that
+  volume. The requested paths were stale internal URLs (old
+  category/merchant paths, with and without a trailing slash), i.e. a
+  scrape working from an outdated link graph, not a vulnerability scan
+  (which `DJANGO_WAF_SUSPICIOUS_PATH_PATTERNS` already covers).
+
+  Every IP the detector would flag against the production trace at its
+  final defaults (window 1440 minutes, 20 requests, 0.85 ratio, verdicts
+  `allowed`/`logged`) was individually verified by UA and requested paths:
+  precision was 100%, with no legitimate user among them, across four
+  shapes the other five detectors structurally miss:
+
+  1. Webshell/backdoor hunters sending an EMPTY User-Agent string, for
+     example 4.205.62.107 (446 requests, 100% 404, requesting `/agg.php`,
+     `/cp2.php`, `/ebahvhhh.php`) and 158.23.18.78 (138 requests, 100%
+     404, requesting `/inx.php`, `/file1221.php`, `/adminner.php`). These
+     filenames are random per host, so no static path-pattern list
+     (`DJANGO_WAF_SUSPICIOUS_PATH_PATTERNS`) can ever enumerate them; the
+     404 ratio catches them precisely because the filenames are guesses
+     that, by definition, do not exist.
+  2. A self-identifying exploit scanner, 103.59.160.242 (123 requests,
+     96% 404), whose User-Agent is literally `xploit_probe`, requesting
+     `/wp-admin/*` paths.
+  3. Distributed scrapers hitting dead product URLs with a shared mobile
+     UA, 114.119.148.27 (83 requests, 94% 404) and 114.119.137.80 (56
+     requests, 100% 404), both classified `fingerprint_verdict=suspicious`
+     on every row.
+  4. A spoofed Googlebot, 45.45.237.69 (27 requests, 89% 404), sending the
+     genuine Googlebot User-Agent string
+     (`Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)`)
+     and classified `fingerprint_verdict=browser` on every row. This IP is
+     outside Google's published ranges, so it fails the forward-confirmed
+     reverse-DNS (FCrDNS) check the seeded Googlebot `AllowRule` requires
+     (`verify_rdns=True`, `rule_engine._check_allow_rules` /
+     `_verify_rdns`); it therefore never matches the AllowRule and never
+     gets `verdict=passed`, unlike the genuine Googlebot IPs (66.249.x)
+     in the same trace. This is the sharpest argument for excluding
+     `passed` on AllowRule grounds rather than on UA or IP shape: a UA
+     match cannot distinguish this impostor from the real crawler (the
+     UA string is identical), an IP/CIDR rule cannot either (the
+     impostor's address is not stable across a botnet), and the
+     fingerprint scorer does not catch it (it presents as a browser on
+     every row). Only "did this client actually earn an AllowRule match"
+     separates them, which is exactly what excluding non-`passed`
+     traffic tests. The empty-UA cases in point 1 show the same property
+     from the other direction: this detector still catches a scraper
+     when every UA-derived signal (`detect_cloud_spray`'s UA path,
+     `detect_ua_rotation`) is entirely absent, because it never looks at
+     the UA at all.
+
+  Verdict scoping is the correctness-critical part of this detector, and
+  it was proven, not assumed: a request the WAF itself blocked,
+  challenged, or throttled never reaches a view (`middleware.py`'s
+  `_handle_verdict` returns a `HttpResponseForbidden`/429/redirect for
+  those verdicts without ever calling `_get_response`), so its
+  `response_code` reflects what the WAF returned, not a genuine 404 the
+  application produced; production data confirms this, blocked,
+  challenged, and throttled rows show exactly 0.0% 404 in the trace,
+  because none of them ever reached a view. Only rows whose verdict shows
+  the request reached the application (`allowed`, `logged`) are counted,
+  in both the numerator and the denominator; a WAF-produced verdict can
+  never dilute or inflate an IP's ratio.
+
+  `passed` (an AllowRule match) is excluded, and this was measured, not
+  assumed: over an identical 180-minute window at the default
+  20-request/85%-ratio gate, excluding `passed` traffic flagged zero IPs;
+  including it flagged 10, every one a verified Bingbot IP, for example
+  40.77.167.132 (34 requests, 100% 404) and 207.46.13.156 (25 requests,
+  100% 404), re-crawling roughly 14,897 dead URLs still present in its own
+  historical index (one URL was hit 478 times in three days), a
+  stale-sitemap/HTTP 410 gap on the site's side, not malicious behaviour.
+  Including `passed` would have made this detector auto-challenge (or,
+  with `DJANGO_WAF_SCRAPER_404_ACTION_BLOCK=True`, auto-block) Bingbot,
+  risking delisting. The exclusion is applied on exactly the same
+  "AllowRules win" precedence the rule engine already applies at its step
+  4, ahead of every BlockRule: this detector only ever creates a new
+  `(rule_type=ip, source=auto)` BlockRule and can neither touch nor take
+  precedence over an existing AllowRule, so excluding `passed` traffic
+  from the count is what keeps a verified crawler out of this detector's
+  results entirely, rather than relying on a rule that would never fire
+  anyway. Point 4 above (the spoofed Googlebot) is the same property from
+  the other direction: excluding `passed` protects the real crawler
+  without also protecting an impostor presenting the identical UA string
+  but never earning the AllowRule match.
+
+  A qualifying IP is created at `RuleAction.CHALLENGE` by default,
+  promoted to `RuleAction.BLOCK` only when
+  `DJANGO_WAF_SCRAPER_404_ACTION_BLOCK` is `True`. A 404 ratio is
+  behavioural, not proof of malice on its own (a broken external link
+  farm or a stale sitemap could in principle produce a similar shape),
+  so this follows the same staging precedent as `detect_cloud_spray`'s
+  UA path (issue #82): a coarse aggregate signal stages at CHALLENGE by
+  default.
+
+- `DJANGO_WAF_SCRAPER_404_MIN_REQUESTS` (default `20`). Minimum request
+  count an IP must reach within the window before its 404 ratio is
+  considered at all.
+
+- `DJANGO_WAF_SCRAPER_404_RATIO` (default `0.85`). Fraction of an IP's
+  application-reaching requests that must be 404 before it is flagged.
+
+- `DJANGO_WAF_SCRAPER_404_WINDOW_MINUTES` (default `1440`, 24 hours).
+  Deliberately wide, on the same precedent as
+  `DJANGO_WAF_UNSOLVED_SUBNET_WINDOW_MINUTES` (360, #93): a detector whose
+  attacker spreads volume thinly over time needs its own wider window, or
+  the count/ratio thresholds are never reachable regardless of tuning.
+  Simulated live against the traced deployment, sweeping window x
+  `DJANGO_WAF_SCRAPER_404_MIN_REQUESTS` at the default 0.85 ratio,
+  counting flagged IPs:
+
+  ```
+  window   180m: minreq 10 ->  0, 15 ->  0, 20 ->  0, 30 ->  0
+  window   360m: minreq 10 ->  3, 15 ->  2, 20 ->  1, 30 ->  1
+  window   720m: minreq 10 ->  4, 15 ->  3, 20 ->  3, 30 ->  2
+  window  1440m: minreq 10 -> 13, 15 -> 10, 20 ->  8, 30 ->  7
+  ```
+
+  At 180 minutes the detector caught nothing at all: this cohort's mean of
+  1.42 requests per IP over the full three-day trace means no individual
+  IP accumulates enough volume inside 3 hours to clear even the lowest
+  swept `min_requests`. 1440 minutes is the smallest swept window at
+  which the default `DJANGO_WAF_SCRAPER_404_MIN_REQUESTS=20` catches a
+  materially non-trivial, confirmed-scraper population (8 IPs), so it is
+  the default rather than a threshold change: the window, not the
+  count/ratio thresholds, was the wrong knob, exactly as it was for #93.
+
+- `DJANGO_WAF_SCRAPER_404_ACTION_BLOCK` (default `False`). When `True`,
+  a qualifying IP is created at `RuleAction.BLOCK` instead of
+  `RuleAction.CHALLENGE`.
+
+  **Upgrading**: no change to existing detection behaviour. This is a new,
+  additive detector; `run_all_detectors` and the `detect_anomalies` Celery
+  task now also run it, and their result dict gains a `scraper_404_rules`
+  key alongside the five existing ones.
+
 ## [2.3.0] - 2026-09-01
 
 ### Fixed

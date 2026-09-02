@@ -347,6 +347,51 @@ class TestRunDetectorProbeFalsifiability:
             assert result[detector_name]["alive"] is True
             assert result[detector_name]["rules_reported"] > 0
 
+    def test_probe_goes_red_when_scraper_404_ratio_cannot_match_its_fixture(self, db, monkeypatch):
+        """detect_scraper_404_ratio: the real query legitimately finds nothing.
+
+        Layer under test: the full real path. run_all_detectors is NOT
+        patched, and detect_scraper_404_ratio is NOT patched.
+
+        Pins the fixture to a fixed 25 requests (via the builder's own
+        total_requests parameter) while raising
+        DJANGO_WAF_SCRAPER_404_MIN_REQUESTS to 9999, so the real query's
+        ``total__gte=min_requests`` gate genuinely excludes the fixture IP
+        and the query returns [].
+
+        25, not a smaller number such as 5, is deliberately chosen to be
+        ABOVE the real, un-raised default of 20
+        (DJANGO_WAF_SCRAPER_404_MIN_REQUESTS's default): with the setting
+        at its real default, this fixture's 25 requests (100% 404) clears
+        both ``total__gte=20`` and the 85% ratio floor and so WOULD create a
+        rule, and the test would correctly fail, if the raise to 9999 were
+        ever removed or not actually reaching the query. A fixture pinned
+        below the real default (e.g. 5) fails the gate whether or not the
+        setting is raised at all, which would make this assertion pass
+        regardless of whether the monkeypatched conf value is real, live
+        conf read by the query.
+        """
+        from django_waf import conf
+        from django_waf.services import detector_probe as detector_probe_mod
+
+        real_builder = detector_probe_mod._build_scraper_404_fixture
+        monkeypatch.setattr(
+            detector_probe_mod,
+            "_build_scraper_404_fixture",
+            lambda *, now, conf: real_builder(now=now, conf=conf, total_requests=25),
+        )
+
+        with patch.object(conf, "DJANGO_WAF_SCRAPER_404_MIN_REQUESTS", 9999):
+            result = run_detector_probe(dry_run=True)
+
+        assert result["all_alive"] is False
+        assert result["silent_detectors"] == ["detect_scraper_404_ratio"]
+        assert result["detect_scraper_404_ratio"]["alive"] is False
+        assert result["detect_scraper_404_ratio"]["rules_reported"] == 0
+        for detector_name in DETECTOR_NAMES - {"detect_scraper_404_ratio"}:
+            assert result[detector_name]["alive"] is True
+            assert result[detector_name]["rules_reported"] > 0
+
 
 class TestRunDetectorProbeReportingLogic:
     """Mapping/reporting-logic tests: a hand-written run_all_detectors result
@@ -368,7 +413,8 @@ class TestRunDetectorProbeReportingLogic:
             "challenge_farm_rules": 1,
             "unsolved_challenge_rules": 1,
             "cloud_spray_rules": 1,
-            "total_rules_created": 4,
+            "scraper_404_rules": 1,
+            "total_rules_created": 5,
         }
 
         with patch(
@@ -392,7 +438,8 @@ class TestRunDetectorProbeReportingLogic:
             "challenge_farm_rules": 1,
             "unsolved_challenge_rules": 1,
             "cloud_spray_rules": 1,
-            "total_rules_created": 3,
+            "scraper_404_rules": 1,
+            "total_rules_created": 4,
         }
 
         with patch(
@@ -605,7 +652,8 @@ class TestProbeDetectorsCommand:
             "challenge_farm_rules": 1,
             "unsolved_challenge_rules": 1,
             "cloud_spray_rules": 1,
-            "total_rules_created": 4,
+            "scraper_404_rules": 1,
+            "total_rules_created": 5,
         }
 
         with patch(

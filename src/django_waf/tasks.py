@@ -66,7 +66,8 @@ def detect_anomalies() -> dict:
 
     Returns:
         Dict with keys: ua_rotation_rules, subnet_burst_rules,
-        challenge_farm_rules, total_rules_created.
+        challenge_farm_rules, unsolved_challenge_rules, cloud_spray_rules,
+        scraper_404_rules, total_rules_created.
 
     Scheduled: every 15 minutes (BR-ANOM-005).
     """

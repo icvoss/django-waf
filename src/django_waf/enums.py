@@ -94,6 +94,7 @@ class AnomalyType(models.TextChoices):
     CHALLENGE_FARM = "challenge_farm", _("Challenge farm")
     UNSOLVED_CHALLENGE = "unsolved_challenge", _("Unsolved challenge")
     CLOUD_SPRAY = "cloud_spray", _("Cloud spray")
+    SCRAPER_404 = "scraper_404", _("Scraper 404 ratio")
 
 
 class RequestLogSource(models.TextChoices):
