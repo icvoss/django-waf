@@ -234,10 +234,17 @@ jobs:
       # Guard against the exit-2-checked-nothing failure described above: a
       # real run analyses the whole src/ tree. If this count collapses, the
       # gate has stopped checking rather than started passing.
+      # Match on the "N source files" suffix, which BOTH summary forms end
+      # with: "Success: no issues found in 86 source files" on a clean run,
+      # and "Found 3 errors in 2 files (checked 86 source files)" otherwise.
+      # An earlier version of this guard keyed on the word "checked", which
+      # appears only in the second form, so it extracted 0 on exactly the
+      # runs that passed and failed this job on its first green tree.
       - name: Assert mypy actually analysed the source tree
         run: |
-          out="$(PYTHONPATH=. mypy src/ --no-error-summary 2>&1 || true)"
-          count="$(PYTHONPATH=. mypy src/ 2>&1 | grep -oE 'checked [0-9]+ source file' | grep -oE '[0-9]+' || echo 0)"
+          summary="$(PYTHONPATH=. mypy src/ 2>&1 | tail -1)"
+          echo "mypy summary: ${summary}"
+          count="$(printf '%s' "${summary}" | grep -oE '[0-9]+ source files?' | grep -oE '^[0-9]+' || echo 0)"
           echo "mypy analysed ${count} source files"
           if [ "${count}" -lt 80 ]; then
             echo "::error::mypy analysed only ${count} source files; expected 80+."
