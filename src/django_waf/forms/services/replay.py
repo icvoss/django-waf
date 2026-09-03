@@ -2,9 +2,8 @@
 
 When a form submission is FLAGGED and DJANGO_WAF_FORM_CHALLENGE_ON_FLAG
 is True, the orchestrator redirects to /waf/challenge/?next=...&form_
-replay=<token>. The replay token is a signed reference to data
-stashed in the request's session (or Redis, depending on
-DJANGO_WAF_FORM_REPLAY_STORE). On successful challenge, the verify view
+replay=<token>. The replay token is a signed reference to data stashed
+in the request's session. On successful challenge, the verify view
 looks up the data and re-issues the POST.
 
 Sensitive-field omission: password-like fields and file uploads are

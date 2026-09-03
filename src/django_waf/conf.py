@@ -185,13 +185,6 @@ def _DJANGO_WAF_FORM_POW_DIFFICULTY() -> int:
     return _get_setting("DJANGO_WAF_FORM_POW_DIFFICULTY", 12)
 
 
-# Replay-store backend. ``session`` uses Django's session framework
-# (signed cookie + server-side data); ``redis`` uses the same Redis
-# the rest of the WAF talks to. Most sites use session.
-def _DJANGO_WAF_FORM_REPLAY_STORE() -> str:
-    return _get_setting("DJANGO_WAF_FORM_REPLAY_STORE", "session")
-
-
 # Global per-defence score weights. Overridable per-form via the
 # ``defence_weights={...}`` kwarg on ``FormProtection``. The dict
 # collapses what would otherwise be eight separate weight settings
@@ -370,8 +363,11 @@ def _DJANGO_WAF_FEED_MIN_CONFIDENCE() -> float:
 # Enable reporting local detections back to the collective feed. Opt-in by
 # design (ADR-021 point 4): telemetry is never sent unless an operator sets
 # this to True, regardless of whether DJANGO_WAF_FEED_REPORT_URL is
-# configured. Setting this to True is the only step a site needs to start
-# reporting.
+# configured. Setting this to True in the Django settings module is the
+# only step a site needs to start reporting: this resolver never consults
+# os.environ (see _get_setting), so an environment variable of the same
+# name has no effect on its own and django_waf.W010 warns when one is set
+# with no matching Django setting (issue #106).
 def _DJANGO_WAF_FEED_REPORT() -> bool:
     return _get_setting("DJANGO_WAF_FEED_REPORT", False)
 

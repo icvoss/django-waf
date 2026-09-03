@@ -8,12 +8,41 @@ users out. The check refuses settings that would reproduce that lockout.
 
 from __future__ import annotations
 
+import os
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.core.management.base import SystemCheckError
 from django.test import override_settings
+
+
+@contextmanager
+def _setting_absent(name):
+    """Temporarily remove a Django setting attribute entirely, restoring it
+    (present or absent, whatever it was) on exit.
+
+    ``override_settings`` can only set/replace a value; it cannot delete an
+    attribute that a project's settings module already assigned, and
+    ``tests/settings.py`` assigns ``DJANGO_WAF_FEED_REPORT`` explicitly. This
+    check's whole distinction is "assigned at all", not "assigned to what
+    value", so the test needs to make the attribute genuinely absent, not
+    merely falsy.
+    """
+    from django.conf import settings
+
+    had_value = hasattr(settings, name)
+    previous = getattr(settings, name, None)
+    if had_value:
+        delattr(settings, name)
+    try:
+        yield
+    finally:
+        if had_value:
+            setattr(settings, name, previous)
+        elif hasattr(settings, name):
+            delattr(settings, name)
 
 
 def _run_checks():
@@ -92,6 +121,12 @@ def _run_challenge_urls_resolvable_check():
     from django_waf.checks import check_challenge_urls_resolvable
 
     return check_challenge_urls_resolvable(app_configs=None)
+
+
+def _run_env_only_settings_check():
+    from django_waf.checks import check_env_only_settings
+
+    return check_env_only_settings(app_configs=None)
 
 
 class TestChallengeDifficultyCheck:
@@ -933,6 +968,65 @@ class TestRedisVersionCheck:
             patch("django_waf.services.redis_client.get_redis_server_version", return_value=None),
         ):
             assert _run_redis_version_check() == []
+
+
+class TestEnvOnlySettingsCheck:
+    """django_waf.W010: warns when a DJANGO_WAF_* name is present in
+    os.environ but has no matching Django setting, so it has no effect
+    (issue #106). A real deployment set DJANGO_WAF_FEED_REPORT=True in
+    .env, believed reporting was on, and no telemetry was ever sent."""
+
+    def test_env_set_and_setting_absent_emits_w010_warning(self):
+        with (
+            _setting_absent("DJANGO_WAF_FEED_REPORT"),
+            patch.dict(os.environ, {"DJANGO_WAF_FEED_REPORT": "True"}),
+        ):
+            messages = _run_env_only_settings_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.W010"
+
+    def test_message_names_the_offending_variable(self):
+        with (
+            _setting_absent("DJANGO_WAF_FEED_REPORT"),
+            patch.dict(os.environ, {"DJANGO_WAF_FEED_REPORT": "True"}),
+        ):
+            messages = _run_env_only_settings_check()
+
+        assert "DJANGO_WAF_FEED_REPORT" in messages[0].msg
+
+    def test_env_set_and_setting_also_set_is_silent(self):
+        """The operator has taken the deliberate step of assigning the
+        Django setting too, so the environment variable's presence
+        alongside it is redundant, not a misconfiguration this check
+        should flag."""
+        with (
+            override_settings(DJANGO_WAF_FEED_REPORT=True),
+            patch.dict(os.environ, {"DJANGO_WAF_FEED_REPORT": "True"}),
+        ):
+            assert _run_env_only_settings_check() == []
+
+    def test_neither_set_is_silent(self):
+        with _setting_absent("DJANGO_WAF_FEED_REPORT"), patch.dict(os.environ):
+            os.environ.pop("DJANGO_WAF_FEED_REPORT", None)
+            assert _run_env_only_settings_check() == []
+
+    def test_env_var_with_no_django_waf_prefix_is_ignored(self):
+        """Only names django-waf actually resolves are in scope: an
+        unrelated FEED_REPORT-shaped variable with no DJANGO_WAF_ prefix
+        is not one of its settings and must not be reported."""
+        with patch.dict(os.environ, {"FEED_REPORT": "True"}):
+            assert _run_env_only_settings_check() == []
+
+    def test_covers_a_setting_other_than_feed_report(self):
+        """Issue #106 asked for every DJANGO_WAF_* name to be covered, not
+        only DJANGO_WAF_FEED_REPORT: the same trap applies to any of them.
+        DJANGO_WAF_SIGNING_KEY is not set in tests/settings.py, so it is
+        already absent without needing _setting_absent."""
+        with patch.dict(os.environ, {"DJANGO_WAF_SIGNING_KEY": "some-key"}):
+            messages = _run_env_only_settings_check()
+
+        assert any(m.id == "django_waf.W010" and "DJANGO_WAF_SIGNING_KEY" in m.msg for m in messages)
 
 
 class TestSitePasswordConfiguredCheck:

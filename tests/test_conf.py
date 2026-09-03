@@ -171,6 +171,16 @@ class TestCallTimeResolution:
         with pytest.raises(AttributeError):
             _ = conf_mod.DJANGO_WAF_NOT_A_REAL_SETTING
 
+    def test_form_replay_store_setting_is_gone(self):
+        """DJANGO_WAF_FORM_REPLAY_STORE was removed (#73): it was defined
+        with a "session" default but never read anywhere in the package,
+        the only replay-store implementation goes straight to the session
+        regardless. Accessing it must raise AttributeError like any other
+        unknown name, so a dead setting cannot silently come back.
+        """
+        with pytest.raises(AttributeError):
+            _ = conf_mod.DJANGO_WAF_FORM_REPLAY_STORE
+
 
 class TestSitePasswordEnabledDerivation:
     """DJANGO_WAF_SITE_PASSWORD_ENABLED recurses through the resolver for
