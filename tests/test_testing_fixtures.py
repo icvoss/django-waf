@@ -143,6 +143,135 @@ class TestChallengeTokenFactoryStatusInvariants:
 
 
 # ---------------------------------------------------------------------------
+# BlockRuleFactory source/is_active/review_status derivation
+# ---------------------------------------------------------------------------
+
+
+class TestBlockRuleFactoryReviewStatusInvariants:
+    """BlockRuleFactory must not produce a state production cannot (#91).
+
+    _get_or_create_auto_rule (anomaly_detector.py) pairs is_active=False with
+    review_status=PENDING, and is_active=True with review_status=NOT_APPLICABLE,
+    but only for source=AUTO. Admin and feed rules stay NOT_APPLICABLE
+    regardless of is_active.
+    """
+
+    @pytest.mark.django_db
+    def test_auto_source_inactive_derives_pending_review_status(self):
+        from django_waf.enums import ReviewStatus, RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
+
+        rule = BlockRuleFactory(source=RuleSource.AUTO, is_active=False)
+
+        assert rule.review_status == ReviewStatus.PENDING
+
+    @pytest.mark.django_db
+    def test_auto_source_active_derives_not_applicable_review_status(self):
+        from django_waf.enums import ReviewStatus, RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
+
+        rule = BlockRuleFactory(source=RuleSource.AUTO, is_active=True)
+
+        assert rule.review_status == ReviewStatus.NOT_APPLICABLE
+
+    @pytest.mark.django_db
+    def test_admin_source_inactive_stays_not_applicable(self):
+        from django_waf.enums import ReviewStatus, RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
+
+        rule = BlockRuleFactory(source=RuleSource.ADMIN, is_active=False)
+
+        assert rule.review_status == ReviewStatus.NOT_APPLICABLE
+
+    @pytest.mark.django_db
+    def test_admin_source_active_stays_not_applicable(self):
+        from django_waf.enums import ReviewStatus, RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
+
+        rule = BlockRuleFactory(source=RuleSource.ADMIN, is_active=True)
+
+        assert rule.review_status == ReviewStatus.NOT_APPLICABLE
+
+    @pytest.mark.django_db
+    def test_feed_source_inactive_stays_not_applicable(self):
+        from django_waf.enums import ReviewStatus, RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
+
+        rule = BlockRuleFactory(source=RuleSource.FEED, is_active=False)
+
+        assert rule.review_status == ReviewStatus.NOT_APPLICABLE
+
+    @pytest.mark.django_db
+    def test_feed_source_active_stays_not_applicable(self):
+        from django_waf.enums import ReviewStatus, RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
+
+        rule = BlockRuleFactory(source=RuleSource.FEED, is_active=True)
+
+        assert rule.review_status == ReviewStatus.NOT_APPLICABLE
+
+    @pytest.mark.django_db
+    def test_explicit_review_status_overrides_the_derived_value(self):
+        """A caller may deliberately want an inconsistent object (e.g.
+        reproducing the CONFIRMED/REJECTED states views.py's dashboard
+        actions write); explicit review_status must still win.
+        """
+        from django_waf.enums import ReviewStatus, RuleSource
+        from django_waf.testing.factories import BlockRuleFactory
+
+        rule = BlockRuleFactory(
+            source=RuleSource.AUTO,
+            is_active=False,
+            review_status=ReviewStatus.CONFIRMED,
+        )
+
+        assert rule.review_status == ReviewStatus.CONFIRMED
+
+
+# ---------------------------------------------------------------------------
+# RequestLogFactory matched_rule_id/matched_rule_type derivation
+# ---------------------------------------------------------------------------
+
+
+class TestRequestLogFactoryMatchedRuleInvariants:
+    """RequestLogFactory must not produce a state production cannot (#91).
+
+    rule_engine.evaluate_request always writes matched_rule_id and
+    matched_rule_type as a pair: both unset, or both set together. Neither
+    is ever set alone.
+    """
+
+    @pytest.mark.django_db
+    def test_default_leaves_both_matched_rule_fields_unset(self):
+        from django_waf.testing.factories import RequestLogFactory
+
+        log = RequestLogFactory()
+
+        assert log.matched_rule_id is None
+        assert log.matched_rule_type == ""
+
+    @pytest.mark.django_db
+    def test_matched_rule_id_alone_derives_a_non_empty_matched_rule_type(self):
+        import uuid
+
+        from django_waf.testing.factories import RequestLogFactory
+
+        log = RequestLogFactory(matched_rule_id=uuid.uuid4())
+
+        assert log.matched_rule_type != ""
+
+    @pytest.mark.django_db
+    def test_explicit_matched_rule_type_overrides_the_derived_value(self):
+        import uuid
+
+        from django_waf.testing.factories import RequestLogFactory
+
+        log = RequestLogFactory(matched_rule_id=uuid.uuid4(), matched_rule_type="allow")
+
+        assert log.matched_rule_type == "allow"
+
+
+# ---------------------------------------------------------------------------
 # waf_redis_mock
 # ---------------------------------------------------------------------------
 
