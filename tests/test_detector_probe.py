@@ -28,9 +28,10 @@ real query path, for every detector it names, is worth nothing.
 
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
@@ -40,6 +41,48 @@ from django.utils import timezone
 from django_waf.enums import MatchType, ReviewStatus, RuleAction, RuleSource, RuleType
 from django_waf.services.anomaly_detector import DETECTOR_NAMES
 from django_waf.services.detector_probe import run_detector_probe
+
+
+def _make_redis() -> MagicMock:
+    """A working Redis double with the rule-cache and rate-limiter pipeline
+    shapes configured, mirroring tests/test_scraper_404_ratio.py's helper of
+    the same name. detect_scraper_404_ratio's AllowRule re-resolution
+    (#140, #135) needs a reachable Redis client to load the rule cache; a
+    real (non-mocked) probe run that omitted this would report
+    detect_scraper_404_ratio SILENT under the fix's fail-closed design,
+    not because the detector is broken but because no qualifying IP could
+    ever clear the AllowRule check with no cache available. This module
+    exercises every detector against the real code path, so every test in
+    it needs Redis reachable exactly like a real deployment provides it.
+    """
+    redis = MagicMock()
+    redis.get.return_value = None
+    redis.set.return_value = True
+    redis.setex.return_value = True
+    redis.delete.return_value = 1
+    redis.incr.return_value = 1
+    redis.zcount.return_value = 0
+    now = time.time()
+    pipeline = MagicMock()
+    pipeline.execute.return_value = [1, 0, 1, [(str(now), now)], True]
+    redis.pipeline.return_value = pipeline
+    return redis
+
+
+@pytest.fixture(autouse=True)
+def _redis_client_available():
+    """Autouse: every test in this module runs detect_scraper_404_ratio for
+    real (directly or via run_all_detectors/run_detector_probe), so its
+    AllowRule re-resolution needs get_redis_client() to return a working
+    client, exactly as a real deployment does. Without this, the detector
+    fails closed on every test here for a reason unrelated to what each
+    test is actually checking."""
+    with patch(
+        "django_waf.services.redis_client.get_redis_client",
+        return_value=_make_redis(),
+    ):
+        yield
+
 
 # ---------------------------------------------------------------------------
 # run_detector_probe: falsifiability against the REAL detection path

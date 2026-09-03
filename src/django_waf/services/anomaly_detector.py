@@ -463,6 +463,17 @@ def detect_unsolved_challenges(
     # request middleware already logged, so counting both would double the
     # apparent challenged_count for every IP and distort this detector's
     # threshold checks.
+    #
+    # This is the opposite answer to detect_scraper_404_ratio's deliberate
+    # decision NOT to filter by source (#140, #135; see that detector's
+    # docstring): same field, different reason. CHALLENGED is a verdict
+    # rule_engine.evaluate_request actually produces, so a nginx row and a
+    # middleware row can both describe the identical request, and counting
+    # both here would double-count it. detect_scraper_404_ratio counts
+    # application 404s, which a nginx row observes independently (and, for
+    # an exempt path, exclusively, since the middleware never runs there),
+    # so there is no double-counting risk to filter away, and filtering it
+    # anyway would blind that detector to exempt-path scanner traffic.
     challenged_by_ip = list(
         RequestLog.objects.filter(
             timestamp__gte=cutoff,
@@ -1060,6 +1071,52 @@ def detect_scraper_404_ratio(
     step 4, ahead of every BlockRule and every scoring path, applied here
     at the counting stage rather than left to downstream staging alone.
 
+    Nginx-sourced rows (``RequestLog.source=RequestLogSource.NGINX_LOG``,
+    written by ``tasks.parse_access_log``) ARE deliberately counted
+    alongside middleware-sourced rows, with no ``source`` filter anywhere in
+    this detector, and this is load-bearing, not an oversight (#140, #135).
+    ``middleware.py``'s exempt-path short-circuit (BR-EVAL-001) returns
+    before a ``RequestLog`` row is ever written, so a request to an exempt
+    path exists ONLY as a nginx row; scanner probes frequently target
+    exactly those paths, and dropping nginx rows here would make this
+    detector blind to them. Restricting to ``source=middleware`` was
+    considered and rejected: traced against the production incident below,
+    it would have cut this detector's input to roughly 2% of what it
+    receives today.
+
+    The cost of counting nginx rows is that a nginx row's verdict is
+    INFERRED from the access-log status code
+    (``tasks._infer_verdict_from_status``), not observed by
+    ``rule_engine.evaluate_request``, so it can never be ``Verdict.PASSED``:
+    an inferred verdict has no way to carry an AllowRule match. A verified
+    crawler whose traffic is logged only via nginx (or whose nginx rows
+    simply outnumber its middleware rows) therefore cannot be excluded by
+    the ``reached_app`` filter above, no matter how it is worded, because
+    the exclusion that filter relies on (``Verdict.PASSED``) never appears
+    on those rows in the first place.
+
+    This is exactly what happened in production (#140): a published Bingbot
+    /24 produced 52,165 middleware rows, correctly excluded as
+    ``verdict=passed``, and 2,828 nginx rows at 78.9% 404, inferred as
+    ``verdict=allowed`` (the default inferred verdict for a non-403/429/
+    challenge-redirect status) and therefore counted. This detector created
+    70 rules in 24 hours, 34 of them covering Bingbot ranges, auto-
+    challenging a verified search crawler in a real deployment.
+
+    The fix (#140, #135) is to resolve AllowRules a second time, at the
+    counting stage, for any candidate IP that has already cleared both the
+    ``min_requests`` floor and the ``ratio_floor`` gate below, regardless of
+    which ``source`` its rows carry: see the AllowRule-exclusion block
+    inside the candidate loop. This keeps nginx rows counted (preserving
+    exempt-path visibility) while restoring the same "a verified crawler is
+    never flagged" guarantee the ``Verdict.PASSED`` exclusion already gives
+    middleware-sourced rows, without evaluating AllowRules for all ~194,000
+    rows in a typical window (only for the handful of IPs that already
+    look like scrapers). Rejected as an alternative: evaluating AllowRules
+    inside ``tasks.parse_access_log`` itself, which is the wrong layer (a
+    log-ingestion task should not carry WAF rule-evaluation cost) and the
+    wrong cost shape (every ingested row, not just detector candidates).
+
     Excluding ``passed`` does more than protect a legitimate crawler from
     this detector's own count: it is what lets the detector *distinguish*
     a real verified crawler from an impostor presenting the identical UA
@@ -1159,17 +1216,108 @@ def detect_scraper_404_ratio(
         .filter(total__gte=min_requests)
     )
 
-    created_rules = []
-    expiry = timezone.now() + timedelta(hours=conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS)
-
+    # The ratio gate itself stays exactly as it was (see the comment above):
+    # applied here, in Python, on the already-fetched integer counts. Only
+    # rows that clear BOTH gates are candidates for rule creation, so
+    # everything from here on (the AllowRule exclusion check below, in
+    # particular) is sized to "how many IPs actually look like scrapers",
+    # never to the full candidate set above.
+    qualifying_rows = []
     for row in candidates:
         total = row["total"]
         count_404 = row["count_404"]
         ratio = count_404 / total
         if ratio < ratio_floor:
             continue
+        qualifying_rows.append((row["ip_address"], total, count_404, ratio))
 
-        ip = row["ip_address"]
+    # AllowRule exclusion (#140, #135), resolved here at the counting stage
+    # rather than relied upon from RequestLog.verdict. Built once, outside
+    # the loop below, for two reasons: _check_allow_rules needs a RuleCache
+    # (loaded from Redis, or rebuilt from the DB on a cache miss) and this
+    # detector only ever needs ONE snapshot of the active rule set for a
+    # single run, and a per-IP cache load would turn what is normally a
+    # single Redis GET into one GET per qualifying IP for no benefit.
+    #
+    # Fails CLOSED, not open: if the AllowRule check cannot be evaluated at
+    # all (no Redis client available, or the cache fails to load), every
+    # qualifying IP in this run is treated as excluded rather than flagged.
+    # A 404-ratio anomaly is a coarse behavioural signal, not proof of
+    # malice (see the Action staging note below); flagging it anyway when
+    # the one check that could exonerate a verified crawler is unavailable
+    # would silently reopen the exact production incident (#140) this fix
+    # exists to close, on every Redis hiccup. allow_check_available is
+    # threaded through explicitly, rather than leaving cache=None to mean
+    # "no rules matched", because an empty RuleCache and an unavailable one
+    # must NOT be handled the same way: an empty cache correctly excludes
+    # nobody, an unavailable one must exclude everybody in this run.
+    allow_check_available = True
+    cache = None
+    redis_client_for_run = None
+    if qualifying_rows:
+        from django_waf.services.redis_client import get_redis_client
+        from django_waf.services.rule_engine import load_rule_cache
+
+        redis_client_for_run = get_redis_client()
+        if redis_client_for_run is None:
+            allow_check_available = False
+            logger.warning(
+                "django-waf: detect_scraper_404_ratio could not obtain a Redis "
+                "client; skipping AllowRule verification and treating every "
+                "qualifying IP this run as excluded (fail-closed, #140)."
+            )
+        else:
+            try:
+                cache = load_rule_cache(redis_client_for_run)
+            except Exception:
+                allow_check_available = False
+                logger.warning(
+                    "django-waf: detect_scraper_404_ratio failed to load the "
+                    "rule cache; skipping AllowRule verification and treating "
+                    "every qualifying IP this run as excluded (fail-closed, #140).",
+                    exc_info=True,
+                )
+
+    # Distinct User-Agents observed per qualifying IP within the same
+    # window, fetched in ONE query for every qualifying IP rather than one
+    # query per IP. _check_allow_rules needs a user_agent argument (a
+    # UA-typed AllowRule, e.g. the seeded Googlebot rule, matches on it),
+    # and a candidate IP can carry more than one distinct UA across its
+    # rows. The rule applied below is fail-safe toward NOT flagging: if ANY
+    # user agent observed for an IP in this window matches an AllowRule,
+    # the whole IP is excluded, on the reasoning that a genuine crawler's
+    # rows all carry its own UA, so a single non-matching row (a redirect
+    # target logged without the client's own header, a truncated log line,
+    # or similar) must not be enough to strip the exclusion and reintroduce
+    # the #140 incident.
+    user_agents_by_ip: dict[str, set] = {}
+    if qualifying_rows:
+        qualifying_ips = [ip for ip, _, _, _ in qualifying_rows]
+        ua_rows = (
+            RequestLog.objects.filter(ip_address__in=qualifying_ips, timestamp__gte=cutoff)
+            .values_list("ip_address", "user_agent")
+            .distinct()
+        )
+        for ip, user_agent in ua_rows:
+            user_agents_by_ip.setdefault(ip, set()).add(user_agent)
+
+    created_rules = []
+    expiry = timezone.now() + timedelta(hours=conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS)
+
+    for ip, total, count_404, ratio in qualifying_rows:
+        if not allow_check_available:
+            continue
+
+        if _scraper_candidate_matches_allow_rule(ip, user_agents_by_ip.get(ip, {""}), cache, redis_client_for_run):
+            logger.info(
+                "django-waf: detect_scraper_404_ratio excluded %s (ratio=%.0f%%, "
+                "total=%d), it matches an active AllowRule (#140, #135).",
+                ip,
+                ratio * 100,
+                total,
+            )
+            continue
+
         details = {
             "total_requests": total,
             "count_404": count_404,
@@ -1216,6 +1364,53 @@ def detect_scraper_404_ratio(
                 )
 
     return created_rules
+
+
+def _scraper_candidate_matches_allow_rule(
+    ip_address: str,
+    user_agents,
+    cache,
+    redis_client,
+) -> bool:
+    """Return True if any UA observed for ``ip_address`` matches an active AllowRule.
+
+    Reuses ``rule_engine._check_allow_rules`` (the same matcher
+    ``evaluate_request`` calls at its own step 4), never a reimplementation:
+    the FCrDNS verification an AllowRule can require
+    (``rule_engine._verify_rdns``) is security-critical and must stay a
+    single source of truth (#140, #135; see ``detect_scraper_404_ratio``'s
+    docstring for the full incident).
+
+    ``user_agents`` is every distinct User-Agent this IP presented in the
+    detection window. Checked with an OR: the IP is excluded (returns True)
+    the moment ANY of its UAs matches, the fail-safe-toward-not-flagging
+    choice documented on the caller. A genuine crawler is not expected to
+    present more than one UA in practice, but a multi-UA IP is treated the
+    same as a single-UA one rather than as suspicious in its own right;
+    this detector's job is the 404 ratio, not UA consistency (that is
+    ``detect_ua_rotation``'s signal).
+
+    Any exception from the matcher itself (as opposed to the caller's own
+    "could not get a Redis client / could not load the cache" fail-closed
+    path) is also treated as fail-closed: caught here, logged, and treated
+    as a match (excluded), never allowed to propagate and abort the whole
+    detector run over one IP's lookup.
+    """
+    from django_waf.services.rule_engine import _check_allow_rules
+
+    for user_agent in user_agents:
+        try:
+            if _check_allow_rules(ip_address, user_agent, cache, redis_client) is not None:
+                return True
+        except Exception:
+            logger.warning(
+                "django-waf: detect_scraper_404_ratio AllowRule check raised for "
+                "%s; treating as excluded (fail-closed, #140).",
+                ip_address,
+                exc_info=True,
+            )
+            return True
+    return False
 
 
 def run_all_detectors(

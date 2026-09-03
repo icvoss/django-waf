@@ -16,14 +16,15 @@ falsify the fixture rather than the fixture silently tracking the raise.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.utils import timezone
 
-from django_waf.enums import RuleAction, RuleSource, RuleType, Verdict
+from django_waf.enums import MatchType, RequestLogSource, RuleAction, RuleSource, RuleType, Verdict
 from django_waf.services.anomaly_detector import detect_scraper_404_ratio
-from django_waf.testing.factories import RequestLogFactory
+from django_waf.testing.factories import AllowRuleFactory, RequestLogFactory
 
 pytestmark = pytest.mark.django_db
 
@@ -36,9 +37,14 @@ def _make_requests(
     verdict: str = Verdict.ALLOWED,
     response_code_non_404: int = 200,
     timestamp=None,
+    source: str = RequestLogSource.MIDDLEWARE,
+    user_agent: str | None = None,
 ) -> None:
     """Create ``total`` RequestLog rows for ``ip``, ``count_404`` of them 404."""
     now = timestamp or timezone.now()
+    kwargs = {}
+    if user_agent is not None:
+        kwargs["user_agent"] = user_agent
     for i in range(total):
         RequestLogFactory(
             ip_address=ip,
@@ -46,7 +52,50 @@ def _make_requests(
             verdict=verdict,
             response_code=404 if i < count_404 else response_code_non_404,
             timestamp=now,
+            source=source,
+            **kwargs,
         )
+
+
+def _make_redis() -> MagicMock:
+    """Mirrors tests/test_rdns_fcrdns.py's _make_redis: a working Redis
+    double with the rule-cache and rate-limiter pipeline shapes configured
+    so a call into rule_engine machinery doesn't hit an unconfigured
+    MagicMock partway through."""
+    redis = MagicMock()
+    redis.get.return_value = None
+    redis.set.return_value = True
+    redis.setex.return_value = True
+    redis.delete.return_value = 1
+    redis.incr.return_value = 1
+    redis.zcount.return_value = 0
+    now = time.time()
+    pipeline = MagicMock()
+    pipeline.execute.return_value = [1, 0, 1, [(str(now), now)], True]
+    redis.pipeline.return_value = pipeline
+    return redis
+
+
+@pytest.fixture(autouse=True)
+def _redis_client_available():
+    """Autouse: every test in this module runs detect_scraper_404_ratio for
+    real, and the AllowRule re-resolution step (#140, #135) needs
+    get_redis_client() to return a working client to load the rule cache.
+    Without this, every pre-existing test in this module that expects a
+    rule to be created would instead fail closed for a reason unrelated to
+    what it is actually checking.
+
+    Tests in TestDetectScraper404RatioNginxAllowRuleExclusion that need a
+    different Redis behaviour (in particular, the unavailable-client case)
+    nest their own ``patch(...get_redis_client...)`` inside this one, which
+    overrides it for their duration and is restored on exit, so this
+    fixture does not interfere with them.
+    """
+    with patch(
+        "django_waf.services.redis_client.get_redis_client",
+        return_value=_make_redis(),
+    ):
+        yield
 
 
 class TestDetectScraper404RatioCreatesRule:
@@ -403,6 +452,165 @@ class TestDetectScraper404RatioWindow:
         with (
             patch("django_waf.conf.DJANGO_WAF_SCRAPER_404_MIN_REQUESTS", 20),
             patch("django_waf.conf.DJANGO_WAF_SCRAPER_404_RATIO", 0.85),
+        ):
+            created = detect_scraper_404_ratio(window_minutes=180)
+
+        assert created == []
+
+
+class TestDetectScraper404RatioNginxAllowRuleExclusion:
+    """Regression coverage for #140/#135: the production incident this
+    detector's verdict-scoping filter could not catch on its own, because a
+    nginx-sourced row's verdict is inferred from the status code and can
+    never be Verdict.PASSED. These tests would fail if the AllowRule
+    exclusion at the counting stage were removed, proving it is load-bearing
+    rather than redundant with the existing reached_app filter."""
+
+    def test_verified_crawler_nginx_sourced_allowed_verdict_with_allow_rule_is_excluded(self):
+        """The exact #140 shape: source=nginx_log, verdict=allowed (never
+        passed, since nginx verdicts are inferred, not observed), 100% 404,
+        WITH a matching active AllowRule. Must NOT be flagged.
+
+        Without the fix this creates a rule, because reached_app's
+        Verdict.PASSED exclusion never applies to a nginx-sourced row in
+        the first place: the row is verdict=allowed, one of the two
+        verdicts the base filter counts.
+        """
+        ip = "40.77.167.132"  # a real Bingbot address from the traced incident
+        AllowRuleFactory(
+            rule_type=RuleType.IP,
+            match_type=MatchType.EXACT,
+            pattern=ip,
+            verify_rdns=False,
+            is_active=True,
+        )
+        _make_requests(
+            ip,
+            total=34,
+            count_404=34,
+            verdict=Verdict.ALLOWED,
+            source=RequestLogSource.NGINX_LOG,
+        )
+
+        with (
+            patch("django_waf.conf.DJANGO_WAF_SCRAPER_404_MIN_REQUESTS", 20),
+            patch("django_waf.conf.DJANGO_WAF_SCRAPER_404_RATIO", 0.85),
+            patch("django_waf.conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24),
+            patch(
+                "django_waf.services.redis_client.get_redis_client",
+                return_value=_make_redis(),
+            ),
+        ):
+            created = detect_scraper_404_ratio(window_minutes=180)
+
+        assert created == []
+
+    def test_impostor_same_user_agent_but_no_allow_rule_match_is_still_flagged(self):
+        """An impostor IP presents the identical User-Agent a seeded
+        UA+rDNS AllowRule requires, but its PTR record does not
+        forward-confirm (FCrDNS fails), so it never matches the AllowRule.
+        Must still be flagged.
+
+        Proves the fix preserves BR-ANOM-014's discrimination property
+        (a real crawler is excluded, an impostor presenting the same UA is
+        not) rather than switching the detector off for anyone claiming to
+        be a crawler.
+        """
+        import socket
+
+        crawler_ua = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+        AllowRuleFactory(
+            rule_type=RuleType.UA,
+            match_type=MatchType.CONTAINS,
+            pattern="Googlebot",
+            verify_rdns=True,
+            rdns_pattern=r"\.googlebot\.com$|\.google\.com$",
+            is_active=True,
+        )
+
+        impostor_ip = "45.45.237.69"
+        _make_requests(
+            impostor_ip,
+            total=27,
+            count_404=24,
+            verdict=Verdict.ALLOWED,
+            source=RequestLogSource.NGINX_LOG,
+            user_agent=crawler_ua,
+        )
+
+        with (
+            patch("django_waf.conf.DJANGO_WAF_SCRAPER_404_MIN_REQUESTS", 20),
+            patch("django_waf.conf.DJANGO_WAF_SCRAPER_404_RATIO", 0.85),
+            patch("django_waf.conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24),
+            patch(
+                "django_waf.services.redis_client.get_redis_client",
+                return_value=_make_redis(),
+            ),
+            patch(
+                "django_waf.services.rule_engine.socket.gethostbyaddr",
+                side_effect=socket.herror("no PTR record"),
+            ),
+        ):
+            created = detect_scraper_404_ratio(window_minutes=180)
+
+        assert len(created) == 1
+        assert created[0].pattern == impostor_ip
+
+    def test_malicious_nginx_sourced_ip_with_no_allow_rule_at_all_is_still_flagged(self):
+        """A malicious scraper, nginx-sourced, no AllowRule anywhere in the
+        system. Must still be flagged: proves nginx rows remain counted and
+        the detector was not quietly disabled by adding the AllowRule
+        check."""
+        ip = "4.205.62.107"
+        _make_requests(
+            ip,
+            total=25,
+            count_404=25,
+            verdict=Verdict.ALLOWED,
+            source=RequestLogSource.NGINX_LOG,
+        )
+
+        with (
+            patch("django_waf.conf.DJANGO_WAF_SCRAPER_404_MIN_REQUESTS", 20),
+            patch("django_waf.conf.DJANGO_WAF_SCRAPER_404_RATIO", 0.85),
+            patch("django_waf.conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24),
+            patch(
+                "django_waf.services.redis_client.get_redis_client",
+                return_value=_make_redis(),
+            ),
+        ):
+            created = detect_scraper_404_ratio(window_minutes=180)
+
+        assert len(created) == 1
+        assert created[0].pattern == ip
+
+    def test_allow_rule_check_unavailable_fails_closed_and_does_not_flag(self):
+        """When the AllowRule check cannot be evaluated at all (no Redis
+        client obtainable), a qualifying IP is NOT flagged, even with no
+        AllowRule in the system and a 100% 404 ratio that would otherwise
+        create a rule.
+
+        This is the fail-closed guarantee: an unverifiable check must never
+        let a flag through, exactly as an unverifiable check must never let
+        a request through elsewhere in this package (BR-EVAL-007).
+        """
+        ip = "10.10.10.200"
+        _make_requests(
+            ip,
+            total=25,
+            count_404=25,
+            verdict=Verdict.ALLOWED,
+            source=RequestLogSource.NGINX_LOG,
+        )
+
+        with (
+            patch("django_waf.conf.DJANGO_WAF_SCRAPER_404_MIN_REQUESTS", 20),
+            patch("django_waf.conf.DJANGO_WAF_SCRAPER_404_RATIO", 0.85),
+            patch("django_waf.conf.DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24),
+            patch(
+                "django_waf.services.redis_client.get_redis_client",
+                return_value=None,
+            ),
         ):
             created = detect_scraper_404_ratio(window_minutes=180)
 
