@@ -209,8 +209,13 @@ class WafMiddleware:
 
         Fails open: any error resolving the country (missing database,
         geoip2 not installed, lookup exception) falls through to normal
-        evaluation rather than blocking. Logging the block is best-effort —
-        a logging failure never prevents the 403 from being returned.
+        evaluation rather than blocking. Logging the block is best-effort,
+        a logging failure never prevents the block response from being
+        returned. The block response itself goes through
+        ``_build_block_response`` (#76), which guards every failure of its
+        own handler path internally and never raises, so a broken block
+        response handler cannot escape into this method's own
+        fail-open except clause and turn a country block into a pass.
         """
         from django_waf import conf
 
@@ -227,15 +232,35 @@ class WafMiddleware:
                 return None
 
             self._log_country_block(request, ip_address, user_agent, path, country)
-            # NOT routed through DJANGO_WAF_BLOCK_RESPONSE_HANDLER (#74).
-            # That hook's contract is (request, result), and this path has no
-            # EvaluationResult at all: the country decision is taken here,
-            # before evaluate_request() ever runs. Synthesising a fake result
-            # just to satisfy the signature would be a worse defect than the
-            # gap, so the gap is deliberate and recorded. A consumer needing
-            # a custom shape here should exempt the path or gate country
-            # blocking at the edge. Tracked as #76.
-            return HttpResponseForbidden("Access denied.")
+
+            # Routed through DJANGO_WAF_BLOCK_RESPONSE_HANDLER (#76). This
+            # path has no EvaluationResult from evaluate_request(): the
+            # country decision is taken here, before evaluate_request() ever
+            # runs. But the values below are not a fake result invented to
+            # satisfy the signature: they are exactly what _log_country_block,
+            # five lines above, already writes to RequestLog for this same
+            # path. That is the code's own honest description of a country
+            # block, so building the same EvaluationResult and handing it to
+            # the same hook is correct, not a synthesis.
+            #
+            # The country code itself has no field on EvaluationResult (the
+            # NamedTuple is a public type consumers unpack, so widening it
+            # is a bigger API change than this fix). It is carried instead
+            # as request.waf_blocked_country, set just before the handler
+            # runs, so a handler wanting it reads
+            # getattr(request, "waf_blocked_country", None).
+            from django_waf.enums import RuleAction, Verdict
+            from django_waf.services.rule_engine import EvaluationResult
+
+            request.waf_blocked_country = country
+            result = EvaluationResult(
+                verdict=Verdict.BLOCKED,
+                action=RuleAction.BLOCK,
+                matched_rule_id=None,
+                matched_rule_type="",
+                anomaly_score=None,
+            )
+            return self._build_block_response(request, result)
         except Exception:
             logger.exception("django-waf: error during country-block check — failing open")
             return None
@@ -417,6 +442,16 @@ class WafMiddleware:
         must query for it, and should weigh that cost against the traffic
         it is blocking.
 
+        ``request.waf_blocked_country`` is present, holding the ISO 3166-1
+        alpha-2 country code, only when this call came from
+        ``_check_country_block`` (#76). It is absent on every other BLOCKED
+        verdict: ``EvaluationResult`` carries no country field, deliberately
+        (it is a public NamedTuple that consumers unpack, so widening it is
+        a larger API change than this attribute), so a handler that wants
+        to branch on it must read it defensively::
+
+            country = getattr(request, "waf_blocked_country", None)
+
         The return value must be an ``HttpResponse``, of any subclass and
         any status code. The middleware returns it unaltered.
 
@@ -447,9 +482,10 @@ class WafMiddleware:
 
         SCOPE
 
-        BLOCKED verdicts only. THROTTLED and CHALLENGED keep their own
-        responses, and ``_check_country_block``'s direct 403 is out of
-        scope (see the comment at that return).
+        BLOCKED verdicts only, which now includes country blocks (#76):
+        ``_check_country_block`` builds its own ``EvaluationResult`` and
+        calls this method too, rather than returning a hardcoded response
+        directly. THROTTLED and CHALLENGED keep their own responses.
         """
         from django_waf import conf
 
