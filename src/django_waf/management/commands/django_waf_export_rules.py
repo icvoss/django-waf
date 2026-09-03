@@ -84,7 +84,7 @@ class Command(BaseCommand):
 def _serialise_block_rule(rule) -> dict:
     """Return a JSON-serialisable dict of the meaningful BlockRule fields.
 
-    Excludes id, created_at, and updated_at — those are regenerated on
+    Excludes id, created_at, and updated_at, those are regenerated on
     import.
     """
     return {
@@ -109,7 +109,7 @@ def _serialise_block_rule(rule) -> dict:
 def _serialise_allow_rule(rule) -> dict:
     """Return a JSON-serialisable dict of the meaningful AllowRule fields.
 
-    Excludes id, created_at, and updated_at — those are regenerated on
+    Excludes id, created_at, and updated_at, those are regenerated on
     import.
     """
     return {

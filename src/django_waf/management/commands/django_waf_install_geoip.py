@@ -83,7 +83,7 @@ class Command(BaseCommand):
             return
 
         if result["skipped"]:
-            self.stdout.write(self.style.SUCCESS(f"GeoIP database at {result['path']} is fresh — skipped download."))
+            self.stdout.write(self.style.SUCCESS(f"GeoIP database at {result['path']} is fresh, skipped download."))
             return
 
         size_mb = result["size_bytes"] / (1024 * 1024)

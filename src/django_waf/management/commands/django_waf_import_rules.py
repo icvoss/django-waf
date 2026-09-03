@@ -3,7 +3,7 @@ Management command: django_waf_import_rules
 
 Loads BlockRule and AllowRule records from the JSON produced by
 django_waf_export_rules. Imported rules are always tagged
-source=admin — they are never re-tagged as feed/auto, regardless of
+source=admin, they are never re-tagged as feed/auto, regardless of
 what the exporting site originally recorded.
 """
 
@@ -74,7 +74,7 @@ class Command(BaseCommand):
 
         with transaction.atomic():
             if replace:
-                # AllowRule has no source field — "admin rules" for allow
+                # AllowRule has no source field, "admin rules" for allow
                 # rules means all of them, since every AllowRule is
                 # hand-authored (there is no auto/feed source for allows).
                 replaced_block_count = BlockRule.objects.filter(source=RuleSource.ADMIN).count()
@@ -147,7 +147,7 @@ class Command(BaseCommand):
                 existing_allow_keys.add(key)
 
             if dry_run:
-                # Roll back — dry-run must not persist anything.
+                # Roll back, dry-run must not persist anything.
                 transaction.set_rollback(True)
 
         prefix = "[dry-run] " if dry_run else ""

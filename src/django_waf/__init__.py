@@ -1,4 +1,4 @@
-"""django-waf — Self-hosted WAF middleware for Django."""
+"""django-waf, Self-hosted WAF middleware for Django."""
 
 from importlib.metadata import version
 

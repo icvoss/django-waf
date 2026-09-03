@@ -5,7 +5,7 @@ The package was renamed ``icv_waf`` -> ``django_waf`` in 1.0.0. This shim keeps
 ``DeprecationWarning``, by aliasing the ``icv_waf`` import namespace onto
 ``django_waf`` via a meta-path finder.
 
-It covers **Python imports only**. It is NOT a Django app — do not put
+It covers **Python imports only**. It is NOT a Django app, do not put
 ``"icv_waf"`` in ``INSTALLED_APPS``; use ``"django_waf"``. The app label, model
 tables, settings prefix (``DJANGO_WAF_*``) and management commands
 (``django_waf_*``) all moved to the new name with no compatibility alias; see
@@ -28,7 +28,7 @@ warnings.warn(
     "release. Import from 'django_waf' instead (e.g. 'from django_waf.forms "
     "import ...'). Note the app label, DB tables, settings prefix (now "
     "DJANGO_WAF_*) and management commands (now django_waf_*) also changed in "
-    "1.0.0 — see the CHANGELOG upgrade note.",
+    "1.0.0, see the CHANGELOG upgrade note.",
     DeprecationWarning,
     stacklevel=2,
 )
@@ -51,7 +51,7 @@ class _IcvWafAliasFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         return sys.modules[spec.name]
 
     def exec_module(self, module):
-        # Nothing to execute — module is the already-imported django_waf one.
+        # Nothing to execute, module is the already-imported django_waf one.
         return None
 
 

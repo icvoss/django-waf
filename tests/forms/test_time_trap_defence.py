@@ -52,7 +52,7 @@ class TestRenderFields:
 
 
 # ---------------------------------------------------------------------------
-# evaluate — truth table
+# evaluate, truth table
 # ---------------------------------------------------------------------------
 
 
@@ -142,7 +142,7 @@ class TestConfigurable:
     def test_hard_floor_is_not_configurable_via_min(self):
         """Setting min_fill_seconds to 0 cannot weaken the 0.5s hard floor.
 
-        The floor is a security invariant — a configuration mistake
+        The floor is a security invariant, a configuration mistake
         shouldn't lower it.
         """
         from django_waf.forms.defences.time_trap import TimeTrapDefence
@@ -163,7 +163,7 @@ class TestConfigurable:
 class TestDefensive:
     def test_missing_token_payload_passes_silently(self):
         """No token_payload means RenderTokenDefence already blocked.
-        Don't compound the penalty — just pass."""
+        Don't compound the penalty, just pass."""
         from django_waf.forms.defences.time_trap import TimeTrapDefence
 
         defence = TimeTrapDefence()

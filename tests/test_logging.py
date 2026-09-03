@@ -1,7 +1,7 @@
 """Tests for django_waf.logging.WafStructuredFormatter.
 
 Distinct from django_waf.forms.logging, which is the form-protection
-subsystem's own structured logger — this covers the general-purpose
+subsystem's own structured logger, this covers the general-purpose
 JSON formatter consuming projects attach to the ``django_waf`` logger.
 """
 

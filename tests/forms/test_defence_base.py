@@ -91,7 +91,7 @@ class TestRenderContext:
     def test_distinct_instances_have_distinct_config_dicts(self):
         """Default factory must give each context its own dict.
 
-        A shared mutable default would leak state between forms — the
+        A shared mutable default would leak state between forms, the
         worst kind of test-flake source. Frozen dataclass + default_factory
         avoids it but worth pinning behaviourally.
         """
@@ -119,7 +119,7 @@ class TestEvaluateContext:
         assert ctx.token_payload is None
 
     def test_submitted_data_is_required(self):
-        """Submitted data has no default — the orchestrator always
+        """Submitted data has no default, the orchestrator always
         passes it. Pin so a future refactor doesn't introduce a
         misleading empty default."""
         from django_waf.forms.defences.base import EvaluateContext
@@ -129,7 +129,7 @@ class TestEvaluateContext:
 
 
 # ---------------------------------------------------------------------------
-# Defence protocol — structural compliance
+# Defence protocol, structural compliance
 # ---------------------------------------------------------------------------
 
 

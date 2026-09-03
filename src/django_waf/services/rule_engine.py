@@ -31,7 +31,7 @@ class EvaluationResult(NamedTuple):
     matched_rule_id: UUID | None
     matched_rule_type: str  # "" when no rule matched; RequestLog.matched_rule_type is NOT NULL
     anomaly_score: float | None
-    # Populated only on THROTTLED verdicts (#30) — the true seconds until the
+    # Populated only on THROTTLED verdicts (#30), the true seconds until the
     # sliding window's oldest counted event ages out. None for every other
     # verdict. Defaulted so existing positional/keyword construction sites
     # that predate this field keep working unchanged.
@@ -63,7 +63,7 @@ _BLOCKED_IP_KEY = "waf:blocked:{ip}"
 _BOT_FCRDNS_KEY = "waf:bot_fcrdns:{ip}:{pattern_hash}"
 _STATS_KEY = "waf:stats:today"
 _CACHE_TTL = 600  # 10 minutes
-# Positive FCrDNS verifications are cached for 24 hours — PTR/forward DNS
+# Positive FCrDNS verifications are cached for 24 hours, PTR/forward DNS
 # records for legitimate crawler infrastructure change rarely.
 _FCRDNS_POSITIVE_CACHE_TTL = 86400
 
@@ -72,7 +72,7 @@ _REBUILD_LOCK_TTL = 5  # seconds
 _REBUILD_LOCK_RETRIES = 3
 _REBUILD_LOCK_RETRY_DELAY = 0.1  # seconds
 
-# In-process rule cache — avoids Redis GET + JSON parse + regex compilation
+# In-process rule cache, avoids Redis GET + JSON parse + regex compilation
 # on every request when the rule version hasn't changed.
 _process_cache: RuleCache | None = None
 _process_cache_version: int = -1
@@ -109,7 +109,7 @@ def load_rule_cache(redis_client) -> RuleCache:
     """
     global _process_cache, _process_cache_version  # noqa: PLW0603
 
-    # Get current version — single Redis GET (integer)
+    # Get current version, single Redis GET (integer)
     raw_version = redis_client.get(_RULES_VERSION_KEY)
     version = int(raw_version) if raw_version else 0
 
@@ -139,7 +139,7 @@ def load_rule_cache(redis_client) -> RuleCache:
         except (json.JSONDecodeError, KeyError):
             pass  # fall through to rebuild
 
-    # Cache miss or corrupt — rebuild from DB
+    # Cache miss or corrupt, rebuild from DB
     result = _rebuild_rule_cache(redis_client, version, cache_key)
     _process_cache = result
     _process_cache_version = version
@@ -153,7 +153,7 @@ def _rebuild_rule_cache(redis_client, version: int, cache_key: str) -> RuleCache
     worker processes racing on a cache miss (e.g. immediately after the rule
     version bumps) don't all hit the database at once. Retries a few times
     on lock contention, then proceeds without the lock (fail-open) rather
-    than blocking indefinitely — a duplicate rebuild is wasted work, not a
+    than blocking indefinitely, a duplicate rebuild is wasted work, not a
     correctness problem.
     """
     lock_acquired = _acquire_rebuild_lock(redis_client)
@@ -169,7 +169,7 @@ def _acquire_rebuild_lock(redis_client) -> bool:
 
     Returns:
         True if the lock was acquired (caller must release it). False if the
-        lock could not be acquired after retrying — the caller proceeds
+        lock could not be acquired after retrying, the caller proceeds
         without it (fail-open).
     """
     import time
@@ -311,9 +311,9 @@ def evaluate_request(
     """Evaluate a request against the WAF rule set and return a verdict.
 
     Evaluation order per BR-EVAL-003:
-    1. Exempt paths — handled by middleware before calling this function
-    2. DJANGO_WAF_ENABLED — handled by middleware before calling this function
-    3. Valid waf_pass cookie — handled by middleware before calling this function
+    1. Exempt paths, handled by middleware before calling this function
+    2. DJANGO_WAF_ENABLED, handled by middleware before calling this function
+    3. Valid waf_pass cookie, handled by middleware before calling this function
     4. AllowRules
     5. Redis blocked-IP cache
     6. BlockRules
@@ -381,7 +381,7 @@ def evaluate_request(
                 matched_rule_id = UUID(rule_id_str)
                 _record_rule_hit(rule_id_str, redis_client)
             except ValueError:
-                # Malformed cache value — log nothing, still block.
+                # Malformed cache value, log nothing, still block.
                 pass
         return EvaluationResult(
             verdict=Verdict.BLOCKED,
@@ -437,10 +437,10 @@ def evaluate_request(
                 fingerprint_verdict,
             )
 
-    # Step 9: Path scoring — always evaluated (no volume threshold).
+    # Step 9: Path scoring, always evaluated (no volume threshold).
     path_score = _score_path(path)
 
-    # Step 10: HTTP fingerprint scoring — always evaluated.
+    # Step 10: HTTP fingerprint scoring, always evaluated.
     # Detects bots claiming to be browsers but missing expected headers.
     fp_score = 0.0
     if request_meta:
@@ -455,7 +455,7 @@ def evaluate_request(
         if not is_known_fingerprint(fp_hash, redis_client):
             fp_score = score_fingerprint_mismatch(user_agent, request_meta)
 
-    # Step 11: UA anomaly scoring — only if IP has >10 recent requests.
+    # Step 11: UA anomaly scoring, only if IP has >10 recent requests.
     ua_score = 0.0
     recent_count = get_request_count(ip_address, "5m", redis_client)
     if recent_count > 10:
@@ -528,14 +528,14 @@ def _check_allow_rules(
     """Return (rule_id, rule_dict) if an AllowRule matches, else None."""
     for rule in cache.allow_rules:
         if _is_cached_rule_expired(rule):
-            continue  # expired since the cache was built (#25) — not a match
+            continue  # expired since the cache was built (#25), not a match
         if _rule_matches(rule, ip_address, user_agent):
             if (
                 rule.get("verify_rdns")
                 and rule.get("rdns_pattern")
                 and not _verify_rdns(ip_address, rule["rdns_pattern"], redis_client)
             ):
-                continue  # rDNS check failed — treat as no match (BR-EVAL-004)
+                continue  # rDNS check failed, treat as no match (BR-EVAL-004)
             return rule["id"], rule
     return None
 
@@ -553,7 +553,7 @@ def _check_block_rules(
     """
     for rule in cache.block_rules:
         if _is_cached_rule_expired(rule):
-            continue  # expired since the cache was built (#25) — not a match
+            continue  # expired since the cache was built (#25), not a match
         if _rule_matches(rule, ip_address, user_agent):
             if redis_client is not None:
                 _record_rule_hit(rule["id"], redis_client)
@@ -608,7 +608,7 @@ def _rule_matches(rule: dict, ip_address: str, user_agent: str) -> bool:
             ua_match = _match_ua(user_agent, ua_part.strip(), match_type)
             ip_match = _match_ip(ip_address, ip_part.strip(), match_type) or _match_cidr(ip_address, ip_part.strip())
             return ua_match and ip_match
-        # Legacy single-pattern fallback — unlikely to match correctly
+        # Legacy single-pattern fallback, unlikely to match correctly
         return False
 
     return False
@@ -686,7 +686,7 @@ def _verify_rdns(ip_address: str, rdns_pattern: str, redis_client) -> bool:
     hostname matches the pattern, the hostname is forward-resolved
     (``socket.getaddrinfo``, both address families) and the check only
     passes if the *original* IP appears among the forward-resolved
-    addresses — proving whoever controls ``rdns_pattern``'s DNS zone (e.g.
+    addresses, proving whoever controls ``rdns_pattern``'s DNS zone (e.g.
     Google, for ``*.googlebot.com``) also vouches for this IP, not just
     whoever controls the PTR record of the IP itself.
 
@@ -699,7 +699,7 @@ def _verify_rdns(ip_address: str, rdns_pattern: str, redis_client) -> bool:
     so a transient resolver outage does not suppress a legitimate crawler's
     AllowRule match for a full day per IP.
 
-    Any DNS error — on the reverse lookup or the forward lookup — fails
+    Any DNS error, on the reverse lookup or the forward lookup, fails
     closed (returns False).
 
     Args:
@@ -729,7 +729,7 @@ def _verify_rdns(ip_address: str, rdns_pattern: str, redis_client) -> bool:
 def _fcrdns_cache_key(ip_address: str, rdns_pattern: str) -> str:
     """Return the FCrDNS verdict cache key for an (ip, pattern) pair.
 
-    Not a security use — just a stable, bounded-length key fragment derived
+    Not a security use, just a stable, bounded-length key fragment derived
     from the pattern string, mirroring the same hashing approach used for
     per-path rate-limit keys in rate_limiter.py.
     """
@@ -742,14 +742,14 @@ def _fcrdns_cache_key(ip_address: str, rdns_pattern: str) -> str:
 def _resolve_and_confirm_rdns(ip_address: str, rdns_pattern: str) -> bool:
     """Perform the actual reverse + forward DNS resolution and comparison.
 
-    No caching here — callers (``_verify_rdns``) own the cache. Split out
+    No caching here, callers (``_verify_rdns``) own the cache. Split out
     so the two concerns (DNS resolution vs. verdict caching) can be tested
     independently.
     """
     try:
         hostname = socket.gethostbyaddr(ip_address)[0]
     except (socket.herror, socket.gaierror, OSError):
-        return False  # reverse lookup failed — fail closed
+        return False  # reverse lookup failed, fail closed
 
     if not hostname:
         return False
@@ -763,7 +763,7 @@ def _resolve_and_confirm_rdns(ip_address: str, rdns_pattern: str) -> bool:
     try:
         forward_addresses = {info[4][0] for info in socket.getaddrinfo(hostname, None)}
     except (socket.gaierror, OSError):
-        return False  # forward lookup failed — fail closed
+        return False  # forward lookup failed, fail closed
 
     try:
         target = ipaddress.ip_address(ip_address)
@@ -852,13 +852,13 @@ def _gate_challenge_or_escalate(
     challenge_result: EvaluationResult,
     fingerprint_verdict: str = "",
 ) -> EvaluationResult:
-    """Single escalation gate — called before returning ANY challenge verdict.
+    """Single escalation gate, called before returning ANY challenge verdict.
 
     Fixes #27: evaluate_request has three places that can produce a
     CHALLENGED verdict (a rule-driven BlockRule challenge, the no-referer
     challenge, and a score-driven challenge). The escalation check used to
     live only at the very end of evaluate_request, after all three of
-    those early returns — so a repeatedly-challenged IP never reached it
+    those early returns, so a repeatedly-challenged IP never reached it
     and auto-block-on-ignored-challenges was dead code. Routing every
     challenge verdict through this one gate first makes escalation reachable
     regardless of which path produced the challenge.

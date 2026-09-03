@@ -20,7 +20,7 @@ from django_waf.services.pattern_validation import (
 # ---------------------------------------------------------------------------
 # Pattern validation (#28)
 # ---------------------------------------------------------------------------
-# Shared by BlockRuleAdminForm and AllowRuleAdminForm — a UA rule saved
+# Shared by BlockRuleAdminForm and AllowRuleAdminForm, a UA rule saved
 # with rule_type="ua" and match_type="regex" is validated at write time so
 # a catastrophic-backtracking pattern (or one that simply doesn't compile)
 # is rejected visibly in the admin, rather than being stored and only
@@ -32,7 +32,7 @@ class RuleAdminFormMixin:
     """Validate the ``pattern`` field for UA regex rules at write time.
 
     Applies to any ``ModelForm`` whose model has ``rule_type``,
-    ``match_type``, and ``pattern`` fields — both ``BlockRule`` and
+    ``match_type``, and ``pattern`` fields, both ``BlockRule`` and
     ``AllowRule`` share this shape. Only ``rule_type="ua"`` combined with
     ``match_type="regex"`` is checked; other rule/match type combinations
     (IP, CIDR, exact, contains) have no ReDoS surface and are left alone.
@@ -316,7 +316,7 @@ class ThreatTierListFilter(admin.SimpleListFilter):
     def lookups(self, request, model_admin):
         return (
             ("high", _("High (≥7.0)")),
-            ("medium", _("Medium (3.0–6.9)")),
+            ("medium", _("Medium (3.0 to 6.9)")),
             ("low", _("Low (<3.0)")),
         )
 
@@ -357,7 +357,7 @@ class RecentActivityListFilter(admin.SimpleListFilter):
 
 
 class HasUnsolvedChallengesListFilter(admin.SimpleListFilter):
-    """Surface IPs where challenges are failing — useful for tuning difficulty."""
+    """Surface IPs where challenges are failing, useful for tuning difficulty."""
 
     title = _("unsolved challenges")
     parameter_name = "unsolved"
@@ -424,7 +424,7 @@ class IPReputationAdmin(admin.ModelAdmin):
     def block_rate(self, obj) -> str:
         """Blocked share of total requests, as a percentage."""
         if not obj.total_requests:
-            return "—"
+            return ", "
         pct = (obj.blocked_requests / obj.total_requests) * 100
         return f"{pct:.1f}%"
 
@@ -433,7 +433,7 @@ class IPReputationAdmin(admin.ModelAdmin):
         """Share of challenges this IP has solved successfully."""
         total = obj.challenge_passes + obj.challenge_failures
         if not total:
-            return "—"
+            return ", "
         pct = (obj.challenge_passes / total) * 100
         return f"{pct:.1f}%"
 
@@ -441,7 +441,7 @@ class IPReputationAdmin(admin.ModelAdmin):
     def country(self, obj) -> str:
         """Country code via GeoIP, if the database is installed.
 
-        Lookup is best-effort — failures (no database, lookup error,
+        Lookup is best-effort, failures (no database, lookup error,
         private IP) return an em dash so the list view never breaks.
         """
         from django_waf.services import geoip
@@ -449,8 +449,8 @@ class IPReputationAdmin(admin.ModelAdmin):
         try:
             code = geoip.lookup_country(obj.ip_address)
         except Exception:
-            return "—"
-        return code or "—"
+            return ", "
+        return code or ", "
 
     def has_add_permission(self, request) -> bool:
         return False

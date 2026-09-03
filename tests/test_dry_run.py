@@ -20,7 +20,7 @@ from django_waf.enums import RuleAction, RuleSource, RuleType
 from django_waf.testing.factories import BlockRuleFactory, RequestLogFactory
 
 # ---------------------------------------------------------------------------
-# _get_or_create_auto_rule — the shared write path
+# _get_or_create_auto_rule, the shared write path
 # ---------------------------------------------------------------------------
 
 
@@ -82,7 +82,7 @@ class TestGetOrCreateAutoRuleDryRun:
 
 
 # ---------------------------------------------------------------------------
-# run_all_detectors — dry-run end to end
+# run_all_detectors, dry-run end to end
 # ---------------------------------------------------------------------------
 
 
@@ -139,7 +139,7 @@ class TestRunAllDetectorsDryRun:
 
 
 # ---------------------------------------------------------------------------
-# django_waf_detect_anomalies command — dry-run end to end (no mocking)
+# django_waf_detect_anomalies command, dry-run end to end (no mocking)
 # ---------------------------------------------------------------------------
 
 

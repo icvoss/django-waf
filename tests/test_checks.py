@@ -147,7 +147,7 @@ class TestChallengeDifficultyCheck:
             assert _run_checks() == []
 
     def test_difficulty_over_28_errors(self):
-        """The v0.10.4 lockout class — refuse to start with this config."""
+        """The v0.10.4 lockout class, refuse to start with this config."""
         import django_waf.conf as conf_mod
 
         with (
@@ -225,7 +225,7 @@ class TestChallengeDifficultyCheck:
 
 
 class TestSigningKeyCheck:
-    """W003 — warns when DJANGO_WAF_SIGNING_KEY is unset.
+    """W003, warns when DJANGO_WAF_SIGNING_KEY is unset.
 
     Falling back to a SECRET_KEY-derived value is supported (and is
     what makes v0.10.x → v0.11.0 upgrades seamless) but it ties WAF
@@ -247,7 +247,7 @@ class TestSigningKeyCheck:
 
         assert len(messages) == 1
         assert messages[0].id == "django_waf.W003"
-        # The hint must tell operators how to fix it — pin the actionable
+        # The hint must tell operators how to fix it, pin the actionable
         # part of the message so future edits don't lose the remediation.
         assert "secrets.token_urlsafe" in messages[0].hint
         assert "DJANGO_WAF_SIGNING_KEY" in messages[0].hint
@@ -268,7 +268,7 @@ class TestSigningKeyCheck:
 
 
 class TestFeedUrlSchemeCheck:
-    """W005 — warns when the threat feed is enabled but not served over HTTPS.
+    """W005, warns when the threat feed is enabled but not served over HTTPS.
 
     Feed responses become BlockRules, so a plaintext feed lets an on-path
     attacker inject or suppress rules. The check inspects only the URL
@@ -295,12 +295,12 @@ class TestFeedUrlSchemeCheck:
 
         assert len(messages) == 1
         assert messages[0].id == "django_waf.W005"
-        # The hint must offer both remediations — switch to https or disable.
+        # The hint must offer both remediations, switch to https or disable.
         assert "https://" in messages[0].hint
         assert "DJANGO_WAF_FEED_ENABLED" in messages[0].hint
 
     def test_disabled_feed_skips_scheme_check(self):
-        """A non-HTTPS URL is harmless when the feed is off — no warning."""
+        """A non-HTTPS URL is harmless when the feed is off, no warning."""
         import django_waf.conf as conf_mod
 
         with (
@@ -311,7 +311,7 @@ class TestFeedUrlSchemeCheck:
 
 
 class TestMiddlewareOrderingCheck:
-    """W004 — warns when WafMiddleware runs before AuthenticationMiddleware.
+    """W004, warns when WafMiddleware runs before AuthenticationMiddleware.
 
     request.user is not available until AuthenticationMiddleware has run,
     so a WAF that evaluates the request first can never see the staff

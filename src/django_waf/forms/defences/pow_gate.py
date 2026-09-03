@@ -1,4 +1,4 @@
-"""PowGateDefence — embedded proof-of-work per submission.
+"""PowGateDefence, embedded proof-of-work per submission.
 
 Lighter than the page-level challenge because it runs per-submission
 (not once per session like the WAF's challenge view does). Default
@@ -8,7 +8,7 @@ future improvements land in one place (no parallel implementation,
 no drift risk).
 
 The JS solver runs on form render and writes the nonce into a hidden
-field. Submit itself is instant — the form just reads the prepared
+field. Submit itself is instant, the form just reads the prepared
 nonce. Operators who want a hard guarantee that the PoW finished
 before submit set ``data-waf-pow-block-submit="true"`` on the form
 element; the bundled JS disables the submit button until the nonce
@@ -41,7 +41,7 @@ _HIDDEN_STYLE = "position:absolute;left:-9999px;width:1px;height:1px;overflow:hi
 
 # Compact, self-contained synchronous SHA-256 (standard 32-bit big-endian
 # implementation). Shared across every rendered form's solver script.
-# Byte-identical to Python's hashlib.sha256 — verified against
+# Byte-identical to Python's hashlib.sha256, verified against
 # _digest_has_leading_zero_bits, the same server-side check _verify_nonce()
 # uses. No crypto.subtle dependency, so the batch loop below runs entirely
 # on the CPU instead of paying one promise resolution per nonce.
@@ -106,13 +106,13 @@ def _solver_script(token_nonce: str, difficulty: int) -> str:
     resolution per nonce. Byte-identical to Python's ``hashlib.sha256``,
     verified against ``_verify_nonce()``/``_digest_has_leading_zero_bits``.
     Browsers without ``TextEncoder`` (very old) fall through with the
-    field empty — the defence will block on the missing nonce. Fine;
+    field empty, the defence will block on the missing nonce. Fine;
     those browsers can't render modern sites anyway. On exceeding the
     runaway guard the loop stops silently (no throw) with the nonce
     field left empty, so the same missing-nonce fail-safe applies.
     """
     # The JS-side helper is the same bit-counting check as the
-    # server. It's intentionally a single-purpose function — we don't
+    # server. It's intentionally a single-purpose function, we don't
     # try to share code with the page-level challenge template
     # because the form-level PoW runs on every form-bearing page and
     # we don't want a second <script src=> request just for a 30-line
@@ -176,7 +176,7 @@ class PowGateDefence:
         # Need the render token's nonce to bind the PoW to this
         # specific render. Until the orchestrator wires that through
         # ctx.config (block 4), fall back to form_id so the defence
-        # still gates submissions — it just rotates per-form rather
+        # still gates submissions, it just rotates per-form rather
         # than per-render.
         token_nonce = ctx.config.get("token_nonce", ctx.form_id)
 
@@ -190,7 +190,7 @@ class PowGateDefence:
             f'<input type="hidden" name="{_TOKEN_BIND_FIELD}" value="{token_nonce}" '
             f'style="{_HIDDEN_STYLE}">' + _solver_script(token_nonce, difficulty)
         )
-        return {NONCE_FIELD: mark_safe(html)}  # noqa: S308 — constant template, escaped nonce
+        return {NONCE_FIELD: mark_safe(html)}  # noqa: S308, constant template, escaped nonce
 
     def evaluate(self, ctx: EvaluateContext) -> Outcome:
         from django_waf import conf
@@ -205,7 +205,7 @@ class PowGateDefence:
         # (set by the orchestrator after RenderTokenDefence runs); fall
         # back to the bind field, which is what we render alongside.
         payload = ctx.token_payload
-        if payload is not None:  # noqa: SIM108 — three-way precedence reads clearer as if/else
+        if payload is not None:  # noqa: SIM108, three-way precedence reads clearer as if/else
             token_nonce = payload.nonce
         else:
             token_nonce = ctx.submitted_data.get(_TOKEN_BIND_FIELD) or ctx.form_id

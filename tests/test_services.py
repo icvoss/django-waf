@@ -227,7 +227,7 @@ class TestClassifyUa:
 
     def test_generic_bot_self_identifier(self):
         """UA containing standalone 'bot' keyword is classified as 'bot'."""
-        # _RE_BOT uses \bbot\b — requires 'bot' as a standalone word token.
+        # _RE_BOT uses \bbot\b, requires 'bot' as a standalone word token.
         assert classify_ua("My Custom bot/1.0") == "bot"
 
     def test_spider_self_identifier(self):
@@ -267,7 +267,7 @@ class TestCheckRateLimit:
         """Pipeline mock for [zadd, zremrangebyscore, zcard, zrange, expire].
 
         The zrange(0, 0, withscores=True) result is a single (member, score)
-        pair with score=time.time() (i.e. "just added now") — enough for
+        pair with score=time.time() (i.e. "just added now"), enough for
         _retry_after_from_oldest to compute a real value without pinning an
         exact number (tests assert retry_after >= 1, not an exact value; the
         exact-value assertions live in test_retry_after.py).
@@ -328,8 +328,8 @@ class TestCheckRateLimit:
             call_count += 1
             # Return within-limit for 1s, over-limit for 1m
             if call_count == 1:
-                return self._pipeline_returning(2)  # 1s — OK
-            return self._pipeline_returning(101)  # 1m — exceeded
+                return self._pipeline_returning(2)  # 1s, OK
+            return self._pipeline_returning(101)  # 1m, exceeded
 
         redis.pipeline.side_effect = pipeline_side_effect
 
@@ -387,7 +387,7 @@ class TestCheckRateLimit:
 
 
 # ---------------------------------------------------------------------------
-# check_rate_limit — per-path limits (DJANGO_WAF_RATE_LIMIT_PATHS)
+# check_rate_limit, per-path limits (DJANGO_WAF_RATE_LIMIT_PATHS)
 # ---------------------------------------------------------------------------
 
 
@@ -425,7 +425,7 @@ class TestCheckRateLimitPerPath:
             result = check_rate_limit("1.2.3.4", redis, path="/blog/post/")
 
         assert result.exceeded is False
-        # Only the global window keys were touched — no "path" key.
+        # Only the global window keys were touched, no "path" key.
         zadd_calls = redis.pipeline.return_value.zadd.call_args_list
         used_keys = {c.args[0] for c in zadd_calls}
         assert not any(":path:" in key for key in used_keys)
@@ -442,8 +442,8 @@ class TestCheckRateLimitPerPath:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return _make_pipeline_mock(1)  # path window — within limit
-            return _make_pipeline_mock(6)  # global 1s window — exceeded
+                return _make_pipeline_mock(1)  # path window, within limit
+            return _make_pipeline_mock(6)  # global 1s window, exceeded
 
         redis.pipeline.side_effect = pipeline_side_effect
 
@@ -641,8 +641,8 @@ class TestEvaluateRequest:
     def test_allowed_when_no_rules_and_within_rate_limit(self, db):
         """Clean request with no matching rules returns ALLOWED verdict."""
         redis = _make_redis()
-        redis.pipeline.return_value = _make_pipeline_mock(1)  # 1 request — within limits
-        redis.zcount.return_value = 5  # <10 recent requests — no UA scoring
+        redis.pipeline.return_value = _make_pipeline_mock(1)  # 1 request, within limits
+        redis.zcount.return_value = 5  # <10 recent requests, no UA scoring
 
         result = evaluate_request(
             ip_address="10.0.0.1",
@@ -654,7 +654,7 @@ class TestEvaluateRequest:
 
         assert result.verdict == Verdict.ALLOWED
         assert result.action is None
-        # Must be "" (empty string), not None — RequestLog.matched_rule_type is NOT NULL
+        # Must be "" (empty string), not None, RequestLog.matched_rule_type is NOT NULL
         # and Django's default="" only applies when the field is omitted, not when
         # None is passed explicitly. See CHANGELOG 0.8.1.
         assert result.matched_rule_type == ""
@@ -670,7 +670,7 @@ class TestEvaluateRequest:
         redis.pipeline.return_value = _make_pipeline_mock(1)
         redis.zcount.return_value = 5
 
-        # Unmatched request — falls through to final return
+        # Unmatched request, falls through to final return
         result = evaluate_request(
             ip_address="10.0.0.99",
             user_agent="Mozilla/5.0",
@@ -780,7 +780,7 @@ class TestEvaluateRequest:
         """An IP in the Redis blocked-IP cache is rejected immediately.
 
         Legacy cache value of ``"1"`` (written by pre-v0.10.6 code) carries
-        no rule attribution — matched_rule_id stays None and no hit counter
+        no rule attribution, matched_rule_id stays None and no hit counter
         is bumped. Newer entries store the rule id; see the
         ``test_fast_path_attributes_hit_to_rule`` test below for that path.
         """
@@ -834,8 +834,8 @@ class TestEvaluateRequest:
         """A malformed cache value still blocks but carries no attribution.
 
         Defensive: someone could write garbage to the cache key (replication
-        race, manual ops intervention). The fast path must still block —
-        failing open on a malformed cache value would be worse than failing
+        race, manual ops intervention). The fast path must still block, failing open on a malformed cache value would be
+        worse than failing
         closed without attribution.
         """
         redis = _make_redis()
@@ -916,7 +916,7 @@ class TestEvaluateRequest:
         redis = _make_redis()
         redis.get.return_value = None
         redis.pipeline.return_value = _make_pipeline_mock(1)
-        redis.zcount.return_value = 5  # <=10 — no UA scoring
+        redis.zcount.return_value = 5  # <=10, no UA scoring
 
         result = evaluate_request(
             ip_address="8.8.8.8",
@@ -1055,7 +1055,7 @@ class TestPickDifficulty:
 
     def test_device_key_none_falls_back_to_single_value(self):
         """Setting desktop/mobile to None makes _pick_difficulty fall through
-        to DJANGO_WAF_CHALLENGE_DIFFICULTY — the legacy single-value path."""
+        to DJANGO_WAF_CHALLENGE_DIFFICULTY, the legacy single-value path."""
         import django_waf.conf as conf_mod
         from django_waf.services.challenge_service import _pick_difficulty
 
@@ -1075,7 +1075,7 @@ class TestPickDifficulty:
 
 class TestDigestHasLeadingZeroBits:
     def test_zero_bits_always_true(self):
-        """Difficulty 0 means no work — every digest passes."""
+        """Difficulty 0 means no work, every digest passes."""
         from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
         assert _digest_has_leading_zero_bits(b"\xff\xff", 0) is True
@@ -1083,9 +1083,9 @@ class TestDigestHasLeadingZeroBits:
     def test_one_bit_checks_msb_of_first_byte(self):
         from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
-        # 0x7F = 0111_1111 — MSB is zero, passes 1-bit.
+        # 0x7F = 0111_1111, MSB is zero, passes 1-bit.
         assert _digest_has_leading_zero_bits(b"\x7f", 1) is True
-        # 0x80 = 1000_0000 — MSB is one, fails 1-bit.
+        # 0x80 = 1000_0000, MSB is one, fails 1-bit.
         assert _digest_has_leading_zero_bits(b"\x80", 1) is False
 
     def test_eight_bits_requires_full_zero_byte(self):
@@ -1098,9 +1098,9 @@ class TestDigestHasLeadingZeroBits:
         from django_waf.services.challenge_service import _digest_has_leading_zero_bits
 
         # 12 bits = one zero byte + top 4 bits of next byte zero.
-        # 0x00 0x0F = 0000_0000 0000_1111 — top 4 bits of second byte zero, passes.
+        # 0x00 0x0F = 0000_0000 0000_1111, top 4 bits of second byte zero, passes.
         assert _digest_has_leading_zero_bits(b"\x00\x0f", 12) is True
-        # 0x00 0x10 = 0000_0000 0001_0000 — bit 11 (from MSB) is one, fails.
+        # 0x00 0x10 = 0000_0000 0001_0000, bit 11 (from MSB) is one, fails.
         assert _digest_has_leading_zero_bits(b"\x00\x10", 12) is False
 
     def test_short_digest_returns_false(self):
@@ -1345,7 +1345,7 @@ class TestVerifyChallengeService:
         """A nonce that fails proof-of-work raises ChallengeInvalidError."""
         token_obj = ChallengeTokenFactory(
             ip_address="1.2.3.4",
-            # 24 bits — chance of accidental pass with a fixed wrong nonce is 1/16M.
+            # 24 bits, chance of accidental pass with a fixed wrong nonce is 1/16M.
             difficulty=24,
             status=ChallengeStatus.PENDING,
         )
@@ -1474,7 +1474,7 @@ class TestDetectUaRotation:
         with patch.object(conf_mod, "DJANGO_WAF_AUTO_RULE_EXPIRY_HOURS", 24):
             created = detect_ua_rotation(window_minutes=10, threshold=20)
 
-        # update_or_create found the existing rule — no new creation
+        # update_or_create found the existing rule, no new creation
         assert created == []
         # Still only one rule for this IP
         from django_waf.models import BlockRule
@@ -1619,7 +1619,7 @@ class TestGetSubnetPrefix:
 
         Regression: naively applying "/24" to an IPv6 address (as
         ipaddress.ip_network(f"{ip}/24", strict=False) does) produces an
-        absurdly wide network — a /24 IPv6 prefix still spans 2**104
+        absurdly wide network, a /24 IPv6 prefix still spans 2**104
         addresses. /48 is the correct IPv6-equivalent aggregation.
         """
         from django_waf.services.anomaly_detector import _get_subnet_prefix
@@ -1667,7 +1667,7 @@ class TestDetectChallengeFarms:
         """detect_challenge_farms returns empty list when no IPs meet the criteria."""
         from django_waf.services.anomaly_detector import detect_challenge_farms
 
-        # IP with low failure count — should not be flagged
+        # IP with low failure count, should not be flagged
         IPReputationFactory(
             challenge_failures=2,
             challenge_passes=5,
@@ -1860,7 +1860,7 @@ class TestEmitAnomalySignalExceptionPath:
         rule = BlockRuleFactory(is_active=True, rule_type=RuleType.IP)
 
         with patch("django_waf.signals.anomaly_detected.send", side_effect=Exception("signal error")):
-            # Should not raise — exceptions from signal send are caught
+            # Should not raise, exceptions from signal send are caught
             _emit_anomaly_signal(
                 rule=rule,
                 anomaly_type=AnomalyType.UA_ROTATION,
@@ -1869,7 +1869,7 @@ class TestEmitAnomalySignalExceptionPath:
 
 
 # ---------------------------------------------------------------------------
-# _get_or_create_auto_rule — deduplication on MultipleObjectsReturned
+# _get_or_create_auto_rule, deduplication on MultipleObjectsReturned
 # ---------------------------------------------------------------------------
 
 
@@ -1911,7 +1911,7 @@ class TestGetOrCreateAutoRuleDedup:
             expiry=timezone.now() + timezone.timedelta(hours=24),
         )
 
-        # Duplicates resolved — exactly one row, refreshed
+        # Duplicates resolved, exactly one row, refreshed
         remaining = BlockRule.objects.filter(pattern="bad-bot/1.0", source=RuleSource.AUTO)
         assert remaining.count() == 1
         assert remaining.first().pk == rule.pk
@@ -1948,7 +1948,7 @@ class TestGetOrCreateAutoRuleDedup:
 
 
 # ---------------------------------------------------------------------------
-# detect_subnet_burst — branch coverage for non-burst path
+# detect_subnet_burst, branch coverage for non-burst path
 # ---------------------------------------------------------------------------
 
 
@@ -1959,7 +1959,7 @@ class TestDetectSubnetBurstBranches:
         from django_waf.services.anomaly_detector import detect_subnet_burst
 
         now = timezone.now()
-        # Uniform distribution: 10 requests per /24 subnet — no burst
+        # Uniform distribution: 10 requests per /24 subnet, no burst
         for j in range(10):
             RequestLogFactory(ip_address=f"40.40.{j}.1", timestamp=now)
 
@@ -1996,7 +1996,7 @@ class TestDetectSubnetBurstBranches:
 
 
 # ---------------------------------------------------------------------------
-# detect_cloud_spray — IPv6 subnet aggregation
+# detect_cloud_spray, IPv6 subnet aggregation
 # ---------------------------------------------------------------------------
 
 
@@ -2167,7 +2167,7 @@ class TestSyncFeed:
             is_active=True,
         )
 
-        # Feed returns an empty list — stale_rule is not present
+        # Feed returns an empty list, stale_rule is not present
         with patch("httpx.get") as mock_get:
             mock_resp = MagicMock()
             mock_resp.json.return_value = []
@@ -2765,7 +2765,7 @@ class TestBuildTelemetryPayload:
         assert payload["summary"]["total_requests"] == 3
 
     def test_ua_hashes_are_sha256_of_ua_rules(self, db):
-        """UA block rules are hashed with SHA-256 — raw patterns are not included."""
+        """UA block rules are hashed with SHA-256, raw patterns are not included."""
         import hashlib
 
         from django_waf.enums import RuleSource
@@ -2834,7 +2834,7 @@ class TestBuildTelemetryPayload:
         assert isinstance(payload["subnets"], list)
 
     def test_ipv6_subnets_are_truncated_to_slash48_not_full_address(self, db):
-        """IPv6 addresses are truncated to /48 subnets — a full IPv6 address
+        """IPv6 addresses are truncated to /48 subnets, a full IPv6 address
         must never appear in the telemetry payload (BR-TEL-002).
 
         Regression: the pre-fix code applied "/24" unconditionally, which for
@@ -3124,7 +3124,7 @@ class TestGenerateNginxBlocklist:
             is_active=True,
             rule_type="ua",
             match_type="exact",
-            pattern="",  # empty — should be skipped
+            pattern="",  # empty, should be skipped
             action="block",
         )
         output_file = str(tmp_path / "blocklist.conf")
@@ -3208,12 +3208,12 @@ class TestReloadNginx:
 
 
 # ---------------------------------------------------------------------------
-# rule_engine — _verify_rdns
+# rule_engine, _verify_rdns
 # ---------------------------------------------------------------------------
 
 
 class TestVerifyRdns:
-    """_verify_rdns is forward-confirmed reverse DNS (FCrDNS) since #34 — see
+    """_verify_rdns is forward-confirmed reverse DNS (FCrDNS) since #34, see
     tests/test_rdns_fcrdns.py for the full FCrDNS-specific coverage (spoofed
     PTR denial, genuine FCrDNS allow, IPv4/IPv6, failure-cache TTLs). These
     tests keep the lighter-weight "does the wiring still work" coverage in
@@ -3259,8 +3259,8 @@ class TestVerifyRdns:
 
     def test_returns_false_when_forward_resolution_does_not_confirm(self):
         """Spoofed PTR: the hostname matches the pattern, but forward
-        resolution of that hostname does not include the original IP —
-        the attacker controls the PTR record but not the pattern's DNS
+        resolution of that hostname does not include the original IP, the attacker controls the PTR record but not the
+        pattern's DNS
         zone (#34's core fix)."""
         from django_waf.services.rule_engine import _verify_rdns
 
@@ -3425,7 +3425,7 @@ class TestVerifyRdns:
 
 
 # ---------------------------------------------------------------------------
-# rule_engine — _check_block_rules CIDR and regex paths
+# rule_engine, _check_block_rules CIDR and regex paths
 # ---------------------------------------------------------------------------
 
 
@@ -3524,7 +3524,7 @@ class TestCheckBlockRulesPaths:
 
 
 # ---------------------------------------------------------------------------
-# rule_engine — _compile_ua_patterns invalid regex
+# rule_engine, _compile_ua_patterns invalid regex
 # ---------------------------------------------------------------------------
 
 
@@ -3591,7 +3591,7 @@ class TestCompileUaPatterns:
 
 
 # ---------------------------------------------------------------------------
-# rule_engine — load_rule_cache DB fallback path
+# rule_engine, load_rule_cache DB fallback path
 # ---------------------------------------------------------------------------
 
 
@@ -3622,7 +3622,7 @@ class TestLoadRuleCacheDbFallback:
 
 
 # ---------------------------------------------------------------------------
-# rule_engine — record_block_verdict
+# rule_engine, record_block_verdict
 # ---------------------------------------------------------------------------
 
 
@@ -3669,7 +3669,7 @@ class TestRecordBlockVerdict:
         """When called with rule_id, the cache value is the rule UUID string.
 
         This is what gives the fast-path its hit attribution from v0.10.6
-        onward — see test_fast_path_attributes_hit_to_rule.
+        onward, see test_fast_path_attributes_hit_to_rule.
         """
         from django_waf.services.rule_engine import record_block_verdict
 
@@ -4612,7 +4612,7 @@ class TestComputeFingerprint:
         """An empty META dict still produces a valid (all-empty) fingerprint hash."""
         fp = compute_fingerprint({})
         assert len(fp) == 64
-        # Deterministic — repeat call produces the same hash
+        # Deterministic, repeat call produces the same hash
         assert compute_fingerprint({}) == fp
 
     def test_missing_header_is_treated_as_empty(self):
@@ -4636,7 +4636,7 @@ class TestScoreFingerprintMismatch:
     """Tests for score_fingerprint_mismatch()."""
 
     def test_empty_ua_returns_zero(self):
-        """No UA claim — nothing to verify against."""
+        """No UA claim, nothing to verify against."""
         assert score_fingerprint_mismatch("", _CHROME_META) == 0.0
 
     def test_real_chrome_scores_zero(self):
@@ -4721,7 +4721,7 @@ class TestClassifyFingerprint:
         meta = dict(_CHROME_META)
         meta["HTTP_ACCEPT_LANGUAGE"] = ""  # +1.0
         meta["HTTP_ACCEPT"] = "*/*"  # +0.5
-        # Total 1.5 — just enters the suspicious band
+        # Total 1.5, just enters the suspicious band
         assert classify_fingerprint(_CHROME_UA, meta) == "suspicious"
 
     def test_no_ua_classifies_as_unknown(self):
@@ -4900,14 +4900,14 @@ class TestKnownFingerprintRegistry:
         redis.get.assert_not_called()
 
     def test_is_known_swallows_redis_exception(self):
-        """A Redis error during lookup returns False — never raises."""
+        """A Redis error during lookup returns False, never raises."""
         redis = MagicMock()
         redis.get.side_effect = RuntimeError("redis down")
         assert is_known_fingerprint("abc123", redis) is False
 
 
 # ---------------------------------------------------------------------------
-# rule_engine — internal helpers
+# rule_engine, internal helpers
 # ---------------------------------------------------------------------------
 
 
@@ -5073,7 +5073,7 @@ class TestRuleEngineHelpers:
 
     def test_resolve_and_confirm_forward_mismatch_fails(self):
         """PTR matches the pattern, but the forward-resolved set does not
-        include the original IP — the spoofed-PTR case #34 exists to catch."""
+        include the original IP, the spoofed-PTR case #34 exists to catch."""
         from django_waf.services.rule_engine import _resolve_and_confirm_rdns
 
         with (
@@ -5379,7 +5379,7 @@ class TestRuleEngineHelpers:
         # This would previously raise MultipleObjectsReturned
         _create_escalation_rule("203.0.113.80")
 
-        # Duplicates resolved — exactly one row remains
+        # Duplicates resolved, exactly one row remains
         assert BlockRule.objects.filter(pattern="203.0.113.80", source=RuleSource.AUTO).count() == 1
 
     # ------------------------------------------------------------------ _compile_ua_patterns
@@ -5419,14 +5419,14 @@ class TestRuleEngineHelpers:
 
 
 # ---------------------------------------------------------------------------
-# geoip — MaxMind GeoLite2 install/update service
+# geoip, MaxMind GeoLite2 install/update service
 # ---------------------------------------------------------------------------
 
 
 class TestGeoIPService:
     """Tests for ``services.geoip.install_geoip_database`` and its helpers.
 
-    All network I/O is mocked — no real MaxMind HTTP is performed.
+    All network I/O is mocked, no real MaxMind HTTP is performed.
     """
 
     def _make_fake_archive(self, tmp_path, edition: str = "GeoLite2-Country") -> bytes:
@@ -5534,7 +5534,7 @@ class TestGeoIPService:
 
         path = tmp_path / "db.mmdb"
         path.write_bytes(b"content")
-        # Just written — fresh within any sensible window
+        # Just written, fresh within any sensible window
         assert is_database_fresh(path, 7) is True
 
     def test_is_database_fresh_old_file(self, tmp_path):
@@ -5555,7 +5555,7 @@ class TestGeoIPService:
     # --------------------------------------------------------------- install_geoip_database (full flow)
 
     def test_install_geoip_database_full_flow(self, tmp_path):
-        """Happy path: download, extract, verify, atomic rename — all mocked."""
+        """Happy path: download, extract, verify, atomic rename, all mocked."""
         from django_waf.services.geoip import install_geoip_database
 
         dest = tmp_path / "GeoLite2-Country.mmdb"
@@ -5822,7 +5822,7 @@ class TestGeoIPService:
     def test_install_geoip_database_verification_address_not_found_is_tolerated(self, tmp_path):
         """AddressNotFoundError on the 8.8.8.8 smoke-test lookup is tolerated (empty DB).
 
-        The Reader still opens successfully and metadata is returned — we
+        The Reader still opens successfully and metadata is returned, we
         don't fail verification on a missed lookup because trimmed test
         databases legitimately don't contain 8.8.8.8.
         """

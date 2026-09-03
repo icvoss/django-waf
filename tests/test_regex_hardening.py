@@ -2,12 +2,12 @@
 
 Covers two things:
 
-1. django_waf.services.pattern_validation.validate_ua_regex_pattern —
-   write-time rejection of catastrophic-backtracking patterns and
+1. django_waf.services.pattern_validation.validate_ua_regex_pattern, write-time rejection of catastrophic-backtracking
+patterns and
    over-length patterns, and acceptance of a legitimate pattern. Exercised
    directly and via the BlockRuleAdminForm/AllowRuleAdminForm clean_pattern
    hook in django_waf.admin.
-2. django_waf.services.rule_engine — UA regex matching consults the
+2. django_waf.services.rule_engine, UA regex matching consults the
    compiled-pattern cache instead of recompiling the raw pattern on every
    call.
 """
@@ -28,7 +28,7 @@ from django_waf.services.pattern_validation import (
 from django_waf.testing.factories import BlockRuleFactory
 
 # ---------------------------------------------------------------------------
-# validate_ua_regex_pattern — direct unit tests
+# validate_ua_regex_pattern, direct unit tests
 # ---------------------------------------------------------------------------
 
 
@@ -83,7 +83,7 @@ class TestValidateUaRegexPattern:
 
     def test_unquantified_alternation_is_accepted(self):
         """A plain alternation group with no trailing quantifier is not
-        flagged — the risk is specifically a *quantified* alternation."""
+        flagged, the risk is specifically a *quantified* alternation."""
         validate_ua_regex_pattern(r"(Googlebot|Bingbot|DuckDuckBot)")  # does not raise
 
 
@@ -134,7 +134,7 @@ class TestBlockRuleAdminFormPatternValidation:
 
     @pytest.mark.django_db
     def test_non_ua_rule_type_skips_regex_validation(self):
-        """An IP/CIDR rule's pattern is never a regex — the catastrophic-pattern
+        """An IP/CIDR rule's pattern is never a regex, the catastrophic-pattern
         check only applies to rule_type='ua' + match_type='regex'."""
         form = BlockRuleAdminForm(
             self._form_data(
@@ -180,7 +180,7 @@ class TestAllowRuleAdminFormPatternValidation:
 
 
 # ---------------------------------------------------------------------------
-# rule_engine — matching uses the compiled cache instead of recompiling
+# rule_engine, matching uses the compiled cache instead of recompiling
 # ---------------------------------------------------------------------------
 
 
@@ -189,7 +189,7 @@ class TestMatchingUsesCompiledCache:
         """Reset the module-level compiled-pattern cache before each test.
 
         The cache is content-addressed (keyed on the pattern string) and
-        persists for the life of the process by design (#28) — it is not
+        persists for the life of the process by design (#28), it is not
         reset by the shared autouse rule-cache fixture in conftest.py,
         which only resets the in-process RuleCache (_process_cache), a
         different cache. Tests that assert on compile *counts* need a

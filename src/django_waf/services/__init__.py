@@ -1,5 +1,5 @@
 """
-django_waf.services — public re-exports.
+django_waf.services, public re-exports.
 
 All public service functions from the django-waf package are available directly
 from this module. Import individual sub-modules for full API access.

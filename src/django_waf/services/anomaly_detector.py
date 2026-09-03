@@ -882,7 +882,7 @@ def detect_cloud_spray(
         ua = ua_row["user_agent"]
 
         # Step 2: Get IPs using this UA with low request counts and no referer
-        # (or a spoofed bare-origin referer — same treatment as Step 1).
+        # (or a spoofed bare-origin referer, same treatment as Step 1).
         ip_counts = (
             RequestLog.objects.filter(
                 timestamp__gte=cutoff,
@@ -1392,7 +1392,7 @@ def _get_subnet_prefix(ip: str) -> str:
     """Return the subnet prefix used for aggregating an IP address.
 
     IPv4 addresses are truncated to their /24 network. IPv6 addresses are
-    truncated to their /48 network — a /24-equivalent aggregation for IPv6
+    truncated to their /48 network, a /24-equivalent aggregation for IPv6
     would silently span an enormous address range (a /24 IPv6 network still
     contains 2**104 addresses), corrupting burst detection, cloud-spray
     aggregation, and telemetry aggregation alike. Shared by

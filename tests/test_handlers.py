@@ -5,7 +5,7 @@ is imported by DjangoWafConfig.ready(). All tests that need the DB are marked
 with @pytest.mark.django_db.
 
 Redis/cache interactions are replaced with Django's LocMemCache (configured
-in tests/settings.py CACHES) — no real Redis is required.
+in tests/settings.py CACHES), no real Redis is required.
 """
 
 from __future__ import annotations
@@ -213,7 +213,7 @@ class TestCacheFallback:
 
 
 # ---------------------------------------------------------------------------
-# Cache failure is swallowed — handler never raises
+# Cache failure is swallowed, handler never raises
 # ---------------------------------------------------------------------------
 
 
@@ -276,7 +276,7 @@ class TestRequestBlockedHandler:
         assert extra.get("path") == "/admin/"
 
     def test_on_request_blocked_handles_rule_with_none(self):
-        """Passing rule=None must not raise — rule_id and rule_name default to None."""
+        """Passing rule=None must not raise, rule_id and rule_name default to None."""
         from django_waf.signals import request_blocked
 
         with patch("django_waf.handlers.logger") as mock_logger:
@@ -361,7 +361,7 @@ class TestRequestBlockedHandler:
 
 
 # ---------------------------------------------------------------------------
-# _invalidate_rule_cache — unit tests for the helper directly
+# _invalidate_rule_cache, unit tests for the helper directly
 # ---------------------------------------------------------------------------
 
 

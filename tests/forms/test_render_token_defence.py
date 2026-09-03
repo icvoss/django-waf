@@ -1,6 +1,6 @@
 """Tests for RenderTokenDefence.
 
-The foundation defence — three other defences depend on its parsed
+The foundation defence, three other defences depend on its parsed
 payload. These tests pin every transition in the truth table from PRD
 §3.3 (missing, invalid, expired, replayed, ip_changed, pass).
 """
@@ -56,7 +56,7 @@ class TestRenderFields:
     def test_returns_token_hidden_input_tag(self, settings):
         """The fragment must be a hidden <input>, not the raw token.
 
-        Regression: v0.11.0 returned ``mark_safe(token)`` — the bare
+        Regression: v0.11.0 returned ``mark_safe(token)``, the bare
         base64url string. The orchestrator concatenated it into the
         DOM as visible text, no <input> ever rendered, and every real
         user POST was rejected with render_token:missing. The
@@ -84,7 +84,7 @@ class TestRenderFields:
         assert fragment.rstrip().endswith(">")
 
         # The token must be inside value="...", not bare in the
-        # fragment text — defends against a future regression that
+        # fragment text, defends against a future regression that
         # leaves the token sitting next to (rather than inside) the
         # input tag.
         import re
@@ -129,7 +129,7 @@ class TestRenderFields:
 
 
 # ---------------------------------------------------------------------------
-# evaluate — truth table
+# evaluate, truth table
 # ---------------------------------------------------------------------------
 
 
@@ -182,7 +182,7 @@ class TestEvaluateExpiry:
         import django_waf.conf as conf_mod
         from django_waf.forms.services.tokens import issue_token
 
-        # Token issued an hour ago, with TTL 60s — clearly expired.
+        # Token issued an hour ago, with TTL 60s, clearly expired.
         old_time = datetime.now(tz=UTC) - timedelta(hours=1)
         with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="contact", ip="1.2.3.4", render_time=old_time)
@@ -245,7 +245,7 @@ class TestEvaluateReplay:
         import django_waf.conf as conf_mod
         from django_waf.forms.services.tokens import issue_token
 
-        # Render 1 second ago — within the 5s grace.
+        # Render 1 second ago, within the 5s grace.
         recent = datetime.now(tz=UTC) - timedelta(seconds=1)
         with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
             token, _ = issue_token(form_id="c", ip="1.2.3.4", render_time=recent)
@@ -306,7 +306,7 @@ class TestEvaluateIpBinding:
 
         assert outcome.verdict == "flag"
         assert outcome.reason == "render_token:ip_changed"
-        assert outcome.score > 0  # actual weight pinned in PRD §3.3 — 3.0
+        assert outcome.score > 0  # actual weight pinned in PRD §3.3, 3.0
 
     def test_same_ip_passes(self, settings):
         import django_waf.conf as conf_mod
@@ -327,7 +327,7 @@ class TestEvaluateIpBinding:
 
 
 # ---------------------------------------------------------------------------
-# parse_submitted_payload — helper used by the orchestrator
+# parse_submitted_payload, helper used by the orchestrator
 # ---------------------------------------------------------------------------
 
 
@@ -350,7 +350,7 @@ class TestParseSubmittedPayload:
         assert parse_submitted_payload({}) is None
 
     def test_invalid_token_returns_none(self):
-        """parse_submitted_payload swallows ValueError — orchestrator
+        """parse_submitted_payload swallows ValueError, orchestrator
         treats None as 'no verifiable token; don't compound penalties'."""
         from django_waf.forms.defences.render_token import parse_submitted_payload
 

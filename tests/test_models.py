@@ -79,7 +79,7 @@ class TestBlockRule:
         """Rules are ordered by priority ascending then created_at descending."""
         r1 = BlockRuleFactory(priority=200)
         r2 = BlockRuleFactory(priority=50)
-        r3 = BlockRuleFactory(priority=50)  # same priority — newer, so before r2
+        r3 = BlockRuleFactory(priority=50)  # same priority, newer, so before r2
 
         pks = list(BlockRule.objects.values_list("pk", flat=True))
         # r2 and r3 share priority 50 (before 200); within that group newest first
@@ -163,7 +163,7 @@ class TestBlockRule:
         BlockRuleFactory(
             is_active=True,
             rule_type=RuleType.IP,
-            action=RuleAction.CHALLENGE,  # Not block or throttle — excluded
+            action=RuleAction.CHALLENGE,  # Not block or throttle, excluded
         )
         BlockRuleFactory(is_active=False, rule_type=RuleType.IP, action=RuleAction.BLOCK)
 

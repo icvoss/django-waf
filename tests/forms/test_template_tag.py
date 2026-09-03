@@ -54,7 +54,7 @@ class TestWafProtectTag:
         assert html == ""
 
     def test_renders_empty_when_request_missing_from_context(self, settings):
-        """Tag needs request in context — if absent, fail safe (empty)."""
+        """Tag needs request in context, if absent, fail safe (empty)."""
         import django_waf.conf as conf_mod
         from django_waf.forms.decorators import waf_protect_post
 

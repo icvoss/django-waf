@@ -3,7 +3,7 @@
 The v0.11.0 + v0.11.1 production bugs both passed every unit test
 because the tests constructed POST data as plain Python dicts. Real
 Django form submissions arrive with ``request.POST`` as a
-``QueryDict`` — and ``dict(QueryDict)`` produces list-valued entries
+``QueryDict``, and ``dict(QueryDict)`` produces list-valued entries
 that crash the defence chain.
 
 These tests exercise the mixin and decorator with **real
@@ -29,7 +29,7 @@ from django.test import RequestFactory
 
 
 class _InputCollector(HTMLParser):
-    """Browser-equivalent input extractor — name → value for every <input>."""
+    """Browser-equivalent input extractor, name → value for every <input>."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -76,7 +76,7 @@ def _solve_pow(token_nonce: str, difficulty: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# scalarise_submitted_data — the helper itself
+# scalarise_submitted_data, the helper itself
 # ---------------------------------------------------------------------------
 
 
@@ -104,7 +104,7 @@ class TestScalariseSubmittedData:
         out = scalarise_submitted_data(plain)
 
         assert out == plain
-        # Not the same object — the helper returns a copy so callers
+        # Not the same object, the helper returns a copy so callers
         # can mutate freely.
         assert out is not plain
 
@@ -125,12 +125,12 @@ class TestScalariseSubmittedData:
         out = scalarise_submitted_data(qd)
 
         assert out["waf_token"] == token
-        # Not a list — this is what crashed in production.
+        # Not a list, this is what crashed in production.
         assert not isinstance(out["waf_token"], list)
 
 
 # ---------------------------------------------------------------------------
-# ProtectedForm mixin — bound to a real QueryDict
+# ProtectedForm mixin, bound to a real QueryDict
 # ---------------------------------------------------------------------------
 
 
@@ -203,7 +203,7 @@ class TestMixinWithQueryDict:
 
         assert form.waf_result is not None
         assert form.waf_result.verdict == FormVerdict.PASSED
-        # And the token payload is verified — proof the defences saw
+        # And the token payload is verified, proof the defences saw
         # the scalar token, not [token].
         assert form.waf_result.token_payload is not None
 
@@ -236,7 +236,7 @@ class TestMixinWithQueryDict:
 
 
 # ---------------------------------------------------------------------------
-# Decorator — request.POST is a real QueryDict
+# Decorator, request.POST is a real QueryDict
 # ---------------------------------------------------------------------------
 
 
@@ -328,7 +328,7 @@ class TestDecoratorWithQueryDict:
                     )
                 )
 
-                # POST through the real test client — this is exactly
+                # POST through the real test client, this is exactly
                 # what a browser does. request.POST will be a real
                 # QueryDict here.
                 response = client.post(

@@ -1,6 +1,6 @@
 """Tests for WafMiddleware.
 
-All Redis interactions are mocked — the test suite runs with SQLite in-memory
+All Redis interactions are mocked, the test suite runs with SQLite in-memory
 and Django's LocMemCache (no real Redis available).
 
 Evaluation order under test (BR-EVAL-003):
@@ -169,7 +169,7 @@ class TestExemptPaths:
             middleware = _make_middleware()
             response = middleware(request)
 
-        # Fail-open means get_response is called — just verify we did not short-circuit
+        # Fail-open means get_response is called, just verify we did not short-circuit
         assert response.status_code == 200
 
 
@@ -689,7 +689,7 @@ class TestFailOpen:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_evaluation_error_passes_request_through(self):
-        """An exception in evaluate_request must not surface — request passes through."""
+        """An exception in evaluate_request must not surface, request passes through."""
 
         factory = RequestFactory()
         request = factory.get("/page/")
@@ -889,7 +889,7 @@ class TestCountryBlocking:
     @pytest.mark.django_db
     @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_BLOCKED_COUNTRIES=["CN", "RU"])
     def test_empty_geoip_result_fails_open(self):
-        """No GeoIP database / lookup failure returns '' — the request is not blocked."""
+        """No GeoIP database / lookup failure returns '', the request is not blocked."""
 
         factory = RequestFactory()
         request = factory.get("/page/")
@@ -997,7 +997,7 @@ class TestMiddlewareHelpers:
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             ),
         }
-        # Chrome UA with no browser headers — service returns "bot"
+        # Chrome UA with no browser headers, service returns "bot"
         result = _classify_fingerprint(request)
         assert result in ("browser", "bot", "suspicious", "unknown")
 
@@ -1153,7 +1153,7 @@ class TestMiddlewareHelpers:
 
 
 # ---------------------------------------------------------------------------
-# _get_challenge_paths — urlconf handling (regression: v0.10.4 cached the
+# _get_challenge_paths, urlconf handling (regression: v0.10.4 cached the
 # resolved path on the middleware instance, breaking per-request urlconf
 # routing such as django-hosts).
 # ---------------------------------------------------------------------------
@@ -1174,7 +1174,7 @@ class TestGetChallengePaths:
 
         assert challenge == "/custom/challenge/"
         assert verify == "/custom/verify/"
-        # reverse() must not be called when overrides are set — that's the
+        # reverse() must not be called when overrides are set, that's the
         # whole point for projects with per-request urlconf routing.
         mock_reverse.assert_not_called()
 
@@ -1198,7 +1198,7 @@ class TestGetChallengePaths:
         assert mock_reverse.call_count == 2
 
     def test_paths_not_cached_between_calls(self):
-        """Each call resolves fresh — required for per-request urlconf routing.
+        """Each call resolves fresh, required for per-request urlconf routing.
 
         Regression: v0.10.4 memoised the result on the middleware instance,
         so the first host to trigger a challenge under django-hosts froze its

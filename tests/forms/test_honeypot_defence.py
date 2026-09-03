@@ -35,7 +35,7 @@ def _ctx_eval(submitted_data, form_id="contact", config=None):
 
 class TestFieldNameRotation:
     def test_same_form_id_picks_same_names(self):
-        """Idempotent — must be stable across renders so caches don't break."""
+        """Idempotent, must be stable across renders so caches don't break."""
         from django_waf.forms.defences.honeypot import _pick_field_names
 
         pool = ["url", "website", "homepage", "email_confirm"]
@@ -91,7 +91,7 @@ class TestRenderFields:
     def test_html_includes_accessibility_attributes(self):
         """Hidden inputs must have autocomplete=off, tabindex=-1, aria-label.
 
-        Pin behaviour — accessibility is non-negotiable and the
+        Pin behaviour, accessibility is non-negotiable and the
         attributes are what make honeypots safe for screen reader
         users.
         """
@@ -105,7 +105,7 @@ class TestRenderFields:
         assert "aria-label=" in html
 
     def test_uses_offscreen_positioning_not_display_none(self):
-        """`display:none` is what bots check for — must use off-screen instead."""
+        """`display:none` is what bots check for, must use off-screen instead."""
         from django_waf.forms.defences.honeypot import HoneypotDefence
 
         defence = HoneypotDefence()
@@ -120,7 +120,7 @@ class TestRenderFields:
         We assert the structural characters are gone (no `<`, `>`,
         `"`, `'`, `/` that could escape the input attribute or open a
         new tag). The plain-letter remnants left behind by aggressive
-        stripping are harmless — they'd just produce a weirdly-named
+        stripping are harmless, they'd just produce a weirdly-named
         input field.
         """
         from django_waf.forms.defences.honeypot import HoneypotDefence
@@ -130,7 +130,7 @@ class TestRenderFields:
             "_waf_honeypot"
         ]
 
-        # No tag injection possible — these are the characters that
+        # No tag injection possible, these are the characters that
         # would let the name field escape its attribute context.
         for char in ('"', "'", "<", ">", "/", "\\"):
             assert char not in _name_attribute_value(html), f"unsafe char {char!r} survived into name attribute"
@@ -145,7 +145,7 @@ class TestRenderFields:
 
 
 def _name_attribute_value(html: str) -> str:
-    """Extract the substring inside name=\"...\" — what the browser sees."""
+    """Extract the substring inside name=\"...\", what the browser sees."""
     import re
 
     m = re.search(r'name="([^"]*)"', html)
@@ -159,7 +159,7 @@ def _name_attribute_value(html: str) -> str:
 
 class TestEvaluate:
     def test_empty_honeypot_fields_pass(self):
-        """Default case — humans don't fill hidden fields."""
+        """Default case, humans don't fill hidden fields."""
         from django_waf.forms.defences.honeypot import HoneypotDefence
 
         defence = HoneypotDefence()
@@ -183,8 +183,7 @@ class TestEvaluate:
         assert outcome.score == 5.0
 
     def test_reason_carries_specific_field_name(self):
-        """Operators tune the pool when one name keeps tripping —
-        the reason needs the specific field name."""
+        """Operators tune the pool when one name keeps tripping, the reason needs the specific field name."""
         import django_waf.conf as conf_mod
         from django_waf.forms.defences.honeypot import HoneypotDefence, _pick_field_names
 
@@ -215,14 +214,14 @@ class TestEvaluate:
 
     def test_filled_field_not_in_this_forms_pool_is_ignored(self):
         """A POST containing a value under a name that ISN'T this form's
-        honeypot must pass — bots that submit a global field set would
+        honeypot must pass, bots that submit a global field set would
         otherwise always be blocked, which is the desired behaviour for
         the configured names, but unrelated form fields with the same
         name shouldn't accidentally trip the defence."""
         from django_waf.forms.defences.honeypot import HoneypotDefence
 
         defence = HoneypotDefence()
-        # Custom pool of one unused name — the defence picks 'unused' as
+        # Custom pool of one unused name, the defence picks 'unused' as
         # the honeypot. A POST with 'something_else' should not match.
         outcome = defence.evaluate(
             _ctx_eval(

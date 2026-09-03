@@ -1,4 +1,4 @@
-"""RenderTokenDefence — the foundation defence.
+"""RenderTokenDefence, the foundation defence.
 
 A signed render token embedded in the form proves the submission
 originated from a real form render this server issued. Other defences
@@ -128,7 +128,7 @@ class RenderTokenDefence:
         # Return a full <input> tag, not just the token. v0.11.0
         # shipped this returning the raw token string, which the
         # orchestrator's ''.join() concatenated into the page as bare
-        # text — so the browser never submitted a waf_token field and
+        # text, so the browser never submitted a waf_token field and
         # every real user POST was rejected with render_token:missing.
         # ``format_html`` HTML-escapes the value defensively; tokens
         # are base64url so the escape is a no-op today, but the
@@ -172,7 +172,7 @@ class RenderTokenDefence:
         try:
             present = marker_exists(self._redis(), payload.nonce)
         except Exception:
-            # Redis down — fail-open on replay protection. Signature
+            # Redis down, fail-open on replay protection. Signature
             # check has already passed, so the token is at least
             # authentic.
             present = True
@@ -182,12 +182,12 @@ class RenderTokenDefence:
             if elapsed > _MARKER_GRACE_SECONDS:
                 return blocked("render_token:replayed", score=5.0)
 
-        # IP-change check. Flag rather than block — mobile clients
+        # IP-change check. Flag rather than block, mobile clients
         # legitimately roam between networks mid-session.
         if payload.ip and payload.ip != _extract_ip(ctx.request):
             # Stash the verified payload on the context for later
             # defences (time_trap, ua_consistency, js_touch). We can't
-            # mutate the frozen dataclass — the orchestrator constructs
+            # mutate the frozen dataclass, the orchestrator constructs
             # a fresh EvaluateContext with token_payload after this
             # defence returns; see orchestrator in a later block. For
             # now, returning the outcome is enough; the orchestrator
@@ -204,7 +204,7 @@ class RenderTokenDefence:
 def parse_submitted_payload(submitted_data: dict) -> TokenPayload | None:
     """Best-effort parse of the token in submitted data.
 
-    Returns ``None`` if the token is missing or invalid — the
+    Returns ``None`` if the token is missing or invalid, the
     orchestrator uses this to populate ``EvaluateContext.token_payload``
     for downstream defences. None means \"this submission had no
     verifiable token,\" which downstream defences treat as

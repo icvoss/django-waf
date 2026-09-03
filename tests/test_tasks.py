@@ -347,7 +347,7 @@ class TestPruneRequestLogs:
 
         from django_waf.tasks import prune_request_logs
 
-        # Prune anything older than 3 days — should catch the 5-day-old record
+        # Prune anything older than 3 days, should catch the 5-day-old record
         result = prune_request_logs(days=3)
 
         assert result["deleted_count"] >= 1

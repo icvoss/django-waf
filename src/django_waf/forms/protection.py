@@ -1,4 +1,4 @@
-"""FormProtection orchestrator — composes defences into a chain.
+"""FormProtection orchestrator, composes defences into a chain.
 
 A ``FormProtection`` instance lives on a form class (or a decorated
 view) and holds the configured defence chain. It's responsible for:
@@ -13,7 +13,7 @@ view) and holds the configured defence chain. It's responsible for:
   delete-on-pass-only rule that makes HTMX re-renders work).
 
 The orchestrator is intentionally separate from the entry-point
-mechanisms (mixin / decorator / template tag) — those each construct
+mechanisms (mixin / decorator / template tag), those each construct
 a FormProtection and call into it, but the composition logic lives
 here.
 
@@ -39,7 +39,7 @@ logger = logging.getLogger("django_waf.forms")
 
 
 # ---------------------------------------------------------------------------
-# FormVerdict — the orchestrator's aggregate decision
+# FormVerdict, the orchestrator's aggregate decision
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +151,7 @@ _CANONICAL_ORDER = (
 def scalarise_submitted_data(data) -> dict[str, str]:
     """Return a single-value-per-key dict from form-submission data.
 
-    Defences read their hidden fields as scalar strings —
+    Defences read their hidden fields as scalar strings:
     ``ctx.submitted_data.get("waf_token")`` is expected to return the
     token, not ``[token]``. Django's ``QueryDict`` stores values as
     lists internally; ``dict(querydict)`` iterates the underlying
@@ -190,7 +190,7 @@ def _extract_token_value(fragment: str) -> str:
     """
     import re
 
-    global _TOKEN_VALUE_RE  # noqa: PLW0603 — single-shot lazy compile is fine
+    global _TOKEN_VALUE_RE  # noqa: PLW0603, single-shot lazy compile is fine
     if _TOKEN_VALUE_RE is None:
         _TOKEN_VALUE_RE = re.compile(r'value="([^"]*)"')
     match = _TOKEN_VALUE_RE.search(fragment)
@@ -209,7 +209,7 @@ def _order_defences(names: tuple[str, ...]) -> tuple[str, ...]:
 
 
 # ---------------------------------------------------------------------------
-# Default redis factory — used when the consumer doesn't supply one
+# Default redis factory, used when the consumer doesn't supply one
 # ---------------------------------------------------------------------------
 
 
@@ -232,7 +232,7 @@ def _default_redis_factory():
 
 
 # ---------------------------------------------------------------------------
-# FormProtection — the orchestrator
+# FormProtection, the orchestrator
 # ---------------------------------------------------------------------------
 
 
@@ -240,7 +240,7 @@ class FormProtection:
     """Composes a defence chain for one protected form.
 
     Construct one per form class (or per decorated view). Reused
-    across requests — the orchestrator is stateless apart from its
+    across requests, the orchestrator is stateless apart from its
     config; the defences themselves only hold the redis factory.
 
     Usage in a form mixin (block 5):
@@ -266,22 +266,22 @@ class FormProtection:
     ) -> None:
         """Construct the chain.
 
-        * ``form_id`` — stable identifier used in counter keys, the
+        * ``form_id``, stable identifier used in counter keys, the
           honeypot's name rotation, the structured log, and the
           ``X-WAF-Form-Verdict`` header.
-        * ``defences`` — names of defences to run. Re-sorted into
+        * ``defences``, names of defences to run. Re-sorted into
           canonical order so render_token always runs first.
-        * ``defence_weights`` — per-defence score overrides; merged
+        * ``defence_weights``, per-defence score overrides; merged
           over ``DJANGO_WAF_FORM_DEFENCE_WEIGHTS``. Unknown names are
           accepted silently (operators may upweight future defences
           without breaking the current chain).
-        * ``redis_client_factory`` — callable returning a Redis
+        * ``redis_client_factory``, callable returning a Redis
           client; defaults to the package-wide resolver. Tests inject
           a MagicMock factory directly.
-        * ``skip_for_authenticated`` — when True, only render_token
+        * ``skip_for_authenticated``, when True, only render_token
           runs for authenticated users; spam/timing defences are
           skipped on in-product forms.
-        * ``per_form_config`` — any other kwarg becomes a per-defence
+        * ``per_form_config``, any other kwarg becomes a per-defence
           config entry. e.g. ``min_fill_seconds=0.8`` reaches
           ``TimeTrapDefence`` via ``ctx.config['min_fill_seconds']``.
         """
@@ -314,9 +314,9 @@ class FormProtection:
         """Build the config dict passed to a defence at render/evaluate time.
 
         Merges, in order:
-          1. ``per_form_config`` — what the operator passed to
+          1. ``per_form_config``, what the operator passed to
              ``FormProtection(...)``.
-          2. ``token_nonce`` if known — read by HoneypotDefence /
+          2. ``token_nonce`` if known, read by HoneypotDefence /
              JsTouchDefence / PowGateDefence to bind their rendered
              values to the active render.
 
@@ -385,7 +385,7 @@ class FormProtection:
                 # The token rides inside the rendered <input>'s
                 # ``value`` attribute. Extract it back out so the
                 # nonce can be threaded onto subsequent defences'
-                # ctx.config — they need it to bind their hidden
+                # ctx.config, they need it to bind their hidden
                 # fields to this render (PowGateDefence + JsTouchDefence).
                 #
                 # We could ask the defence to expose the payload via
@@ -393,7 +393,7 @@ class FormProtection:
                 # keeps the contract uniform: every defence's
                 # ``render_fields`` returns a name → HTML mapping,
                 # and the orchestrator's only structural assumption
-                # is that the token sits in a ``value="..."`` attr —
+                # is that the token sits in a ``value="..."`` attr,
                 # which is also the assumption browsers will make.
                 from django_waf.forms.defences.render_token import (
                     TOKEN_FIELD_NAME,
@@ -438,7 +438,7 @@ class FormProtection:
         defences' EvaluateContexts (time_trap, ua_consistency, js_touch,
         pow_gate all read from it).
 
-        A defence returning ``block`` short-circuits the chain — no
+        A defence returning ``block`` short-circuits the chain, no
         further defences run, and the final verdict is BLOCKED.
         Otherwise scores accumulate; crossing
         ``DJANGO_WAF_FORM_BLOCK_THRESHOLD`` upgrades the verdict to
@@ -468,13 +468,13 @@ class FormProtection:
             try:
                 outcome = defence.evaluate(ctx)
             except Exception:
-                # Defence raised — log and treat as a silent pass so a
+                # Defence raised, log and treat as a silent pass so a
                 # bug in one defence can't block legitimate users.
                 logger.exception("django-waf: defence %s raised; treating as pass", name)
                 outcome = Outcome(verdict="pass")
             outcomes.append(outcome)
 
-            # Short-circuit on a hard block — no later defence's
+            # Short-circuit on a hard block, no later defence's
             # verdict can revert this.
             if outcome.verdict == "block":
                 total = self._aggregate_score(outcomes)
@@ -506,7 +506,7 @@ class FormProtection:
 
         Called by the mixin / decorator after evaluate() returns
         PASSED. The delete-on-PASS-only rule is what makes HTMX
-        re-renders work (PRD §4.3) — failed validations preserve the
+        re-renders work (PRD §4.3), failed validations preserve the
         marker so the same token can be re-submitted with the same
         Redis state.
         """

@@ -25,7 +25,7 @@ class Command(BaseCommand):
             default=None,
             help=(
                 "Override the minimum confidence score to import a rule "
-                "(0.0–1.0; default: DJANGO_WAF_FEED_MIN_CONFIDENCE)."
+                "(0.0 to 1.0; default: DJANGO_WAF_FEED_MIN_CONFIDENCE)."
             ),
         )
         parser.add_argument(
@@ -49,7 +49,7 @@ class Command(BaseCommand):
             return
 
         if dry_run:
-            self.stdout.write(self.style.WARNING("[dry-run] Fetching feed — no database changes will be made."))
+            self.stdout.write(self.style.WARNING("[dry-run] Fetching feed, no database changes will be made."))
 
         from django_waf.services.threat_feed import sync_feed
 

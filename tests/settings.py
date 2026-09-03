@@ -15,7 +15,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # Registered so the browsable API and DRF's own app config work when the
     # dev extra (which pulls in djangorestframework) is installed. The
-    # package itself never requires this — see django_waf/api/__init__.py.
+    # package itself never requires this, see django_waf/api/__init__.py.
     "rest_framework",
     "django_waf",
 ]

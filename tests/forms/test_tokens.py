@@ -29,8 +29,8 @@ class TestGetSigningKey:
     def test_falls_back_to_secret_key_derivative_when_unset(self, settings):
         """An empty DJANGO_WAF_SIGNING_KEY derives from Django's SECRET_KEY.
 
-        Critical: the derived key must NOT equal SECRET_KEY directly —
-        if a future bug exposed it, leaking it would not also leak the
+        Critical: the derived key must NOT equal SECRET_KEY directly, if a future bug exposed it, leaking it would not
+        also leak the
         Django session secret. The namespace byte string in the
         derivation is the load-bearing detail here.
         """
@@ -94,8 +94,8 @@ class TestTokenRoundTrip:
     def test_issued_token_is_url_safe(self):
         """Token must survive being placed into an HTML attribute and a URL.
 
-        We base64url-encode and strip padding, which is exactly that
-        — but the test pins the contract so future changes don't
+        We base64url-encode and strip padding, which is exactly that, but the test pins the contract so future changes
+        don't
         silently introduce `+` or `/` characters that would break
         attribute serialisation.
         """
