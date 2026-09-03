@@ -5,7 +5,7 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.6.0] - 2026-09-03
+## [Unreleased]
 ### Added
 
 - **Method-aware `DJANGO_WAF_RATE_LIMIT_PATHS`** (BR-RATE-004).
@@ -81,6 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Scope is THROTTLED verdicts only, exactly as the block-response hook is
   scoped to BLOCKED only: BLOCKED and CHALLENGED keep their own responses.
+
+## [2.6.0] - 2026-09-03
+### Added
 
 - **A replaceable block response** (#74, BR-EVAL-012).
   `DJANGO_WAF_BLOCK_RESPONSE_HANDLER` takes a dotted path to a callable

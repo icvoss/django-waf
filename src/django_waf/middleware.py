@@ -574,7 +574,7 @@ class WafMiddleware:
         ``anomaly_score`` and ``retry_after``. ``verdict`` is always
         ``Verdict.THROTTLED`` here, and **unlike the BLOCKED path,
         ``retry_after`` IS populated** (it is always ``None`` on the BLOCKED
-        path -- see ``_build_block_response``). A handler that wants to set
+        path, see ``_build_block_response``). A handler that wants to set
         its own ``Retry-After`` header reads it from ``result.retry_after``.
 
         The return value must be an ``HttpResponse``, of any subclass and
