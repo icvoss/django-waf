@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.core.management.base import SystemCheckError
 from django.test import override_settings
@@ -85,6 +86,12 @@ def _run_middleware_present_check():
     from django_waf.checks import check_middleware_present
 
     return check_middleware_present(app_configs=None)
+
+
+def _run_challenge_urls_resolvable_check():
+    from django_waf.checks import check_challenge_urls_resolvable
+
+    return check_challenge_urls_resolvable(app_configs=None)
 
 
 class TestChallengeDifficultyCheck:
@@ -474,6 +481,167 @@ class TestMiddlewarePresentCheck:
         assert len(messages) == 1
         assert messages[0].id == "django_waf.E006"
         assert "MIDDLEWARE" in messages[0].hint
+
+
+class TestChallengeUrlsResolvableCheck:
+    """django_waf.E007 -- errors when the WAF is enabled and can issue a
+    challenge, but neither reverse("django_waf:challenge") nor an explicit
+    URL override yields a path to send the challenged visitor to (#102).
+
+    Every case here points ROOT_URLCONF at a real module rather than
+    building an approximation: ``tests.urls_no_waf`` genuinely omits the
+    include (so Django's own resolver raises NoReverseMatch), and
+    ``tests.urls`` genuinely carries it.
+
+    ``override_settings`` is used throughout rather than patching
+    ``django_waf.conf`` attributes because ROOT_URLCONF must change too, and
+    since #75 conf resolves DJANGO_WAF_* names at call time via module-level
+    ``__getattr__``, so ``override_settings`` reaches both in one idiom.
+    """
+
+    def test_routes_absent_and_waf_enabled_emits_e007_error(self):
+        """The #102 deployment shape: WAF on, challenges reachable from the
+        default score band, no explicit URL override, django_waf.urls routed
+        nowhere. This is the state that served a 500 to a challenged
+        visitor before the middleware guard landed."""
+        with override_settings(
+            DJANGO_WAF_ENABLED=True,
+            ROOT_URLCONF="tests.urls_no_waf",
+            DJANGO_WAF_CHALLENGE_URL="",
+            DJANGO_WAF_VERIFY_URL="",
+        ):
+            messages = _run_challenge_urls_resolvable_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.E007"
+        # Both remedies must be named, in the operator's terms.
+        assert "django_waf.urls" in messages[0].hint
+        assert "DJANGO_WAF_CHALLENGE_URL" in messages[0].hint
+        assert "DJANGO_WAF_VERIFY_URL" in messages[0].hint
+
+    def test_routes_present_and_waf_enabled_is_silent(self):
+        """Passing case (a): the ordinary correctly-wired deployment.
+        tests/urls.py includes django_waf.urls under the namespace, so both
+        routes reverse and there is nothing to report."""
+        with override_settings(
+            DJANGO_WAF_ENABLED=True,
+            ROOT_URLCONF="tests.urls",
+            DJANGO_WAF_CHALLENGE_URL="",
+            DJANGO_WAF_VERIFY_URL="",
+        ):
+            assert _run_challenge_urls_resolvable_check() == []
+
+    def test_routes_absent_and_waf_disabled_is_silent(self):
+        """Passing case (b): with DJANGO_WAF_ENABLED = False the middleware
+        returns at BR-EVAL-002 before any verdict is produced, so no
+        challenge is ever issued and there is no routing gap to report. The
+        #95 gating rationale, and the mistake E004 made before 1.8.1."""
+        with override_settings(
+            DJANGO_WAF_ENABLED=False,
+            ROOT_URLCONF="tests.urls_no_waf",
+            DJANGO_WAF_CHALLENGE_URL="",
+            DJANGO_WAF_VERIFY_URL="",
+        ):
+            assert _run_challenge_urls_resolvable_check() == []
+
+    def test_routes_absent_but_explicit_urls_set_is_silent(self):
+        """Passing case (c): _get_challenge_paths is ``setting or
+        reverse(...)``, so with both overrides set reverse() is never
+        called and the unrouted urlconf is harmless. This is the documented
+        escape for per-host and per-request urlconfs, and the reason E007
+        can be an Error at all rather than a Warning."""
+        with override_settings(
+            DJANGO_WAF_ENABLED=True,
+            ROOT_URLCONF="tests.urls_no_waf",
+            DJANGO_WAF_CHALLENGE_URL="/custom/challenge/",
+            DJANGO_WAF_VERIFY_URL="/custom/verify/",
+        ):
+            assert _run_challenge_urls_resolvable_check() == []
+
+    def test_routes_absent_but_challenges_not_issuable_is_silent(self):
+        """Passing case (d): DJANGO_WAF_ENABLED alone does not imply a
+        challenge can be issued. With the challenge score threshold raised
+        to the block threshold the band in rule_engine._score_to_verdict is
+        empty (a score at or above 7.0 goes straight to BLOCKED, below it to
+        LOGGED), and with DJANGO_WAF_CHALLENGE_NO_REFERER off the other
+        settings-readable producer is gone too. A WAF run purely for
+        blocking and throttling has no challenge to route."""
+        with override_settings(
+            DJANGO_WAF_ENABLED=True,
+            ROOT_URLCONF="tests.urls_no_waf",
+            DJANGO_WAF_CHALLENGE_URL="",
+            DJANGO_WAF_VERIFY_URL="",
+            DJANGO_WAF_SCORE_THRESHOLD_CHALLENGE=7.0,
+            DJANGO_WAF_SCORE_THRESHOLD_BLOCK=7.0,
+            DJANGO_WAF_CHALLENGE_NO_REFERER=False,
+        ):
+            assert _run_challenge_urls_resolvable_check() == []
+
+    def test_no_referer_challenge_alone_keeps_the_check_live(self):
+        """The discriminator for case (d): the empty score band is not on
+        its own enough to silence the check. With no-referer challenges
+        switched on, a CHALLENGED verdict is still reachable
+        (rule_engine step 8) and the routing gap is still real, so E007
+        must fire. Without this, case (d) would pass against a check that
+        keyed on the score band alone and wrongly went quiet for every
+        no-referer deployment."""
+        with override_settings(
+            DJANGO_WAF_ENABLED=True,
+            ROOT_URLCONF="tests.urls_no_waf",
+            DJANGO_WAF_CHALLENGE_URL="",
+            DJANGO_WAF_VERIFY_URL="",
+            DJANGO_WAF_SCORE_THRESHOLD_CHALLENGE=7.0,
+            DJANGO_WAF_SCORE_THRESHOLD_BLOCK=7.0,
+            DJANGO_WAF_CHALLENGE_NO_REFERER=True,
+        ):
+            messages = _run_challenge_urls_resolvable_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.E007"
+
+    @pytest.mark.parametrize(
+        ("challenge_url", "verify_url", "expected_route"),
+        [
+            ("/custom/challenge/", "", "django_waf:verify"),
+            ("", "/custom/verify/", "django_waf:challenge"),
+        ],
+    )
+    def test_only_one_explicit_url_set_still_fires(self, challenge_url, verify_url, expected_route):
+        """Setting one override is not an escape, and this is the case where
+        E007 matters most while being least visible to the operator.
+
+        ``_get_challenge_paths`` consumes the two settings on separate
+        lines, each ``setting or reverse(...)`` in its own right::
+
+            challenge = conf.DJANGO_WAF_CHALLENGE_URL or reverse("django_waf:challenge")
+            verify = conf.DJANGO_WAF_VERIFY_URL or reverse("django_waf:verify")
+
+        so they silence ``reverse()`` one route at a time, never as a pair.
+        A project that sets only ``DJANGO_WAF_CHALLENGE_URL`` still runs the
+        verify line, still calls ``reverse("django_waf:verify")``, and still
+        raises ``NoReverseMatch`` on an unrouted urlconf: a 500 before the
+        middleware guard landed, a silent fail-open pass-through after it.
+        The operator believes they have configured the URLs, so nothing
+        else will tell them.
+
+        The message must name only the genuinely unresolvable route, not the
+        one already pointed somewhere valid.
+        """
+        with override_settings(
+            DJANGO_WAF_ENABLED=True,
+            ROOT_URLCONF="tests.urls_no_waf",
+            DJANGO_WAF_CHALLENGE_URL=challenge_url,
+            DJANGO_WAF_VERIFY_URL=verify_url,
+        ):
+            messages = _run_challenge_urls_resolvable_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.E007"
+        assert expected_route in messages[0].msg
+        # The configured route is not reported: it resolves via its own
+        # override and reverse() is never attempted for it.
+        other_route = "django_waf:challenge" if expected_route == "django_waf:verify" else "django_waf:verify"
+        assert other_route not in messages[0].msg
 
 
 class TestTrustedCookieTrustLevelCheck:
@@ -897,3 +1065,64 @@ class TestManagePyCheckWithWafDisabled:
                 assert "django_waf.E003" in str(exc)
             else:
                 raise AssertionError("expected SystemCheckError from django_waf.E003")
+
+
+class TestManagePyCheckWithUnroutedChallengeUrls:
+    """End-to-end regression pair for django_waf.E007 (#102), mirroring what
+    ``TestManagePyCheckWithWafDisabled`` provides for E003/E004.
+
+    Every other E007 test in this module calls
+    ``check_challenge_urls_resolvable`` directly with ``app_configs=None``,
+    which never exercises the registry path Django's own ``check`` framework
+    uses, nor the behaviour that an Error aborts ``manage.py check``
+    outright via ``SystemCheckError`` rather than being returned as a value
+    in a list. That distinction is the whole cost of shipping this as an
+    Error rather than a Warning, so it is asserted directly.
+
+    Both halves override ``DJANGO_WAF_SITE_PASSWORD_ENABLED = False``
+    explicitly and patch ``is_redis_backend`` to True: with the WAF
+    enabled, E003's gate and E004's gate are each a second possible source
+    of ``SystemCheckError``, so without both the positive half below aborts
+    on E004 (tests/settings.py uses LocMemCache, never django-redis) and
+    the negative half could pass for the wrong reason. This mirrors what
+    ``TestManagePyCheckWithWafDisabled`` does for the same reason.
+    """
+
+    def test_check_command_completes_when_challenge_urls_are_routed(self):
+        """tests/urls.py includes django_waf.urls under its namespace, which
+        is the project default: ``manage.py check`` must complete cleanly
+        with the WAF fully enabled. A clean return is the regression
+        assertion, since an over-eager E007 would abort here."""
+        with (
+            override_settings(
+                DJANGO_WAF_ENABLED=True,
+                ROOT_URLCONF="tests.urls",
+                DJANGO_WAF_CHALLENGE_URL="",
+                DJANGO_WAF_VERIFY_URL="",
+                DJANGO_WAF_SITE_PASSWORD_ENABLED=False,
+            ),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
+        ):
+            call_command("check")
+
+    def test_check_command_aborts_when_challenge_urls_are_unroutable(self):
+        """The positive control for the test above, so a silent
+        assertion-that-never-fails is not hiding an inert check: the same
+        registry path, with django_waf.urls genuinely unrouted, must abort
+        with E007 named in the SystemCheckError."""
+        with (
+            override_settings(
+                DJANGO_WAF_ENABLED=True,
+                ROOT_URLCONF="tests.urls_no_waf",
+                DJANGO_WAF_CHALLENGE_URL="",
+                DJANGO_WAF_VERIFY_URL="",
+                DJANGO_WAF_SITE_PASSWORD_ENABLED=False,
+            ),
+            patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
+        ):
+            try:
+                call_command("check")
+            except SystemCheckError as exc:
+                assert "django_waf.E007" in str(exc)
+            else:
+                raise AssertionError("expected SystemCheckError from django_waf.E007")

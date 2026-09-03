@@ -13,7 +13,8 @@ import logging
 import random
 
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
-from django.urls import reverse
+from django.urls import NoReverseMatch, reverse
+from django.utils.module_loading import import_string
 from django.utils.translation import gettext_lazy as _
 
 logger = logging.getLogger("django_waf.middleware")
@@ -54,6 +55,12 @@ class WafMiddleware:
         ``DJANGO_WAF_CHALLENGE_URL`` / ``DJANGO_WAF_VERIFY_URL`` to literal paths,
         which is the recommended approach for multi-urlconf projects that
         don't mount the django_waf URLs on every host.
+
+        Raises ``NoReverseMatch`` when neither setting is set and the
+        ``django_waf`` namespace is not routed. Callers on the request path
+        must catch it and fail open (BR-EVAL-007); ``_handle_verdict``'s
+        CHALLENGED branch does. ``django_waf.E007`` reports the same
+        misconfiguration at boot.
         """
         from django_waf import conf
 
@@ -220,6 +227,14 @@ class WafMiddleware:
                 return None
 
             self._log_country_block(request, ip_address, user_agent, path, country)
+            # NOT routed through DJANGO_WAF_BLOCK_RESPONSE_HANDLER (#74).
+            # That hook's contract is (request, result), and this path has no
+            # EvaluationResult at all: the country decision is taken here,
+            # before evaluate_request() ever runs. Synthesising a fake result
+            # just to satisfy the signature would be a worse defect than the
+            # gap, so the gap is deliberate and recorded. A consumer needing
+            # a custom shape here should exempt the path or gate country
+            # blocking at the edge. Tracked as #76.
             return HttpResponseForbidden("Access denied.")
         except Exception:
             logger.exception("django-waf: error during country-block check — failing open")
@@ -362,6 +377,122 @@ class WafMiddleware:
         except Exception:
             logger.exception("django-waf: error creating RequestLog record for country block")
 
+    def _default_block_response(self) -> HttpResponse:
+        """Return the package's built-in BLOCKED response.
+
+        Kept as a single named source so the hook's fallback path and the
+        no-hook path cannot drift apart: both return this, byte for byte.
+        """
+        return HttpResponseForbidden("Access denied.")
+
+    def _build_block_response(self, request, result) -> HttpResponse:
+        """Return the response for a BLOCKED verdict (BR-EVAL-011).
+
+        With ``DJANGO_WAF_BLOCK_RESPONSE_HANDLER`` unset (the default) this
+        is exactly ``HttpResponseForbidden("Access denied.")``, unchanged
+        from every release before the hook existed.
+
+        HANDLER CONTRACT
+
+        ``DJANGO_WAF_BLOCK_RESPONSE_HANDLER`` is a dotted path to a
+        callable with this signature::
+
+            def handler(request: HttpRequest, result: EvaluationResult) -> HttpResponse
+
+        ``request`` is the live ``HttpRequest``. The handler runs before the
+        view, so nothing downstream has touched it.
+
+        ``result`` is the ``EvaluationResult`` NamedTuple from
+        ``django_waf.services.rule_engine``, carrying ``verdict``,
+        ``action``, ``matched_rule_id``, ``matched_rule_type``,
+        ``anomaly_score`` and ``retry_after``. ``verdict`` is always
+        ``Verdict.BLOCKED`` here, and ``retry_after`` is always ``None``
+        (it is populated on THROTTLED verdicts only).
+
+        **``result.matched_rule_id`` is a ``UUID`` or ``None``, not a
+        ``BlockRule`` instance.** The rule object is never loaded on this
+        path, deliberately: the block decision comes from the Redis fast
+        path, and reading the rule row per blocked request would hand an
+        attacker a query amplifier. A handler that needs the rule itself
+        must query for it, and should weigh that cost against the traffic
+        it is blocking.
+
+        The return value must be an ``HttpResponse``, of any subclass and
+        any status code. The middleware returns it unaltered.
+
+        The dotted path is resolved with ``import_string`` on each blocked
+        request rather than once at import time, following the package's
+        call-time settings resolution (see ``django_waf.conf``), so
+        ``override_settings`` and the pytest ``settings`` fixture work.
+        Blocked requests are the rare path, so the import-cache lookup this
+        costs is nowhere near the clean-request hot path.
+
+        FAILURE BEHAVIOUR
+
+        A misconfigured WAF must never break a request. That is the same
+        fail-open posture BR-EVAL-007 sets for evaluation. All three
+        failure modes fall back to ``_default_block_response()`` and log at
+        ERROR, classified distinctly so an operator can tell which one
+        happened:
+
+        1. the dotted path will not import, for any reason: a typo, a moved
+           module, or the handler module's own top-level code raising
+           something that is not an ``ImportError``;
+        2. the handler raises;
+        3. the handler returns something that is not an ``HttpResponse``.
+
+        The request is still blocked in all three cases. Falling back to
+        the built-in 403 is the safe direction: a broken hook must not turn
+        a block into a pass.
+
+        SCOPE
+
+        BLOCKED verdicts only. THROTTLED and CHALLENGED keep their own
+        responses, and ``_check_country_block``'s direct 403 is out of
+        scope (see the comment at that return).
+        """
+        from django_waf import conf
+
+        dotted_path = conf.DJANGO_WAF_BLOCK_RESPONSE_HANDLER
+        if not dotted_path:
+            return self._default_block_response()
+
+        try:
+            handler = import_string(dotted_path)
+        except Exception:
+            # Deliberately broader than ImportError. import_string raises
+            # ImportError for a bad path, but importing the handler's module
+            # runs that module's own top-level code, which can raise anything
+            # (ImproperlyConfigured from a settings read, a SyntaxError under
+            # a stale .pyc, an AppRegistryNotReady). None of those may reach
+            # the client as a 500 on a request the WAF is already blocking.
+            logger.exception(
+                "django-waf: DJANGO_WAF_BLOCK_RESPONSE_HANDLER %r could not be imported. "
+                "Falling back to the built-in block response.",
+                dotted_path,
+            )
+            return self._default_block_response()
+
+        try:
+            response = handler(request, result)
+        except Exception:
+            logger.exception(
+                "django-waf: block response handler %r raised. Falling back to the built-in block response.",
+                dotted_path,
+            )
+            return self._default_block_response()
+
+        if not isinstance(response, HttpResponse):
+            logger.error(
+                "django-waf: block response handler %r returned %s, not an HttpResponse. "
+                "Falling back to the built-in block response.",
+                dotted_path,
+                type(response).__name__,
+            )
+            return self._default_block_response()
+
+        return response
+
     def _handle_verdict(self, request, result, ip_address, user_agent, path, redis_client):
         from django_waf.enums import Verdict
 
@@ -382,7 +513,7 @@ class WafMiddleware:
             except Exception:
                 logger.exception("django-waf: error recording block verdict")
             _emit_request_blocked(result, ip_address, user_agent, path)
-            return HttpResponseForbidden("Access denied.")
+            return self._build_block_response(request, result)
 
         if verdict == Verdict.THROTTLED:
             _emit_request_throttled(result, ip_address)
@@ -398,7 +529,33 @@ class WafMiddleware:
             return response
 
         if verdict == Verdict.CHALLENGED:
-            challenge_path, verify_path = self._get_challenge_paths()
+            try:
+                challenge_path, verify_path = self._get_challenge_paths()
+            except NoReverseMatch:
+                # BR-EVAL-007: the WAF must never break a request because of
+                # its own misconfiguration. With django_waf.urls routed
+                # nowhere and no explicit URL override set,
+                # _get_challenge_paths() calls reverse("django_waf:challenge")
+                # and raises NoReverseMatch, which before #102 escaped
+                # __call__ uncaught and served a 500 to a legitimate visitor
+                # who merely tripped a detector. There is no route to send
+                # them to, so half-blocking them behind a redirect to a page
+                # that does not exist is strictly worse than letting the
+                # request through: fail open and tell the operator loudly
+                # what to fix. Caught narrowly rather than as a bare
+                # Exception so any other failure in this branch still
+                # surfaces.
+                logger.error(
+                    "django-waf: cannot resolve the challenge/verify URLs, so a CHALLENGED "
+                    "verdict for %s on %s is being passed through to the view instead "
+                    "(BR-EVAL-007 fail-open). Route django_waf.urls in your URLconf under "
+                    "the 'django_waf' namespace, or set DJANGO_WAF_CHALLENGE_URL and "
+                    "DJANGO_WAF_VERIFY_URL to literal paths if this project mounts the WAF "
+                    "views elsewhere (or on only some hosts).",
+                    ip_address,
+                    path,
+                )
+                return self._get_response(request)
 
             # Suppress challenge redirect when already on a challenge/verify
             # path to prevent infinite redirect loops. BLOCKED and THROTTLED
