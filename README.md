@@ -354,7 +354,6 @@ until a form opts in via the mixin, decorator, or template tag.
 | `DJANGO_WAF_FORM_SIGNUP_VELOCITY_WINDOW` | `86400` | Window for completed-signup counter (24h) |
 | `DJANGO_WAF_FORM_SIGNUP_VELOCITY_LIMIT` | `5` | Successful signups per IP before next attempt is flagged |
 | `DJANGO_WAF_FORM_POW_DIFFICULTY` | `12` | Per-submission PoW difficulty (bits). 12 ≈ 4k SHA-256 hashes ≈ 50ms desktop / ~200ms mobile |
-| `DJANGO_WAF_FORM_REPLAY_STORE` | `"session"` | Where to stash FLAGGED POST data for replay. Only `"session"` is implemented |
 | `DJANGO_WAF_FORM_DEFENCE_WEIGHTS` | (see code) | Per-defence score weights; overridable per-form via `FormProtection(defence_weights={...})` |
 
 **Usage**: Django Form mixin (recommended for new forms):
