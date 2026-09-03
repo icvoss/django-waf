@@ -6,7 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-
 ### Added
 
 - **A replaceable block response** (#74, BR-EVAL-012).
@@ -90,6 +89,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one serving traffic. Setting both URL overrides is the escape for
   that case, and is what the package already recommends there.
 
+### Removed
+
+- **`DJANGO_WAF_FORM_REPLAY_STORE`, a setting that was never read** (#73).
+  The setting was defined in `conf.py` with a default of `"session"` and
+  documented as choosing between a session-backed and a Redis-backed
+  replay store, but no Redis store was ever built: the only implementation
+  (`store_in_session` / `fetch_from_session` / `discard_from_session` in
+  `forms/services/replay.py`) goes straight to the session and never
+  consults the setting at all. Nobody asked for a Redis replay store, and
+  building one now purely to give a dead config key something to do would
+  be backwards: the setting is removed instead.
+
+  This is not a behaviour change for any consumer. A setting nothing reads
+  has no runtime effect to preserve, so a project with
+  `DJANGO_WAF_FORM_REPLAY_STORE = "session"` in its settings keeps working
+  identically after upgrading: Django ignores settings names a package
+  does not define, exactly as it always has for this one. The change is
+  purely that the package no longer claims a knob it never turned.
+
+- **A system check for `DJANGO_WAF_*` settings set only as environment
+  variables** (#106, `django_waf.W010`). Every `DJANGO_WAF_*` setting is
+  resolved from `django.conf.settings` only: `conf._get_setting` never
+  consults `os.environ`, which is deliberate (Django settings stay the
+  single source of truth), but it means an operator who sets one as an
+  environment variable, the natural reading of a deployment-time flag,
+  gets no error, no log line and no indication anything is wrong. Found on
+  a real deployment where `DJANGO_WAF_FEED_REPORT=True` was set in `.env`
+  and telemetry had never been sent.
+
+  `check_env_only_settings` warns when a name in `conf._RESOLVERS` (every
+  setting the package resolves, not a hand-written list that could drift
+  from it) is present in `os.environ` but absent from `settings`, naming
+  the offending variable(s). Silent when the Django setting is also
+  assigned (the environment variable's presence is then redundant, not a
+  misconfiguration) and silent when neither is set. Not gated on
+  `DJANGO_WAF_ENABLED`, mirroring `django_waf.W008`/`W009`: this is a
+  static fact about configuration plumbing, not a live per-request
+  evaluation path.
+
+  Also corrects the comment above `_DJANGO_WAF_FEED_REPORT` (`conf.py`),
+  which read as a completeness guarantee ("Setting this to True is the
+  only step a site needs to start reporting") without saying *where*
+  (the Django settings module, never the environment), the misreading
+  that produced the original report.
+
 ### Fixed
 
 - **A challenged visitor was served a 500 on a deployment with the WAF
@@ -112,8 +156,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still surfaces. `django_waf.E007` above reports the same
   misconfiguration at boot, and both are needed: an operator who ignores
   the check must still not serve 500s.
-
-### Fixed
 
 - **A malformed IP in the nginx access log no longer aborts the whole
   `parse_access_log` batch** (#72). The parse loop took `ip_address` straight

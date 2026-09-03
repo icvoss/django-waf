@@ -43,7 +43,27 @@ class BlockRuleFactory(factory.django.DjangoModelFactory):
     feed_first_seen = None
     feed_reporters = 0
     notes = ""
-    review_status = ReviewStatus.NOT_APPLICABLE
+    # _get_or_create_auto_rule (anomaly_detector.py) derives review_status
+    # from (source, is_active) at create time: an AUTO rule is
+    # is_active=False/review_status=PENDING when quarantined, or
+    # is_active=True/review_status=NOT_APPLICABLE when created enforcing
+    # (BR-ANOM-007/BR-ANOM-008). Admin and feed rules never get that
+    # derivation: django_waf_block.py, django_waf_import_rules.py and
+    # threat_feed.py all leave review_status untouched (the model default,
+    # NOT_APPLICABLE) regardless of is_active. A flat NOT_APPLICABLE default
+    # here would let a caller build source=AUTO, is_active=False with
+    # review_status=NOT_APPLICABLE, a state the detector never writes. A
+    # caller who passes review_status explicitly, including a value that
+    # contradicts the derivation (e.g. the CONFIRMED/REJECTED states
+    # DashboardAnomalyConfirmView/RejectView write in views.py), still wins:
+    # that is a normal keyword override and takes precedence over this
+    # class-level default, exactly as ChallengeTokenFactory.solved_at does
+    # after #86.
+    review_status = factory.LazyAttribute(
+        lambda o: (
+            ReviewStatus.PENDING if o.source == RuleSource.AUTO and not o.is_active else ReviewStatus.NOT_APPLICABLE
+        )
+    )
     reviewed_at = None
     detectors = ""
 
@@ -92,7 +112,22 @@ class RequestLogFactory(factory.django.DjangoModelFactory):
     method = "GET"
     verdict = Verdict.ALLOWED
     matched_rule_id = None
-    matched_rule_type = ""
+    # rule_engine.evaluate_request writes matched_rule_id and
+    # matched_rule_type as a strict pair throughout (both None/"" when
+    # nothing matched an AllowRule/BlockRule, or both set together: "allow"
+    # with a real UUID, "block" with a real UUID). This holds independently
+    # of verdict: a score-based or malformed-cache-value BLOCKED verdict
+    # still carries matched_rule_id=None, matched_rule_type="" (rule_engine.py,
+    # the score-based and Redis fast-path branches), so verdict itself is
+    # NOT part of this coupling. A caller overriding only matched_rule_id
+    # (leaving matched_rule_type at its flat default of "") would build a
+    # row rule_engine never writes: an id with no type. "block" is the
+    # default derived type (the common case in tests, matching BlockRule's
+    # matched_rule_type value at rule_engine.py) but a caller who wants
+    # "allow" still overrides matched_rule_type explicitly, which wins over
+    # this derivation exactly as ChallengeTokenFactory.solved_at does after
+    # #86.
+    matched_rule_type = factory.LazyAttribute(lambda o: "" if o.matched_rule_id is None else "block")
     anomaly_score = None
     response_code = 200
     country_code = ""
