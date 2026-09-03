@@ -172,11 +172,20 @@ def parse_access_log(log_path: str | None = None) -> dict:
         r'(?:\s+"[^"]*"\s+"([^"]*)")?'
     )
 
-    # response_code is a PositiveSmallIntegerField (SQL smallint), max 32767
-    # across every backend Django supports. The regex only guarantees the
-    # matched group is digits, not that it fits the column, so a corrupted
-    # or crafted line with an oversized status code is validated the same
-    # way as the IP address below rather than reaching bulk_create.
+    # response_code is a PositiveSmallIntegerField. The regex only
+    # guarantees the matched group is digits, not that it fits the column,
+    # so a corrupted or crafted line with an oversized status code is
+    # validated the same way as the IP address below rather than reaching
+    # bulk_create.
+    #
+    # 32767 is PostgreSQL's signed-smallint ceiling, which is what
+    # connection.ops.integer_field_range reports for this field on
+    # PostgreSQL (verified) and the tightest bound among the backends this
+    # package supports. It is deliberately a fixed literal rather than a
+    # per-backend lookup: the bound is only used to reject a value no real
+    # access log carries, so the tightest one is correct everywhere, and
+    # introducing a backend-dependent limit inside the parse loop would
+    # make ingestion silently accept different rows on different databases.
     _MAX_SMALLINT = 32767
 
     records_to_create = []
