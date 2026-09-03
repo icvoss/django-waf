@@ -2,7 +2,7 @@
 Threat feed service for django-waf.
 
 Manages synchronisation from the central threat feed and opt-in anonymised
-telemetry reporting. Per BR-FEED-001 through BR-TEL-004.
+telemetry reporting. Per BR-FEED-001 through BR-TEL-003.
 """
 
 from __future__ import annotations
@@ -474,7 +474,7 @@ def build_telemetry_payload(period_start, period_end) -> dict:
 def submit_telemetry(payload: dict, report_url: str | None = None) -> bool:
     """POST the telemetry payload to the central reporting endpoint.
 
-    Per BR-TEL-004: never raises on failure. Logs a warning on failure.
+    Per BR-TEL-003: never raises on failure. Logs a warning on failure.
 
     Args:
         payload: Telemetry dict from build_telemetry_payload().
@@ -507,7 +507,7 @@ def submit_telemetry(payload: dict, report_url: str | None = None) -> bool:
         return False
     except Exception as exc:
         logger.warning("django-waf: telemetry submission error: %s", exc)
-        return False  # BR-TEL-004: never raise
+        return False  # BR-TEL-003: never raise
 
 
 def get_or_create_install_id() -> str:

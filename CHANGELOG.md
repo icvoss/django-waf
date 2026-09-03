@@ -44,13 +44,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call `self._build_block_response(request, result)` yourself where you
   currently build the 403.
 
-  **Country blocks are deliberately not covered**, and still return the
-  same fixed 403. `_check_country_block` decides before `evaluate_request()`
-  runs, so it has no `EvaluationResult` to hand a `(request, result)`
-  handler, and synthesising a fake one to satisfy the signature would be a
-  worse defect than the gap. That means a country block still fingerprints
-  the WAF on exactly the unbound custom domains this hook is about; until
-  #76 closes that, exempt the path or gate country blocking at the edge.
+  **Country blocks now route through this hook too** (#76).
+  `_check_country_block` decides before `evaluate_request()` runs, so it
+  has no `EvaluationResult` from that call, but the values it needs are
+  exactly what it already writes to `RequestLog` for the same request:
+  `verdict=Verdict.BLOCKED`, `action=RuleAction.BLOCK`,
+  `matched_rule_id=None`, `matched_rule_type=""`, `anomaly_score=None`. The
+  country code itself is not added to `EvaluationResult` (a public
+  NamedTuple consumers unpack; widening it is a bigger change than this
+  fix), and is instead set on the request as `request.waf_blocked_country`
+  before the handler runs, so a handler that wants to branch on it reads
+  `getattr(request, "waf_blocked_country", None)`.
+
+- **`django_waf.E008`**, a boot-time check for an unresolvable
+  `DJANGO_WAF_BLOCK_RESPONSE_HANDLER` (#121).
+
+  Errors when the setting is non-empty and its dotted path cannot be
+  imported, using the same `except Exception` breadth as the runtime guard
+  in `_build_block_response`: importing the handler's module runs that
+  module's own top-level code, which can raise `ImproperlyConfigured`,
+  `AppRegistryNotReady`, a stale-`.pyc` `SyntaxError`, or anything else.
+  Silent when the WAF is disabled, and silent when the setting is empty
+  (its default). This proves only that the path resolves, not that the
+  handler is correct: it cannot verify the signature, that the return
+  value is an `HttpResponse`, or that the handler does not raise, all of
+  which stay caught only at runtime by the existing fallbacks.
 
 - **`django_waf.E007`**, a boot-time check for a challenge flow with
   nowhere to send anyone (#102, BR-EVAL-011).
@@ -135,6 +153,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that produced the original report.
 
 ### Fixed
+
+- **Three source comments cited `BR-TEL-004`, a spec rule that does not
+  exist** (#130). `services/threat_feed.py` attributed
+  `submit_telemetry`'s never-raise-on-failure behaviour to `BR-TEL-004`
+  in its module docstring, its function docstring and an inline comment.
+  The canonical spec defines `BR-TEL-001` through `BR-TEL-003` only, and
+  the rule that actually governs this behaviour is `BR-TEL-003`
+  ("Telemetry failure does not affect WAF operation"). Comments only, no
+  behaviour change: the code already did what `BR-TEL-003` requires.
 
 - **A challenged visitor was served a 500 on a deployment with the WAF
   URLs unrouted** (#102, BR-EVAL-011). The CHALLENGED branch of

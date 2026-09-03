@@ -443,3 +443,179 @@ class TestSettingDefault:
         from django_waf import conf
 
         assert conf.DJANGO_WAF_BLOCK_RESPONSE_HANDLER == "some.dotted.path"
+
+
+# ---------------------------------------------------------------------------
+# Country blocks now route through the hook too (#76)
+# ---------------------------------------------------------------------------
+
+
+def _run_country_blocked_request(blocked_countries=("CN",), country="CN"):
+    """Drive a request from a blocked country through the real middleware
+    ``__call__`` path, mirroring ``_run_blocked_request`` above.
+
+    Patches only ``lookup_country``, the single external boundary of
+    ``_check_country_block``. Everything downstream, including the routing
+    into ``_build_block_response``, runs for real, so these tests prove the
+    hook is wired into the country-block path rather than merely that
+    ``_build_block_response`` works in isolation.
+    """
+    from django_waf.middleware import WafMiddleware
+
+    factory = RequestFactory()
+    request = factory.get("/page/")
+    request.user = MagicMock(is_authenticated=False)
+    request.COOKIES = {}
+    get_response = MagicMock(return_value=HttpResponse("view response"))
+
+    with (
+        override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_BLOCKED_COUNTRIES=list(blocked_countries)),
+        patch("django_waf.services.geoip.lookup_country", return_value=country),
+    ):
+        middleware = WafMiddleware(get_response)
+        response = middleware(request)
+
+    get_response.assert_not_called()
+    return request, response
+
+
+@pytest.mark.django_db
+class TestCountryBlockRoutesThroughTheHook:
+    """A country block is BLOCKED like any other (#76): it now goes through
+    ``DJANGO_WAF_BLOCK_RESPONSE_HANDLER`` rather than returning a hardcoded
+    403 directly.
+
+    The values ``_check_country_block`` builds the ``EvaluationResult``
+    from are not invented for this path: they are exactly what
+    ``_log_country_block`` already writes to ``RequestLog`` for the same
+    request, a few lines above the call this class exercises.
+    """
+
+    @override_settings(
+        DJANGO_WAF_BLOCK_RESPONSE_HANDLER="tests.test_block_response_hook.working_handler",
+    )
+    def test_handler_is_called_for_a_country_block(self):
+        _run_country_blocked_request()
+
+        assert len(CALLS) == 1
+
+    @override_settings(
+        DJANGO_WAF_BLOCK_RESPONSE_HANDLER="tests.test_block_response_hook.working_handler",
+    )
+    def test_handler_response_replaces_the_default_for_a_country_block(self):
+        _request, response = _run_country_blocked_request()
+
+        assert response.status_code == 404
+        assert response.content == b"Not found."
+
+    @override_settings(
+        DJANGO_WAF_BLOCK_RESPONSE_HANDLER="tests.test_block_response_hook.working_handler",
+    )
+    def test_handler_receives_the_documented_evaluation_result(self):
+        """Pins the exact field values the brief and the docstring both
+        promise, which are the same values ``_log_country_block`` writes to
+        ``RequestLog`` for this request: this is not a synthesised result."""
+        from django_waf.enums import RuleAction, Verdict
+
+        _run_country_blocked_request()
+
+        assert len(CALLS) == 1
+        request, result = CALLS[0]
+        assert result.verdict == Verdict.BLOCKED
+        assert result.action == RuleAction.BLOCK
+        assert result.matched_rule_id is None
+        assert result.matched_rule_type == ""
+        assert result.anomaly_score is None
+        assert request.waf_blocked_country == "CN"
+
+    @override_settings(
+        DJANGO_WAF_BLOCK_RESPONSE_HANDLER="tests.test_block_response_hook.working_handler",
+    )
+    def test_waf_blocked_country_is_absent_on_a_normal_block(self):
+        """The attribute is country-block-only. Checked with ``hasattr``,
+        not ``getattr(..., None)``, because the documented contract is
+        absence, and a handler reading ``None`` back would not be able to
+        tell "not a country block" from "country block with no code"."""
+        from django_waf.middleware import WafMiddleware
+
+        factory = RequestFactory()
+        request = factory.get("/page/")
+        request.user = MagicMock(is_authenticated=False)
+        request.COOKIES = {}
+        get_response = MagicMock(return_value=HttpResponse("view response"))
+
+        with (
+            override_settings(DJANGO_WAF_ENABLED=True),
+            patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+            patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+            patch("django_waf.middleware._emit_request_blocked"),
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_validate.return_value = False
+            mock_eval.return_value = _make_result("blocked")
+
+            middleware = WafMiddleware(get_response)
+            middleware(request)
+
+        assert len(CALLS) == 1
+        seen_request, _result = CALLS[0]
+        assert not hasattr(seen_request, "waf_blocked_country")
+
+    def test_no_handler_configured_returns_the_byte_identical_built_in_403(self):
+        """Unset handler: byte-identical to the pre-#76 hardcoded response,
+        via ``_default_block_response`` rather than a second literal."""
+        _request, response = _run_country_blocked_request()
+
+        assert response.status_code == 403
+        assert response.content == b"Access denied."
+        assert CALLS == []
+
+    @override_settings(
+        DJANGO_WAF_BLOCK_RESPONSE_HANDLER="tests.test_block_response_hook.raising_handler",
+    )
+    def test_raising_handler_on_a_country_block_still_blocks(self):
+        """A broken handler must not turn a country block into a pass. The
+        handler runs and raises, ``_build_block_response`` catches it and
+        falls back to the built-in 403, and none of that reaches
+        ``_check_country_block``'s own outer ``except Exception`` (which
+        would fail the request open)."""
+        _request, response = _run_country_blocked_request()
+
+        assert response.status_code == 403
+        assert response.content == b"Access denied."
+        assert len(CALLS) == 1
+
+
+@pytest.mark.django_db
+class TestGeoipLookupStillFailsOpen:
+    """The geoip lookup failing must still fall through to normal
+    evaluation, not to the block-response hook: fail-open behaviour for
+    ``_check_country_block``'s own errors is unchanged by #76."""
+
+    @override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_BLOCKED_COUNTRIES=["CN"])
+    def test_lookup_exception_fails_open_to_normal_evaluation(self):
+        from django_waf.middleware import WafMiddleware
+
+        factory = RequestFactory()
+        request = factory.get("/page/")
+        request.user = MagicMock(is_authenticated=False)
+        request.COOKIES = {}
+        get_response = MagicMock(return_value=HttpResponse("ok"))
+
+        with (
+            patch("django_waf.services.geoip.lookup_country", side_effect=RuntimeError("geoip boom")),
+            patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+            patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_validate.return_value = False
+            mock_eval.return_value = _make_result("allowed")
+
+            middleware = WafMiddleware(get_response)
+            response = middleware(request)
+
+        assert response.status_code == 200
+        get_response.assert_called_once_with(request)
+        assert CALLS == []

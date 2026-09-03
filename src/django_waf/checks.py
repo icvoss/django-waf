@@ -219,6 +219,30 @@ about the deployment's configuration plumbing (an environment variable
 that silently does nothing), true or false independent of whether the WAF
 is currently enforcing requests, mirroring the rationale ``django_waf.W008``
 and ``django_waf.W009`` already give for staying ungated.
+
+The block-response handler check (``django_waf.E008``) errors when
+``DJANGO_WAF_BLOCK_RESPONSE_HANDLER`` is set to a dotted path that cannot
+be imported (#121). ``WafMiddleware._build_block_response`` already
+guards this at runtime with a broad ``except Exception`` around
+``import_string``, deliberately wider than ``except ImportError``, because
+importing the handler's module runs that module's own top-level code,
+which can raise ``ImproperlyConfigured``, ``AppRegistryNotReady``, a
+``SyntaxError`` under a stale ``.pyc``, or anything else. This check must
+use the same breadth: a narrower except here would pass at boot for a
+handler that fails on every single blocked request afterwards, which is
+worse than not checking at all, since it tells the operator the setting is
+fine when it is not. Silent when the WAF is disabled (#95): a disabled WAF
+issues no BLOCKED verdicts, so an unresolvable handler is never invoked.
+Also silent when the setting is empty, its default, which means "use the
+built-in block response" and is not a misconfiguration.
+
+**Known limitation, stated rather than papered over.** This proves only
+that the dotted path resolves to something importable. It cannot verify
+the handler's signature, that it returns an ``HttpResponse``, or that it
+does not raise when actually called: none of that is observable without
+invoking the handler with a real request, which a boot-time check must
+not do. Those three failure modes are caught only at runtime, by the
+fallbacks ``_build_block_response`` already documents.
 """
 
 from __future__ import annotations
@@ -1015,3 +1039,74 @@ def check_env_only_settings(app_configs, **kwargs):
             id="django_waf.W010",
         )
     ]
+
+
+@register()
+def check_block_response_handler_importable(app_configs, **kwargs):
+    """Error (``django_waf.E008``) when ``DJANGO_WAF_BLOCK_RESPONSE_HANDLER``
+    is set to a dotted path that cannot be imported (#121).
+
+    Layered, cheapest guard first:
+
+    1. **``DJANGO_WAF_ENABLED`` is ``True``.** Otherwise return ``[]``: a
+       disabled WAF issues no BLOCKED verdicts, so
+       ``_build_block_response`` never runs and an unresolvable handler
+       cannot fire. Same gating rationale #95 established for every other
+       check in this module.
+    2. **The setting is non-empty.** The empty string is the default and
+       means "use the built-in block response", not a misconfiguration, so
+       return ``[]``.
+    3. **Only then** attempt ``import_string(dotted_path)``, inside
+       ``try/except Exception``.
+
+    The except is deliberately broader than ``ImportError``. This must
+    agree with the runtime guard in ``WafMiddleware._build_block_response``,
+    which is exactly as broad and documents why: importing the handler's
+    module runs that module's own top-level code, and that code can raise
+    ``ImproperlyConfigured`` from a settings read, ``AppRegistryNotReady``,
+    a ``SyntaxError`` under a stale ``.pyc``, or anything else it likes. A
+    check narrower than the runtime guard would pass at boot for a handler
+    that fails on every blocked request afterwards, which is a worse
+    outcome than no check at all: it tells the operator the setting works
+    when every live block will silently fall back to the built-in 403.
+
+    **Known limitation, stated rather than papered over.** This proves only
+    that the dotted path resolves to an importable object. It cannot verify
+    the handler's signature, that its return value is an ``HttpResponse``,
+    or that it does not raise when actually invoked with a real request and
+    result: none of that is observable without calling the handler, which a
+    boot-time check must not do. Those three failure modes remain caught
+    only at runtime, by the fallbacks ``_build_block_response`` already
+    documents and already falls back from.
+    """
+    from django.utils.module_loading import import_string
+
+    from django_waf import conf
+
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
+
+    dotted_path = conf.DJANGO_WAF_BLOCK_RESPONSE_HANDLER
+    if not dotted_path:
+        return []
+
+    try:
+        import_string(dotted_path)
+    except Exception:
+        return [
+            Error(
+                f"DJANGO_WAF_BLOCK_RESPONSE_HANDLER={dotted_path!r} could not "
+                "be imported. The WAF will fall back to the built-in 403 on "
+                "every blocked request.",
+                hint=(
+                    "Check the dotted path is correct and that importing it "
+                    "does not raise: a typo, a moved module, or the handler "
+                    "module's own top-level code raising on import (a "
+                    "settings read before django.setup(), for instance) all "
+                    "produce this error."
+                ),
+                id="django_waf.E008",
+            )
+        ]
+
+    return []

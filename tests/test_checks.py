@@ -129,6 +129,12 @@ def _run_env_only_settings_check():
     return check_env_only_settings(app_configs=None)
 
 
+def _run_block_response_handler_check():
+    from django_waf.checks import check_block_response_handler_importable
+
+    return check_block_response_handler_importable(app_configs=None)
+
+
 class TestChallengeDifficultyCheck:
     def test_recommended_defaults_produce_no_messages(self):
         import django_waf.conf as conf_mod
@@ -1027,6 +1033,81 @@ class TestEnvOnlySettingsCheck:
             messages = _run_env_only_settings_check()
 
         assert any(m.id == "django_waf.W010" and "DJANGO_WAF_SIGNING_KEY" in m.msg for m in messages)
+
+
+class TestBlockResponseHandlerImportableCheck:
+    """django_waf.E008: errors when DJANGO_WAF_BLOCK_RESPONSE_HANDLER is
+    set to a dotted path that cannot be imported (#121).
+
+    The teeth test below (``test_non_importerror_on_import_is_still_caught``)
+    is the one that matters most: it proves the except clause is broader
+    than ``ImportError``, agreeing with the runtime guard in
+    ``WafMiddleware._build_block_response``. A check narrower than the
+    runtime guard would pass at boot for a handler that fails on every
+    blocked request afterwards.
+    """
+
+    def test_unresolvable_path_emits_e008_error(self):
+        with override_settings(
+            DJANGO_WAF_ENABLED=True,
+            DJANGO_WAF_BLOCK_RESPONSE_HANDLER="tests.does_not_exist.handler",
+        ):
+            messages = _run_block_response_handler_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.E008"
+
+    def test_message_names_the_setting_and_the_dotted_path(self):
+        with override_settings(
+            DJANGO_WAF_ENABLED=True,
+            DJANGO_WAF_BLOCK_RESPONSE_HANDLER="tests.does_not_exist.handler",
+        ):
+            messages = _run_block_response_handler_check()
+
+        assert "DJANGO_WAF_BLOCK_RESPONSE_HANDLER" in messages[0].msg
+        assert "tests.does_not_exist.handler" in messages[0].msg
+        assert "403" in messages[0].msg
+
+    def test_resolvable_path_is_silent(self):
+        with override_settings(
+            DJANGO_WAF_ENABLED=True,
+            DJANGO_WAF_BLOCK_RESPONSE_HANDLER="tests.test_block_response_hook.working_handler",
+        ):
+            assert _run_block_response_handler_check() == []
+
+    def test_empty_setting_is_silent(self):
+        """The default. Not a misconfiguration: it means "use the built-in
+        block response"."""
+        with override_settings(DJANGO_WAF_ENABLED=True, DJANGO_WAF_BLOCK_RESPONSE_HANDLER=""):
+            assert _run_block_response_handler_check() == []
+
+    def test_waf_disabled_is_silent(self):
+        """A disabled WAF issues no BLOCKED verdicts, so
+        _build_block_response never runs and an unresolvable handler can
+        never fire. Same #95 gating rationale as every other check here."""
+        with override_settings(
+            DJANGO_WAF_ENABLED=False,
+            DJANGO_WAF_BLOCK_RESPONSE_HANDLER="tests.does_not_exist.handler",
+        ):
+            assert _run_block_response_handler_check() == []
+
+    def test_non_importerror_on_import_is_still_caught(self):
+        """The teeth test. ``tests.block_handler_import_boom`` is a real
+        module whose top-level code raises ``ImproperlyConfigured``, not
+        ``ImportError``. ``import_string`` propagates whatever the module
+        itself raises, so a check written as ``except ImportError`` would
+        let this straight through and report ``[]``: a green boot check for
+        a handler that fails on every single blocked request afterwards.
+        This test fails against that narrower except.
+        """
+        with override_settings(
+            DJANGO_WAF_ENABLED=True,
+            DJANGO_WAF_BLOCK_RESPONSE_HANDLER="tests.block_handler_import_boom.handler",
+        ):
+            messages = _run_block_response_handler_check()
+
+        assert len(messages) == 1
+        assert messages[0].id == "django_waf.E008"
 
 
 class TestSitePasswordConfiguredCheck:
