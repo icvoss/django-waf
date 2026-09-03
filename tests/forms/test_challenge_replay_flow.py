@@ -25,13 +25,13 @@ class _FakeSession(dict):
 
 def _request_with_session(method, path, post=None, get_params=None):
     rf = RequestFactory()
-    if method == "POST":  # noqa: SIM108 — explicit branch reads clearer here
+    if method == "POST":  # noqa: SIM108, explicit branch reads clearer here
         request = rf.post(path, data=post or {})
     else:
         # rf.get accepts a data dict for query params.
         request = rf.get(path, data=get_params or {})
     request.user = MagicMock(is_authenticated=False)
-    # Stub out a session — RequestFactory doesn't add one by default.
+    # Stub out a session, RequestFactory doesn't add one by default.
     request.session = _FakeSession()
     return request
 
@@ -39,7 +39,7 @@ def _request_with_session(method, path, post=None, get_params=None):
 def _flagged_protection_for(form_id):
     """Build a FormProtection whose evaluate() always returns FLAGGED.
 
-    Simpler than constructing a real flagged submission — the focus
+    Simpler than constructing a real flagged submission, the focus
     is the decorator's redirect-and-replay behaviour, not the
     orchestrator's verdict logic (which has its own tests).
     """
@@ -107,7 +107,7 @@ class TestFlaggedRedirect:
         assert "/waf/challenge/" in location
         assert "form_replay=" in location
         # Session now has the stashed data. scalarise_submitted_data
-        # gives last-value-per-key strings — pre-v0.11.2 this was
+        # gives last-value-per-key strings, pre-v0.11.2 this was
         # ``dict(QueryDict)`` producing list-valued entries, which
         # was the upstream of the bug that broke every real submission.
         stash = request.session.get("waf_form_replay", {})

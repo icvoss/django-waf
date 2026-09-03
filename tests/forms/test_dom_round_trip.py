@@ -4,7 +4,7 @@ Regression suite for the v0.11.0 → v0.11.1 bug where
 RenderTokenDefence returned the raw token string instead of an
 ``<input>`` tag. The unit tests in test_render_token_defence,
 test_orchestrator, test_mixin all passed against the buggy code
-because they constructed POST payloads directly — none of them ever
+because they constructed POST payloads directly, none of them ever
 parsed the rendered HTML and submitted what a browser would
 actually submit.
 
@@ -41,8 +41,8 @@ class _HiddenInputCollector(HTMLParser):
 
     Mirrors what a browser does at form submission: read every
     ``<input>`` (regardless of type) and include its name/value pair
-    in the POST. Honeypot ``type="text"`` inputs are included too
-    — humans don't fill them, but a browser submits them empty.
+    in the POST. Honeypot ``type="text"`` inputs are included too, humans don't fill them, but a browser submits them
+    empty.
     """
 
     def __init__(self) -> None:
@@ -123,7 +123,7 @@ class TestRenderTokenDomRoundTrip:
             fields = protection.render_fields(_request())
             html = "".join(fields[k] for k in sorted(fields))
 
-        # Strip every value="..." span — what's left should not
+        # Strip every value="..." span, what's left should not
         # contain a long base64url-looking run.
         stripped = re.sub(r'value="[^"]*"', 'value=""', html)
         # Find runs of base64url characters of length ≥ 32 in the
@@ -154,7 +154,7 @@ class TestRenderTokenDomRoundTrip:
         )
 
         with patch.object(conf_mod, "DJANGO_WAF_SIGNING_KEY", "k"):
-            # Drop js_touch from the chain — the simulated 'browser'
+            # Drop js_touch from the chain, the simulated 'browser'
             # below can't actually execute the inline <script>, so we
             # focus this end-to-end test on the defences that have a
             # deterministic server-verifiable contract. js_touch is

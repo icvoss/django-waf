@@ -35,16 +35,16 @@ def _retry_after_from_oldest(oldest_in_window: list, window_seconds: int, now: f
     """Return the true seconds-until-retry from a ZRANGE(0, 0, withscores=True) result.
 
     ``oldest_in_window`` is the pipeline's ZRANGE result for the surviving
-    (post-ZREMRANGEBYSCORE) entry with the lowest score — the oldest event
+    (post-ZREMRANGEBYSCORE) entry with the lowest score, the oldest event
     still counted in the window. The client may retry once that event ages
     out of the window, at ``oldest_timestamp + window_seconds``. Previously
     this was computed as ``window_seconds - (now - cutoff)`` where
     ``cutoff = now - window_seconds``, which algebraically collapses to a
-    constant ``0`` every time regardless of actual window occupancy — hence
+    constant ``0`` every time regardless of actual window occupancy, hence
     the fixed 1-second floor always winning (#30).
 
     Falls back to the full window_seconds (floored at 1) if the ZRANGE
-    result is empty — this should not happen in practice (the event that
+    result is empty, this should not happen in practice (the event that
     just triggered the breach is always in the set), but a fake/incomplete
     Redis client in tests may return an empty list.
     """
@@ -81,7 +81,7 @@ def _check_path_rate_limit(
         limit was breached, or ``None`` if no prefix matched or the matching
         prefix's limit was not breached.
     """
-    from django_waf import conf  # lazy — avoids circular import at module load
+    from django_waf import conf  # lazy, avoids circular import at module load
 
     rate_limit_paths = conf.DJANGO_WAF_RATE_LIMIT_PATHS
     if not path or not rate_limit_paths:
@@ -97,7 +97,7 @@ def _check_path_rate_limit(
         return None
 
     max_requests, window_seconds = rate_limit_paths[matched_prefix]
-    # Not a security use — just a stable, short cache-key fragment derived
+    # Not a security use, just a stable, short cache-key fragment derived
     # from the configured prefix string.
     prefix_hash = hashlib.sha1(matched_prefix.encode(), usedforsecurity=False).hexdigest()[:12]
     key = f"waf:rate:{ip_address}:path:{prefix_hash}"
@@ -211,7 +211,7 @@ def check_rate_limit(
         is True, ``window`` names the first exceeded window, and
         ``retry_after`` gives seconds until the window resets.
     """
-    from django_waf import conf  # lazy — avoids circular import at module load
+    from django_waf import conf  # lazy, avoids circular import at module load
 
     thresholds = {
         "1s": conf.DJANGO_WAF_RATE_LIMIT_BURST,
@@ -261,7 +261,7 @@ def get_request_count(
 ) -> int:
     """Return the current request count for an IP in the given window.
 
-    Read-only operation — does not add to the sorted set.
+    Read-only operation, does not add to the sorted set.
 
     Args:
         ip_address: Client IP address string.

@@ -1,7 +1,7 @@
 """Tests for django-waf views.
 
 Tests use Django's test Client and RequestFactory. All Redis calls and
-challenge service functions are mocked — no real Redis is available.
+challenge service functions are mocked, no real Redis is available.
 
 URL namespace: "django_waf" as declared in django_waf.urls (app_name = "django_waf").
 Because the monorepo root settings use sandbox.urls (which does not include
@@ -11,7 +11,7 @@ that /challenge/, /verify/, /dashboard/, etc. resolve correctly.
 Note on form POSTs: Django's test client only populates request.POST for
 multipart/form-data (the default when no content_type is specified). When
 content_type="application/x-www-form-urlencoded" is specified explicitly,
-the dict is NOT URL-encoded by the client — use the default (multipart) for
+the dict is NOT URL-encoded by the client, use the default (multipart) for
 form data tests, and content_type="application/json" with json.dumps() for
 JSON body tests.
 """
@@ -190,7 +190,7 @@ class TestChallengeView:
 
             response = client.get("/waf/challenge/")
 
-        # post_url is build_absolute_uri'd — assert the path component matches.
+        # post_url is build_absolute_uri'd, assert the path component matches.
         assert response.context["post_url"].endswith("/custom/verify/")
 
     def test_response_has_no_cache_control(self, settings):
@@ -639,7 +639,7 @@ class TestDashboardStatsPanelView:
         user = _make_staff_user(username="staffrange7d", email="staffrange7d@example.com")
         client.force_login(user)
 
-        # One request today, one three days ago — only the 7d range should see both.
+        # One request today, one three days ago, only the 7d range should see both.
         RequestLogFactory(verdict=Verdict.BLOCKED, timestamp=timezone.now())
         RequestLogFactory(verdict=Verdict.BLOCKED, timestamp=timezone.now() - timedelta(days=3))
 

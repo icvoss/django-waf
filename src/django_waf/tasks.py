@@ -5,18 +5,18 @@ All tasks use @shared_task and lazy imports for Celery compatibility.
 Tasks are idempotent and fail gracefully.
 
 Scheduled tasks (Celery Beat):
-  - generate_blocklist      — every 5 minutes (BR-BL-004)
-  - flush_rule_hit_counts   — every 5 minutes
-  - detect_anomalies        — every 15 minutes (BR-ANOM-005)
-  - parse_access_log        — every 10 minutes
-  - prune_request_logs      — daily 04:00 (BR-LOG-003)
-  - prune_challenge_tokens  — daily 04:15
+  - generate_blocklist, every 5 minutes (BR-BL-004)
+  - flush_rule_hit_counts, every 5 minutes
+  - detect_anomalies, every 15 minutes (BR-ANOM-005)
+  - parse_access_log, every 10 minutes
+  - prune_request_logs, daily 04:00 (BR-LOG-003)
+  - prune_challenge_tokens, daily 04:15
   - prune_stale_rules       : daily 04:20 (wave 2, the rule-provenance wave)
-  - expire_rules            — every 30 minutes (BR-LIFE-002)
-  - update_ip_reputation    — every 6 hours
-  - sync_threat_feed        — daily 04:30
-  - report_threat_telemetry — daily 05:00
-  - update_geoip_database   — weekly (Sunday 03:00 UTC recommended)
+  - expire_rules, every 30 minutes (BR-LIFE-002)
+  - update_ip_reputation, every 6 hours
+  - sync_threat_feed, daily 04:30
+  - report_threat_telemetry, daily 05:00
+  - update_geoip_database, weekly (Sunday 03:00 UTC recommended)
   - probe_detectors: hourly (BR-ANOM-012)
 """
 
@@ -51,13 +51,13 @@ def generate_blocklist() -> dict:
         count = generate_nginx_blocklist()
     except PermissionError as exc:
         logger.error(
-            "django-waf: cannot write blocklist — %s. Set DJANGO_WAF_NGINX_BLOCKLIST_PATH to a writable location.",
+            "django-waf: cannot write blocklist, %s. Set DJANGO_WAF_NGINX_BLOCKLIST_PATH to a writable location.",
             exc,
         )
         return {"rules_written": 0, "reload_succeeded": False, "error": str(exc)}
 
     success = reload_nginx()
-    logger.info("django-waf: generate_blocklist — %d rules, reload=%s", count, success)
+    logger.info("django-waf: generate_blocklist, %d rules, reload=%s", count, success)
     return {"rules_written": count, "reload_succeeded": success}
 
 
@@ -92,7 +92,7 @@ def parse_access_log(log_path: str | None = None) -> dict:
 
     Offset storage is cache-only (not yet a durable model row): if the cache
     entry is evicted the file is re-read from the start. That re-read is safe
-    (thanks to the dedup constraint above), but not free — it costs a full
+    (thanks to the dedup constraint above), but not free, it costs a full
     file scan and a bulk_create attempt for every previously-seen line, only
     to have them silently discarded. A durable offset store is left for the
     next pass. Rotation/truncation is detected without depending on the
@@ -151,12 +151,12 @@ def parse_access_log(log_path: str | None = None) -> dict:
 
     stored_offset = cache.get(offset_key)
     if stored_offset is None:
-        # No cached offset — either the first run, or the cache entry was
+        # No cached offset, either the first run, or the cache entry was
         # evicted. Either way the whole file will be re-read from 0; that is
         # only safe because of the dedup constraint on nginx_log rows, so
         # surface it rather than let a silent full re-read go unnoticed.
         logger.warning(
-            "django-waf: no cached offset for access log %s — re-reading from start "
+            "django-waf: no cached offset for access log %s, re-reading from start "
             "(safe due to source_event_id dedup, but re-scans the whole file)",
             path,
         )
@@ -198,7 +198,7 @@ def parse_access_log(log_path: str | None = None) -> dict:
             # stale offset would either raise or silently skip the new
             # tail, so reset to the start of the (new) file instead.
             logger.warning(
-                "django-waf: access log %s appears rotated (size %d < stored offset %d) — resetting offset",
+                "django-waf: access log %s appears rotated (size %d < stored offset %d), resetting offset",
                 path,
                 file_size,
                 stored_offset,
@@ -316,7 +316,7 @@ def prune_request_logs(days: int | None = None) -> dict:
 def prune_challenge_tokens(hours: int = 24) -> dict:
     """Delete expired or failed ChallengeToken records older than N hours.
 
-    Only PENDING and FAILED tokens are pruned — SOLVED tokens are kept for
+    Only PENDING and FAILED tokens are pruned, SOLVED tokens are kept for
     reputation aggregation (see update_ip_reputation) and EXPIRED tokens are
     handled separately by the challenge-verification flow, not this task.
 
@@ -628,7 +628,7 @@ def sync_threat_feed() -> dict:
     from django_waf import conf
 
     if not conf.DJANGO_WAF_FEED_ENABLED:
-        logger.debug("django-waf: sync_threat_feed skipped — DJANGO_WAF_FEED_ENABLED=False")
+        logger.debug("django-waf: sync_threat_feed skipped, DJANGO_WAF_FEED_ENABLED=False")
         return {"skipped": True, "reason": "feed disabled"}
 
     from django_waf.services.threat_feed import sync_feed
@@ -650,7 +650,7 @@ def report_threat_telemetry() -> dict:
     from django_waf import conf
 
     if not conf.DJANGO_WAF_FEED_REPORT:
-        logger.debug("django-waf: report_threat_telemetry skipped — DJANGO_WAF_FEED_REPORT=False")
+        logger.debug("django-waf: report_threat_telemetry skipped, DJANGO_WAF_FEED_REPORT=False")
         return {"skipped": True, "reason": "reporting disabled"}
 
     from django_waf.services.threat_feed import build_telemetry_payload, submit_telemetry
@@ -685,7 +685,7 @@ def update_geoip_database() -> dict:
         If the operation failed gracefully (missing key, geoip2 not
         installed, HTTP error), returns ``{"skipped": True, "error": ...}``.
 
-    Scheduled: weekly — recommended cron: Sunday 03:00 UTC. Example for
+    Scheduled: weekly, recommended cron: Sunday 03:00 UTC. Example for
     consuming projects' CELERY_BEAT_SCHEDULE::
 
         "django-waf-update-geoip": {
@@ -698,14 +698,14 @@ def update_geoip_database() -> dict:
     try:
         result = install_geoip_database(if_older_than_days=6)
         logger.info(
-            "django-waf: update_geoip_database — path=%s skipped=%s size=%d",
+            "django-waf: update_geoip_database, path=%s skipped=%s size=%d",
             result["path"],
             result["skipped"],
             result["size_bytes"],
         )
         return result
     except GeoIPError as exc:
-        logger.warning("django-waf: update_geoip_database skipped — %s", exc)
+        logger.warning("django-waf: update_geoip_database skipped, %s", exc)
         return {"skipped": True, "error": str(exc)}
 
 
@@ -976,7 +976,7 @@ def _parse_nginx_timestamp(timestamp_str: str) -> datetime:
     try:
         return datetime.strptime(timestamp_str, _NGINX_LOG_TIME_FORMAT)
     except ValueError:
-        logger.warning("django-waf: could not parse access log timestamp %r — using now()", timestamp_str)
+        logger.warning("django-waf: could not parse access log timestamp %r, using now()", timestamp_str)
         return timezone.now()
 
 

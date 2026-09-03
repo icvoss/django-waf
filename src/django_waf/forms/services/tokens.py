@@ -3,12 +3,12 @@
 A render token carries everything the verifier needs to authenticate a
 submission as coming from a form this server actually issued:
 
-* ``form_id``       — which form the token is for (per-form scoping)
-* ``ip``            — IP at render time (binds the token to a session-ish thing)
-* ``user_id``       — authenticated user id, or empty string
-* ``render_time``   — ISO 8601 timestamp at render
-* ``nonce``         — 16 random bytes hex; pairs with the Redis marker
-* ``ua_hash``       — SHA-256 of the User-Agent header at render time
+* ``form_id``, which form the token is for (per-form scoping)
+* ``ip``, IP at render time (binds the token to a session-ish thing)
+* ``user_id``, authenticated user id, or empty string
+* ``render_time``, ISO 8601 timestamp at render
+* ``nonce``, 16 random bytes hex; pairs with the Redis marker
+* ``ua_hash``, SHA-256 of the User-Agent header at render time
 
 The token is the base64url-encoded ``payload + "|" + signature`` where
 ``signature = HMAC-SHA256(signing_key, payload)``. Verification is
@@ -67,7 +67,7 @@ def get_signing_key() -> bytes:
 
 
 _DELIM = "|"
-# Payload field count — bumped when the format changes so old tokens
+# Payload field count, bumped when the format changes so old tokens
 # fail signature check cleanly rather than parsing into garbage.
 _PAYLOAD_FIELDS = 6
 
@@ -104,7 +104,7 @@ class TokenPayload:
         """Parse a payload string back into a ``TokenPayload``.
 
         Raises ``ValueError`` if the field count is wrong or the
-        timestamp doesn't parse — callers should treat any exception as
+        timestamp doesn't parse, callers should treat any exception as
         a malformed token and fail verification.
         """
         parts = raw.split(_DELIM)
@@ -180,7 +180,7 @@ def issue_token(
 def verify_token(token: str) -> TokenPayload:
     """Validate the signature and return the parsed payload.
 
-    Raises ``ValueError`` on any failure — malformed encoding, wrong
+    Raises ``ValueError`` on any failure, malformed encoding, wrong
     field count, bad signature. Callers translate that into the
     defence's Block outcome (``render_token:invalid``).
 
@@ -195,7 +195,7 @@ def verify_token(token: str) -> TokenPayload:
 
     # Signature is the final pipe-delimited segment; everything before
     # it is the signed payload. We can't use ``split('|', ...)`` because
-    # the payload itself contains pipes — rsplit on a single delimiter
+    # the payload itself contains pipes, rsplit on a single delimiter
     # is the correct seam.
     sep_index = raw.rfind(_DELIM)
     if sep_index == -1:

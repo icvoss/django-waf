@@ -20,7 +20,7 @@ on the view::
 
 The tag looks up the FormProtection that the decorator constructed
 (keyed by form_id) and renders its hidden fields. If no matching
-decorator has run, the tag renders nothing — so a template typo
+decorator has run, the tag renders nothing, so a template typo
 doesn't crash the page, it just fails silently (and the logged
 ``no FormProtection found`` warning surfaces in dev).
 
@@ -50,7 +50,7 @@ def waf_protect(context, form_id: str) -> SafeString:
     protection = _registry_get(form_id)
     if protection is None:
         # The decorator hasn't been imported yet, or the form_id is
-        # mis-typed. Log + render nothing — surface in dev via the
+        # mis-typed. Log + render nothing, surface in dev via the
         # logger, never crash production.
         logger.warning(
             "django-waf: {%% waf_protect form_id=%r %%} called but no "
@@ -58,7 +58,7 @@ def waf_protect(context, form_id: str) -> SafeString:
             "@waf_protect_post decorator?",
             form_id,
         )
-        return mark_safe("")  # noqa: S308 — empty string is XSS-safe
+        return mark_safe("")  # noqa: S308, empty string is XSS-safe
 
     request = context.get("request")
     if request is None:
@@ -70,4 +70,4 @@ def waf_protect(context, form_id: str) -> SafeString:
 
     fields = protection.render_fields(request)
     html = "".join(fields[k] for k in sorted(fields))
-    return mark_safe(html)  # noqa: S308 — each fragment is already SafeString
+    return mark_safe(html)  # noqa: S308, each fragment is already SafeString

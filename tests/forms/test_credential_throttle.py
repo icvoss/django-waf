@@ -4,7 +4,7 @@ The enumeration-safety constraint (PRD §3.6.1) is the most important
 property to pin. Tests below verify that:
 
 * The defence's verdict is identical whether the typed identifier
-  exists in the system or not — the defence never consults a user
+  exists in the system or not, the defence never consults a user
   table.
 * The challenge fires on the per-IP counter only; the per-account
   counter is observation-only and never changes the user-facing
@@ -186,7 +186,7 @@ class TestCredentialThrottleDefence:
         redis.get.return_value = b"25"
         defence = CredentialThrottleDefence(redis_client_factory=lambda: redis)
 
-        # The defence doesn't even read the identifier from submitted_data —
+        # The defence doesn't even read the identifier from submitted_data,
         # it has no API surface that would let it leak account existence.
         # We verify by constructing two contexts with the same IP and
         # asserting the outcome is byte-identical.

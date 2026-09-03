@@ -47,7 +47,7 @@ def _make_pipeline_mock(zcard_return: int) -> MagicMock:
     """Return a pipeline mock for [zadd, zremrangebyscore, zcard, zrange, expire].
 
     Matches the 5-command pipeline shape rate_limiter.py builds since #30
-    (see tests/test_retry_after.py) — zcard_return sits at index 2, and a
+    (see tests/test_retry_after.py), zcard_return sits at index 2, and a
     single (member, score) zrange result sits at index 3.
     """
     pipeline = MagicMock()
@@ -115,7 +115,7 @@ class TestEscalationReachableFromRuleDrivenChallenge:
 @pytest.mark.django_db
 class TestEscalationReachableFromScoreDrivenChallenge:
     """A score-driven CHALLENGED verdict (no matching rule at all) must also
-    escalate once the threshold is reached — the old dead-code placement
+    escalate once the threshold is reached, the old dead-code placement
     only ever ran after this branch, so it could never fire from here."""
 
     def test_score_driven_challenge_escalates_at_threshold(self):
@@ -167,8 +167,8 @@ class TestSolveResetsEscalationCounter:
 
     def test_verify_view_deletes_challenged_counter_on_solve(self, settings):
         """VerifyView.post clears waf:challenged:{ip} after a successful
-        proof-of-work verification (views.py, not challenge_service.py —
-        the counter reset already lives in the views layer where the solve
+        proof-of-work verification (views.py, not challenge_service.py, the counter reset already lives in the views
+        layer where the solve
         is processed, satisfying #27's second requirement without touching
         the sibling-owned challenge_service.py)."""
         from django.test import Client
@@ -356,7 +356,7 @@ class TestEscalationHonoursOperatorReviewDecision:
 class TestGateHonoursSolvedFlag:
     def test_gate_treats_solved_ip_as_below_threshold(self):
         """Once waf:solved:{ip} is set (by VerifyView on success), the gate's
-        own count lookup — via _get_unsolved_challenge_count — returns 0
+        own count lookup, via _get_unsolved_challenge_count, returns 0
         even if a stale counter value is still present, so escalation does
         not fire for an IP that has just solved a challenge."""
         BlockRuleFactory(

@@ -298,7 +298,7 @@ class TestPruneLogsCommand:
         # Create 3 old logs and 1 recent log.
         for _ in range(3):
             RequestLogFactory(timestamp=cutoff - timezone.timedelta(hours=1))
-        RequestLogFactory()  # recent — should not be counted
+        RequestLogFactory()  # recent, should not be counted
 
         out = StringIO()
         call_command("django_waf_prune_logs", "--dry-run", "--days=30", stdout=out)
@@ -317,7 +317,7 @@ class TestPruneLogsCommand:
         cutoff = timezone.now() - timezone.timedelta(days=31)
         for _ in range(2):
             RequestLogFactory(timestamp=cutoff - timezone.timedelta(hours=1))
-        RequestLogFactory()  # recent — must survive
+        RequestLogFactory()  # recent, must survive
 
         from django_waf.models import RequestLog
 
@@ -386,7 +386,7 @@ class TestPruneChallengesCommand:
         old_cutoff = timezone.now() - timezone.timedelta(hours=25)
         for _ in range(2):
             ChallengeTokenFactory(status=ChallengeStatus.PENDING, expires_at=old_cutoff)
-        ChallengeTokenFactory(status=ChallengeStatus.SOLVED, expires_at=old_cutoff)  # not pruned — solved
+        ChallengeTokenFactory(status=ChallengeStatus.SOLVED, expires_at=old_cutoff)  # not pruned, solved
 
         out = StringIO()
         call_command("django_waf_prune_challenges", "--dry-run", "--hours=24", stdout=out)
@@ -810,7 +810,7 @@ class TestSyncFeedCommand:
     def test_feed_url_override_bypasses_disabled_check(self):
         """Passing --feed-url overrides the feed-disabled guard and calls the service."""
         summary = {"created": 1, "updated": 0, "expired": 0, "skipped": 0}
-        # Feed disabled at conf level — but --feed-url should bypass the guard.
+        # Feed disabled at conf level, but --feed-url should bypass the guard.
         with (
             patch("django_waf.conf.DJANGO_WAF_FEED_ENABLED", False),
             patch("django_waf.services.threat_feed.sync_feed", return_value=summary) as mock_sync,
@@ -1006,7 +1006,7 @@ class TestUnblockCommand:
 
         rule.refresh_from_db()
         assert rule.is_active is False
-        # Row still exists — deactivated, not deleted
+        # Row still exists, deactivated, not deleted
         assert BlockRule.objects.filter(pk=rule.pk).exists()
         assert "Deactivated 1 rule" in out.getvalue()
 
@@ -1065,8 +1065,8 @@ class TestUnblockCommand:
 class TestInstallGeoipCommand:
     """Tests for the ``django_waf_install_geoip`` management command.
 
-    The command delegates all work to ``services.geoip.install_geoip_database``
-    — these tests mock that function and verify argument wiring and output.
+    The command delegates all work to ``services.geoip.install_geoip_database``, these tests mock that function and
+    verify argument wiring and output.
     """
 
     def test_missing_license_key_raises_command_error(self):

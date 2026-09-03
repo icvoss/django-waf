@@ -2,17 +2,17 @@
 Views for django-waf.
 
 Challenge flow (AllowAny, no auth required):
-    GET  /waf/challenge/                   — ChallengeView
-    POST /waf/verify/                      — VerifyView (CSRF-exempt)
+    GET  /waf/challenge/, ChallengeView
+    POST /waf/verify/, VerifyView (CSRF-exempt)
 
 Staff dashboard (staff/superuser only):
-    GET  /waf/dashboard/                   — DashboardView
-    GET  /waf/dashboard/stats/             — DashboardStatsPanel
-    GET  /waf/dashboard/top-blocked/       — DashboardTopBlockedPanel
-    GET  /waf/dashboard/anomalies/         — DashboardAnomalyPanel
-    GET  /waf/dashboard/rule-effectiveness/ — DashboardRuleEffectivenessPanel
-    POST /waf/dashboard/anomalies/<id>/confirm/  — DashboardAnomalyConfirmView
-    POST /waf/dashboard/anomalies/<id>/reject/   — DashboardAnomalyRejectView
+    GET  /waf/dashboard/, DashboardView
+    GET  /waf/dashboard/stats/, DashboardStatsPanel
+    GET  /waf/dashboard/top-blocked/, DashboardTopBlockedPanel
+    GET  /waf/dashboard/anomalies/, DashboardAnomalyPanel
+    GET  /waf/dashboard/rule-effectiveness/, DashboardRuleEffectivenessPanel
+    POST /waf/dashboard/anomalies/<id>/confirm/, DashboardAnomalyConfirmView
+    POST /waf/dashboard/anomalies/<id>/reject/, DashboardAnomalyRejectView
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def _get_ip(request: HttpRequest) -> str:
     """Extract the client IP address from the request.
 
     Thin wrapper over ``django_waf.services.client_ip.resolve_client_ip``
-    (#29) — see that function for the full trusted-proxy resolution
+    (#29), see that function for the full trusted-proxy resolution
     behaviour. Returns ``0.0.0.0`` as a last resort to avoid NULL
     constraint violations on ChallengeToken.ip_address.
     """
@@ -151,9 +151,9 @@ class ChallengeView(NoIndexResponseMixin, TemplateView):
     GET /waf/challenge/?next=<path>
 
     Presents the JS proof-of-work challenge page.
-    Access: AllowAny — middleware has already decided a challenge is needed.
+    Access: AllowAny, middleware has already decided a challenge is needed.
     Every response carries X-Robots-Tag: noindex, nofollow, noarchive
-    (NoIndexResponseMixin) — this page must never be indexed or have its
+    (NoIndexResponseMixin), this page must never be indexed or have its
     ?next= URL followed by a crawler.
     """
 
@@ -190,7 +190,7 @@ class ChallengeView(NoIndexResponseMixin, TemplateView):
             next_url = f"{next_url}{separator}{urlencode({'form_replay': form_replay})}"
 
         # Resolve the verify URL the same way the middleware does
-        # (django_waf.middleware._get_challenge_paths) — honour the operator
+        # (django_waf.middleware._get_challenge_paths), honour the operator
         # override first, fall back to reverse() per-request. Critical for
         # projects with per-request urlconf routing (django-hosts), where
         # reverse() inside this view runs against whichever host's urlconf
@@ -435,7 +435,7 @@ class DashboardView(StaffRequiredMixin, TemplateView):
     """
     GET /waf/dashboard/
 
-    Dashboard shell — HTMX panels load asynchronously.
+    Dashboard shell, HTMX panels load asynchronously.
     Access: Staff only.
     """
 
@@ -459,7 +459,7 @@ class DashboardStatsPanel(StaffRequiredMixin, TemplateView):
 
     HTMX fragment: real-time counters from Redis (range="today" only) or a
     RequestLog DB aggregate. Auto-refreshed every 30 s by the dashboard shell
-    (always at the default "today" range — see the range selector inside
+    (always at the default "today" range, see the range selector inside
     stats_panel.html for the user-driven 7d/30d views).
     Access: Staff only.
     """
@@ -497,7 +497,7 @@ class DashboardStatsPanel(StaffRequiredMixin, TemplateView):
                     for k, v in raw.items()
                 }
             else:
-                # Using Django cache — key was stored as JSON dict.
+                # Using Django cache, key was stored as JSON dict.
                 stored = redis_client.get("waf:stats:today") or {}
                 if isinstance(stored, str):
                     import json as _json
@@ -555,7 +555,7 @@ class DashboardTopBlockedPanel(StaffRequiredMixin, TemplateView):
 
     IPReputation is a rolling, per-IP aggregate maintained by the scoring
     service (one row per IP, continuously updated) rather than a per-request
-    log — there is no "requests in the last 7 days" figure to sum. The range
+    log, there is no "requests in the last 7 days" figure to sum. The range
     filter is applied to ``last_seen_at`` instead: it narrows the IP list to
     addresses seen within the window, which is the closest honest reading of
     "top blocked IPs in this range" the model supports.

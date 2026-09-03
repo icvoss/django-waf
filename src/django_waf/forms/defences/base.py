@@ -9,7 +9,7 @@ Defences are intentionally small and independently testable. A
 defence:
 
 * Reads its config from per-call ``RenderContext`` / ``EvaluateContext``
-  rather than reaching into ``conf`` directly — keeps tests
+  rather than reaching into ``conf`` directly, keeps tests
   deterministic and avoids module-level state.
 * Returns a single ``Outcome`` per evaluation; never raises through.
   Any internal failure should produce a ``flag`` or ``pass`` outcome
@@ -33,7 +33,7 @@ Verdict = Literal["pass", "flag", "block"]
 
 
 # ---------------------------------------------------------------------------
-# Outcome — a defence's single-call result
+# Outcome, a defence's single-call result
 # ---------------------------------------------------------------------------
 
 
@@ -44,19 +44,19 @@ class Outcome:
     Frozen so a defence can't accidentally mutate its outcome after
     returning; the orchestrator only reads.
 
-    * ``verdict`` — pass / flag / block. ``block`` is reserved for
+    * ``verdict``, pass / flag / block. ``block`` is reserved for
       defences with deterministic certainty (honeypot non-empty,
       invalid signature). ``flag`` adds to the orchestrator's
       cumulative score and may cross the block threshold once enough
       defences agree.
-    * ``score`` — added to the form's total only when the verdict is
+    * ``score``, added to the form's total only when the verdict is
       ``flag``. A ``pass`` always contributes 0; a ``block`` short-
       circuits the chain.
-    * ``reason`` — short structured string (``defence_name:detail``,
+    * ``reason``, short structured string (``defence_name:detail``,
       e.g. ``time_trap:too_fast``) for logs and the
       ``X-WAF-Form-Verdict`` debug header. Must not contain
-      PII — the IP is logged separately at the orchestrator level.
-    * ``public_message`` — rarely populated. Only used when a defence
+      PII, the IP is logged separately at the orchestrator level.
+    * ``public_message``, rarely populated. Only used when a defence
       surfaces a user-facing error (e.g. \"please complete the
       challenge\"). Empty by default so the orchestrator can show a
       generic message.
@@ -68,7 +68,7 @@ class Outcome:
     public_message: str = ""
 
 
-# Convenience factories — defences read more clearly as
+# Convenience factories, defences read more clearly as
 # ``return passed()`` than ``return Outcome(verdict="pass")``.
 def passed() -> Outcome:
     """Outcome shorthand for a clean pass."""
@@ -83,7 +83,7 @@ def flagged(score: float, reason: str, public_message: str = "") -> Outcome:
 def blocked(reason: str, score: float = 0.0, public_message: str = "") -> Outcome:
     """Outcome shorthand for a hard block.
 
-    ``score`` is optional — most blocks short-circuit the chain and
+    ``score`` is optional, most blocks short-circuit the chain and
     the score is unused, but recording one lets the orchestrator log
     the score that *would* have accrued if the chain had continued.
     """
@@ -100,7 +100,7 @@ class RenderContext:
     """Inputs available to a defence at form render time.
 
     ``form_id`` and ``request`` are always present. The defence reads
-    whatever else it needs from ``request`` (IP, user, UA) — kept
+    whatever else it needs from ``request`` (IP, user, UA), kept
     flexible so adding a new piece of context later doesn't force
     every defence to update its signature.
 
@@ -120,7 +120,7 @@ class EvaluateContext:
     """Inputs available to a defence at submit time.
 
     Mirrors ``RenderContext`` plus the parsed token payload (when the
-    render-token defence has already verified one — defences run in a
+    render-token defence has already verified one, defences run in a
     fixed order so later defences can rely on earlier ones having
     populated this). ``token_payload`` is None when the render-token
     defence isn't in the chain or hasn't yet been called.
@@ -146,12 +146,12 @@ class Defence(Protocol):
     """Structural type that every defence implements.
 
     Protocol (not ABC) because defences are usually short stateless
-    classes — duck-typing keeps the boilerplate down and makes test
+    classes, duck-typing keeps the boilerplate down and makes test
     doubles trivial to construct.
 
     ``name`` is the stable snake_case identifier used in reasons,
     log fields, the score-weights config, and the X-WAF-Form-Verdict
-    header. Don't change it casually — it's effectively public API.
+    header. Don't change it casually, it's effectively public API.
     """
 
     name: str

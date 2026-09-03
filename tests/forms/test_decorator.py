@@ -24,7 +24,7 @@ def _factory_with_user():
 
 def _build_request(method, path, post=None):
     rf = _factory_with_user()
-    if method == "POST":  # noqa: SIM108 — explicit branch reads clearer than nested ternary
+    if method == "POST":  # noqa: SIM108, explicit branch reads clearer than nested ternary
         request = rf.post(path, data=post or {})
     else:
         request = rf.get(path)
@@ -39,7 +39,7 @@ def _build_request(method, path, post=None):
 
 class TestDecorator:
     def test_get_request_passes_through(self):
-        """GET requests don't trigger defence evaluation — render is
+        """GET requests don't trigger defence evaluation, render is
         the template tag's job, not the decorator's."""
         from django_waf.forms.decorators import waf_protect_post
 

@@ -43,7 +43,7 @@ def _make_pipeline_mock(zcard_return: int) -> MagicMock:
     """Return a pipeline mock for [zadd, zremrangebyscore, zcard, zrange, expire].
 
     Matches the 5-command pipeline shape rate_limiter.py builds since #30
-    (see tests/test_retry_after.py) — zcard_return sits at index 2, and a
+    (see tests/test_retry_after.py), zcard_return sits at index 2, and a
     single (member, score) zrange result sits at index 3.
     """
     pipeline = MagicMock()
@@ -127,7 +127,7 @@ class TestAllowRuleManagerExpiry:
 
 
 # ---------------------------------------------------------------------------
-# Cache-level enforcement — a rule that expired after the cache was built
+# Cache-level enforcement, a rule that expired after the cache was built
 # must never match, even without a cache rebuild (#25).
 # ---------------------------------------------------------------------------
 
@@ -223,7 +223,7 @@ class TestExpiredRuleRejectedAtCacheEvaluation:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end via evaluate_request — an expired crawler AllowRule must not
+# End-to-end via evaluate_request, an expired crawler AllowRule must not
 # bypass evaluation, and an expired BlockRule must not be enforced.
 # ---------------------------------------------------------------------------
 
@@ -284,7 +284,7 @@ class TestEvaluateRequestExpiryEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# expire_rules task — deactivates both models, invalidates the cache.
+# expire_rules task, deactivates both models, invalidates the cache.
 # ---------------------------------------------------------------------------
 
 

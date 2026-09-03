@@ -87,9 +87,9 @@ class TestSignupVelocityDefence:
         redis = _redis()
         redis.get.return_value = b"5"
         defence = SignupVelocityDefence(redis_client_factory=lambda: redis)
-        # Tighter limit (2) — 5 trips it.
+        # Tighter limit (2), 5 trips it.
         assert defence.evaluate(_ctx(config={"limit": 2})).verdict == "flag"
-        # Looser limit (10) — 5 doesn't trip.
+        # Looser limit (10), 5 doesn't trip.
         assert defence.evaluate(_ctx(config={"limit": 10})).verdict == "pass"
 
     def test_redis_failure_passes(self):

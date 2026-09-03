@@ -71,12 +71,12 @@ Flow per request when `DJANGO_WAF_SITE_PASSWORD` is set:
 middleware stack (so it can block requests as early as possible), which means
 `request.session` does not exist when the gate runs. The verified flag is
 therefore the gate's own signed cookie (`waf_site_password`), not Django's
-session — a dependency on `request.session` here is a defect, not a design
+session, a dependency on `request.session` here is a defect, not a design
 choice (see `django_waf.services.site_password_service` module docstring).
 
 On correct password, the gate signs a marker with
 `django.core.signing.TimestampSigner`, keyed with the package's own signing key
-(`DJANGO_WAF_SIGNING_KEY`, falling back to a `SECRET_KEY`-derived value — the
+(`DJANGO_WAF_SIGNING_KEY`, falling back to a `SECRET_KEY`-derived value, the
 same convention every other signed artefact in this package uses) and sets it
 as a cookie on the redirect response, valid for `DJANGO_WAF_SITE_PASSWORD_TTL`
 seconds. The TTL is enforced live via the `max_age` passed to
@@ -86,7 +86,7 @@ effect for existing cookies on their next request. The cookie is
 served over HTTPS.
 
 To cover subdomains, `DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN` (default `None`)
-falls back to `settings.SESSION_COOKIE_DOMAIN` at call time — a site that
+falls back to `settings.SESSION_COOKIE_DOMAIN` at call time, a site that
 already sets `SESSION_COOKIE_DOMAIN=".example.com"` gets the same subdomain
 coverage on the gate's cookie without configuring it twice; set the gate
 setting explicitly only when its scope must differ from the session cookie's.
@@ -143,7 +143,7 @@ on the prompt (unauthorised), so bots and scanners see a locked door, not conten
 | `DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN` | `None` (falls back to `SESSION_COOKIE_DOMAIN`) | Domain scope of the gate's own verified-flag cookie. |
 
 Subdomain coverage is achieved by the operator setting Django's
-`SESSION_COOKIE_DOMAIN` to the parent domain (documented) — the gate's own
+`SESSION_COOKIE_DOMAIN` to the parent domain (documented), the gate's own
 cookie inherits it by default via `DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN`; the
 gate itself is host-agnostic (middleware runs on every host).
 

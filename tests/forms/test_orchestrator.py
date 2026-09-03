@@ -64,8 +64,7 @@ class TestConstruction:
 
     def test_redis_defence_without_factory_raises(self):
         """A defence that needs Redis (render_token, credential_throttle,
-        signup_velocity) without a factory must surface at construction
-        — not silently fail at first render."""
+        signup_velocity) without a factory must surface at construction, not silently fail at first render."""
 
         from django_waf.forms.protection import FormProtection
 
@@ -75,7 +74,7 @@ class TestConstruction:
         # returns None.
         protection = FormProtection(
             form_id="c",
-            defences=("honeypot",),  # no Redis defence — should work
+            defences=("honeypot",),  # no Redis defence, should work
             redis_client_factory=lambda: None,
         )
         # Sanity: honeypot constructs fine even with None factory.
@@ -166,7 +165,7 @@ class TestRenderFields:
 
 
 # ---------------------------------------------------------------------------
-# evaluate — chain wiring
+# evaluate, chain wiring
 # ---------------------------------------------------------------------------
 
 
@@ -183,10 +182,10 @@ class TestEvaluate:
                 redis_client_factory=lambda: redis,
             )
             # Render the form, then build the submission the way a
-            # browser would — by reading the rendered <input>'s
+            # browser would, by reading the rendered <input>'s
             # value attribute. Submitting the raw HTML fragment as
             # the field value (what this test originally did) is what
-            # masked the v0.11.0 bug — pre-bug it accidentally worked
+            # masked the v0.11.0 bug, pre-bug it accidentally worked
             # because fields[...] was the raw token, post-bug it stops
             # working. Use the orchestrator's own _extract_token_value
             # helper so this test always reflects what browsers do.
@@ -334,7 +333,7 @@ class TestScoreAggregation:
             assert self._protection()._resolve_verdict(6.0) == FormVerdict.BLOCKED
 
     def test_exact_threshold_value_crosses_inclusive(self, settings):
-        """Pin >= semantics — operators tune thresholds expecting
+        """Pin >= semantics, operators tune thresholds expecting
         inclusive behaviour."""
         import django_waf.conf as conf_mod
         from django_waf.forms.protection import FormVerdict
@@ -381,7 +380,7 @@ class TestMarkerConsumption:
         redis.delete.assert_not_called()
 
     def test_consume_swallows_redis_errors(self):
-        """Marker consume failures must not propagate — the form has
+        """Marker consume failures must not propagate, the form has
         already been processed; failing here would surface to the
         user as a 500."""
         from django_waf.forms.protection import FormProtection

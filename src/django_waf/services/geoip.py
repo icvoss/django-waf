@@ -67,7 +67,7 @@ def lookup_country(ip_address: str) -> str:
 
     Uses the MaxMind GeoLite2-Country database at ``DJANGO_WAF_GEOIP_PATH``.
     Degrades gracefully if the database is missing, ``geoip2`` is not
-    installed, the IP is private, or the lookup fails — every failure
+    installed, the IP is private, or the lookup fails, every failure
     mode returns the empty string so callers can treat the function as
     best-effort.
     """
@@ -222,7 +222,7 @@ def install_geoip_database(
 
     if if_older_than_days > 0 and is_database_fresh(dest_path, if_older_than_days):
         logger.info(
-            "django-waf: GeoIP database at %s is younger than %d days — skipping download",
+            "django-waf: GeoIP database at %s is younger than %d days, skipping download",
             dest_path,
             if_older_than_days,
         )
@@ -341,7 +341,7 @@ def _verify_mmdb(path: Path) -> int | None:
         import geoip2.errors
 
         with geoip2.database.Reader(str(path)) as reader:
-            # Empty/trimmed databases are possible in test scenarios —
+            # Empty/trimmed databases are possible in test scenarios,
             # don't fail verification on a known-IP miss.
             with contextlib.suppress(geoip2.errors.AddressNotFoundError):
                 reader.country("8.8.8.8")
@@ -366,7 +366,7 @@ def _atomic_install(source: Path, destination: Path) -> None:
     try:
         os.replace(source, destination)
     except OSError as exc:
-        # Cross-device move — copy then replace
+        # Cross-device move, copy then replace
         if getattr(exc, "errno", None) == 18:  # EXDEV
             tmp_dest = destination.with_suffix(destination.suffix + ".tmp")
             shutil.copy2(source, tmp_dest)

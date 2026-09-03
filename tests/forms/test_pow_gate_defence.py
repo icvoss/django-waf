@@ -41,7 +41,7 @@ def _solve(token_nonce: str, difficulty: int) -> str:
         msg = f"{token_nonce}:{n}".encode()
         if _digest_has_leading_zero_bits(hashlib.sha256(msg).digest(), difficulty):
             return str(n)
-    raise RuntimeError("could not solve PoW in 1M iterations — test set difficulty too high")
+    raise RuntimeError("could not solve PoW in 1M iterations, test set difficulty too high")
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ class TestRenderFields:
         assert "function sha256" in html
 
     def test_solver_script_includes_difficulty(self):
-        """The JS solver uses the difficulty value — pin so a future
+        """The JS solver uses the difficulty value, pin so a future
         bug doesn't silently set it to a different constant."""
         from django_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
 
@@ -80,7 +80,7 @@ class TestRenderFields:
         defence = PowGateDefence()
         html = defence.render_fields(_ctx_render(config={"difficulty": 4}))[NONCE_FIELD]
 
-        # Difficulty 4 is in the script literal — sanity check that
+        # Difficulty 4 is in the script literal, sanity check that
         # the per-form value, not the default, made it through.
         assert "difficulty=4" in html
 
@@ -120,7 +120,7 @@ class TestEvaluate:
         from django_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
 
         token_nonce = "test_token_nonce"
-        # Use difficulty 8 — solves in ~256 attempts, instant.
+        # Use difficulty 8, solves in ~256 attempts, instant.
         candidate = _solve(token_nonce, 8)
 
         defence = PowGateDefence()
@@ -135,7 +135,7 @@ class TestEvaluate:
 
     def test_uses_token_payload_nonce_when_available(self):
         """When the orchestrator has populated token_payload, prefer
-        its nonce over the bind field — the verified token is the
+        its nonce over the bind field, the verified token is the
         source of truth."""
         from django_waf.forms.defences.pow_gate import NONCE_FIELD, PowGateDefence
 
@@ -174,7 +174,7 @@ class TestEvaluate:
 
     def test_verifier_matches_page_level_pow(self):
         """The form-level PoW uses the same _digest_has_leading_zero_bits
-        helper as the page challenge — pin so a future refactor doesn't
+        helper as the page challenge, pin so a future refactor doesn't
         introduce a parallel implementation that could drift."""
         from django_waf.forms.defences.pow_gate import _verify_nonce
         from django_waf.services.challenge_service import _digest_has_leading_zero_bits

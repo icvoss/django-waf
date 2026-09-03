@@ -1,4 +1,4 @@
-"""CredentialThrottleDefence — per-IP + per-account failure tracking.
+"""CredentialThrottleDefence, per-IP + per-account failure tracking.
 
 The most security-sensitive defence. Per PRD §3.6.1 it carries a
 hard constraint: **the form's user-visible behaviour must not reveal
@@ -7,8 +7,7 @@ whether an account exists**. This implementation enforces that by:
 * incrementing the per-account counter on every failed login
   regardless of whether the account exists (the caller records the
   failure unconditionally),
-* triggering the user-visible challenge on the **per-IP** counter only
-  — the per-account counter is observation-only,
+* triggering the user-visible challenge on the **per-IP** counter only, the per-account counter is observation-only,
 * emitting a separate ``credential_attack_observed`` signal when the
   per-account counter crosses its threshold, for consumers to wire
   up an email-to-owner handler.
@@ -17,7 +16,7 @@ The defence runs at submit time, *before* the auth check. It reads
 the current per-IP count; if it's at-or-above threshold the
 submission is flagged (challenge redirect). The actual increment
 happens via the orchestrator's ``record_credential_failure`` call
-after auth fails — which the consuming project hooks into its
+after auth fails, which the consuming project hooks into its
 login view.
 
 Per PRD §3.6 + §3.6.1.
@@ -53,7 +52,7 @@ class CredentialThrottleDefence:
         self._redis = redis_client_factory
 
     def render_fields(self, ctx: RenderContext) -> dict[str, SafeString]:
-        """No fields — this is a Redis-backed check."""
+        """No fields, this is a Redis-backed check."""
         return {}
 
     def evaluate(self, ctx: EvaluateContext) -> Outcome:
@@ -78,7 +77,7 @@ class CredentialThrottleDefence:
 
         if count >= limit:
             # The same reason for any IP, regardless of which accounts
-            # were tried — enumeration-safe.
+            # were tried, enumeration-safe.
             return flagged(_FLAG_SCORE, "credential_throttle:ip")
 
         return passed()

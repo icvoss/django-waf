@@ -89,7 +89,7 @@ class TestLogging:
             for _ in range(10):
                 log_form_submission(form_id="c", request=_request(), result=_result("passed"))
 
-        # No log entries — sampling suppressed all of them.
+        # No log entries, sampling suppressed all of them.
         records = [r for r in caplog.records if r.message == "waf.form_submission"]
         assert records == []
 

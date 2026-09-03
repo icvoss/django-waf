@@ -1,11 +1,11 @@
 """Public API for the django_waf form-protection subsystem.
 
-The flat surface is small on purpose — consumers integrate via one of
+The flat surface is small on purpose, consumers integrate via one of
 three entry points:
 
-* ``ProtectedForm`` — Django Form mixin (block 5).
-* ``waf_protect_post`` — view decorator (block 6).
-* ``{% waf_protect %}`` — template tag (block 6).
+* ``ProtectedForm``, Django Form mixin (block 5).
+* ``waf_protect_post``, view decorator (block 6).
+* ``{% waf_protect %}``, template tag (block 6).
 
 Plus the orchestrator and signals for advanced use.
 """

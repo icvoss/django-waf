@@ -1,7 +1,7 @@
 """Redis counters used by throttle and velocity defences.
 
 A counter is a Redis INCR'd integer with a TTL. The TTL acts as the
-sliding window — when the key expires, the count resets. Coarse but
+sliding window, when the key expires, the count resets. Coarse but
 matches what every other rate-limit-style defence in the WAF does.
 
 Keys:
@@ -13,7 +13,7 @@ Keys:
 The identifier is hashed (not stored raw) so a Redis dump doesn't
 leak attempted usernames.
 
-All operations fail-open on Redis errors — the rest of the WAF's
+All operations fail-open on Redis errors, the rest of the WAF's
 fail-open policy applies. Callers receive 0 (counter unread) or
 silently swallowed (counter unincremented) rather than exceptions.
 """
@@ -45,11 +45,11 @@ def record_credential_failure(redis_client, *, identifier: str, ip: str, window_
     """Increment both per-account and per-IP failure counters.
 
     Returns ``(account_count, ip_count)`` after incrementing. Either
-    being 0 indicates a Redis failure was silently swallowed — the
+    being 0 indicates a Redis failure was silently swallowed, the
     caller can treat 0 as 'don't escalate'.
 
     The increment must be unconditional with respect to whether the
-    account exists — see PRD §3.6.1's enumeration-safety constraint.
+    account exists, see PRD §3.6.1's enumeration-safety constraint.
     The caller is the login-flow code; it calls this every time the
     password check fails, not just when the account exists.
     """
@@ -96,8 +96,8 @@ def credential_ip_count(redis_client, *, ip: str) -> int:
 def credential_account_count(redis_client, *, identifier: str) -> int:
     """Read the current per-account credential-failure count.
 
-    Used for the observation-only signal emission (PRD §3.6.1) —
-    never returned to the user, so leaks don't matter operationally.
+    Used for the observation-only signal emission (PRD §3.6.1), never returned to the user, so leaks don't matter
+    operationally.
     """
     if not identifier:
         return 0
@@ -118,7 +118,7 @@ def credential_account_count(redis_client, *, identifier: str) -> int:
 def record_signup(redis_client, *, ip: str, window_seconds: int) -> int:
     """Increment the per-IP signup counter; return the new value.
 
-    Called by the orchestrator after a signup form passes — counts
+    Called by the orchestrator after a signup form passes, counts
     completed registrations, not attempts. The user who crosses the
     threshold sees the challenge on their *next* attempt.
     """
