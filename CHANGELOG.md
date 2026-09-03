@@ -5,6 +5,73 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Added
+
+- `scripts/check_br_citations.py`: a guard that extracts every `BR-XXX-NNN`
+  business-rule citation from `src/` and fails if any names a rule id not
+  defined in the umbrella spec (`docs/specs/django-waf/`). Guards against a
+  citation reading as a guarantee that behaviour is specified when it is
+  not, the defect class behind `BR-UA-002`, `BR-UA-004` and `BR-TEL-004`
+  (#133). It asserts a known-present rule id, a known-present citation and
+  a matching heading before trusting any absence, and exits non-zero if
+  either side comes back empty, so a missing umbrella checkout fails loudly
+  instead of reporting zero dangling citations as a pass. Run it manually
+  or from a pre-push hook: `python3 scripts/check_br_citations.py`. It is
+  not yet wired into CI, because the umbrella spec lives in a separate
+  private repository that the default CI token cannot read; see #142.
+
+### Fixed
+
+- **`detect_scraper_404_ratio` auto-challenged a verified Bingbot crawler
+  in production** (#140, #135, BR-ANOM-014).
+
+  The detector's base filter counts rows with `verdict` in `(allowed,
+  logged)` and deliberately excludes `verdict=passed` (an AllowRule match,
+  e.g. a verified crawler), but applies no `source` filter. A nginx-sourced
+  `RequestLog` row (written by `tasks.parse_access_log` for every request
+  the access log records, including exempt-path requests the middleware
+  itself never sees) has its verdict INFERRED from the HTTP status code,
+  never observed by `rule_engine.evaluate_request`, so it can never be
+  `verdict=passed` no matter how the client is actually vetted. For a
+  published Bingbot `/24`, 52,165 middleware rows were correctly excluded
+  as `passed`, while 2,828 nginx rows at 78.9% 404 were inferred as
+  `verdict=allowed` and counted. In 24 hours the detector auto-created 70
+  rules, 34 of them covering Bingbot ranges, staged at `CHALLENGE`
+  (`BLOCK` with `DJANGO_WAF_SCRAPER_404_ACTION_BLOCK=True`).
+
+  **Fix**: AllowRules are now resolved a second time, at the counting
+  stage, for any IP that has already cleared both the `min_requests` floor
+  and the `ratio_floor` gate, regardless of which `source` its rows carry.
+  A qualifying IP whose observed User-Agent(s) match an active AllowRule
+  (including one requiring forward-confirmed reverse DNS) is excluded
+  entirely: no rule is created, no signal is emitted. The rule cache is
+  loaded once per detector run, not once per IP, and the User-Agents an IP
+  presented in the window are fetched in a single query for every
+  qualifying IP, not one query per IP.
+
+  **Fails closed.** If the AllowRule check cannot be evaluated for any
+  reason (no Redis client available, the rule cache fails to load, or the
+  matcher itself raises), every qualifying IP in that run is treated as
+  excluded rather than flagged, and a warning is logged naming why. A
+  detector whose one exoneration path is unavailable must never flag on
+  the strength of a check it could not actually run.
+
+  **`source=middleware` filtering was considered and rejected.** Restricting
+  this detector's base query the way `detect_unsolved_challenges` restricts
+  its own (source=middleware, #32) was the obvious first fix, and is wrong
+  for this detector specifically: `middleware.py`'s exempt-path
+  short-circuit (BR-EVAL-001) returns before any `RequestLog` row is
+  written, so a request to an exempt path exists ONLY as a nginx row, and
+  that is exactly where a scanner probes. Filtering to `source=middleware`
+  would have cut this detector's input to roughly 2% of what it receives
+  today and made it blind to exempt-path traffic entirely. Evaluating
+  AllowRules inside `parse_access_log` itself was also considered and
+  rejected: the wrong layer (a log-ingestion task should not carry
+  WAF rule-evaluation cost) against the wrong volume (every ingested row,
+  roughly 194,000 per run, rather than only the handful of detector
+  candidates).
+
 ## [2.7.0] - 2026-09-03
 ### Added
 
