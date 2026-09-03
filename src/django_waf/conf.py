@@ -185,13 +185,6 @@ def _DJANGO_WAF_FORM_POW_DIFFICULTY() -> int:
     return _get_setting("DJANGO_WAF_FORM_POW_DIFFICULTY", 12)
 
 
-# Replay-store backend. ``session`` uses Django's session framework
-# (signed cookie + server-side data); ``redis`` uses the same Redis
-# the rest of the WAF talks to. Most sites use session.
-def _DJANGO_WAF_FORM_REPLAY_STORE() -> str:
-    return _get_setting("DJANGO_WAF_FORM_REPLAY_STORE", "session")
-
-
 # Global per-defence score weights. Overridable per-form via the
 # ``defence_weights={...}`` kwarg on ``FormProtection``. The dict
 # collapses what would otherwise be eight separate weight settings

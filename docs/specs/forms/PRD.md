@@ -726,11 +726,12 @@ DJANGO_WAF_FORM_PROTECTION_ENABLED          = True
 DJANGO_WAF_FORM_FLAG_THRESHOLD              = 2.0
 DJANGO_WAF_FORM_BLOCK_THRESHOLD             = 5.0
 DJANGO_WAF_FORM_CHALLENGE_ON_FLAG           = True
-DJANGO_WAF_FORM_REPLAY_STORE                = "session"  # "session" | "redis"
 DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL          = False      # opt-in; busy sites
                                                       # don't want the hot
                                                       # path firing signals
 ```
+
+Replay storage is the session only; there is no configurable backend.
 
 Plus the **package-wide signing key** (see §7.4):
 
@@ -1134,7 +1135,6 @@ DJANGO_WAF_FORM_PROTECTION_ENABLED          = True
 DJANGO_WAF_FORM_FLAG_THRESHOLD              = 2.0
 DJANGO_WAF_FORM_BLOCK_THRESHOLD             = 5.0
 DJANGO_WAF_FORM_CHALLENGE_ON_FLAG           = True
-DJANGO_WAF_FORM_REPLAY_STORE                = "session"
 DJANGO_WAF_FORM_EMIT_PASSED_SIGNAL          = False  # opt-in; off by default
 
 # Tokens (uses package-wide DJANGO_WAF_SIGNING_KEY for signature)
