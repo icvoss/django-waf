@@ -5,7 +5,7 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.5.0] - 2026-09-03
+## [Unreleased]
 
 ### Added
 
@@ -89,6 +89,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check time, which under django-hosts or per-request urlconfs may not be
   the one serving traffic. Setting both URL overrides is the escape for
   that case, and is what the package already recommends there.
+
+### Fixed
+
+- **A challenged visitor was served a 500 on a deployment with the WAF
+  URLs unrouted** (#102, BR-EVAL-011). The CHALLENGED branch of
+  `_handle_verdict` called `_get_challenge_paths()` unguarded, and no
+  `NoReverseMatch` handler existed anywhere in `middleware.py`, so with
+  `django_waf.urls` routed nowhere and no explicit URL override set, the
+  exception escaped the middleware entirely. The visitor affected is a
+  legitimate one who merely tripped a detector: the WAF's own
+  misconfiguration turned a challenge into an error page.
+
+  The branch now catches `NoReverseMatch` narrowly, passes the request
+  through to the view, and logs at ERROR naming the client IP, the path,
+  and both fixes. Failing open is the right direction here, not a
+  compromise: there is no route to send the visitor to, so half-blocking
+  them behind a redirect to a page that does not exist is strictly worse
+  than letting them through. It is the same fail-open posture BR-EVAL-007
+  already sets for Redis outages and evaluation errors. Caught narrowly
+  rather than as a bare `Exception`, so any other failure in that branch
+  still surfaces. `django_waf.E007` above reports the same
+  misconfiguration at boot, and both are needed: an operator who ignores
+  the check must still not serve 500s.
+
+## [2.5.0] - 2026-09-03
+
+### Added
 
 - **A liveness probe for the Redis hit-count flush path** (#100, BR-LIFE-005).
   The companion to the detector probe shipped in 2.2.0, covering the
@@ -203,27 +230,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with enforcement off.
 
 ### Fixed
-
-- **A challenged visitor was served a 500 on a deployment with the WAF
-  URLs unrouted** (#102, BR-EVAL-011). The CHALLENGED branch of
-  `_handle_verdict` called `_get_challenge_paths()` unguarded, and no
-  `NoReverseMatch` handler existed anywhere in `middleware.py`, so with
-  `django_waf.urls` routed nowhere and no explicit URL override set, the
-  exception escaped the middleware entirely. The visitor affected is a
-  legitimate one who merely tripped a detector: the WAF's own
-  misconfiguration turned a challenge into an error page.
-
-  The branch now catches `NoReverseMatch` narrowly, passes the request
-  through to the view, and logs at ERROR naming the client IP, the path,
-  and both fixes. Failing open is the right direction here, not a
-  compromise: there is no route to send the visitor to, so half-blocking
-  them behind a redirect to a page that does not exist is strictly worse
-  than letting them through. It is the same fail-open posture BR-EVAL-007
-  already sets for Redis outages and evaluation errors. Caught narrowly
-  rather than as a bare `Exception`, so any other failure in that branch
-  still surfaces. `django_waf.E007` above reports the same
-  misconfiguration at boot, and both are needed: an operator who ignores
-  the check must still not serve 500s.
 
 - **The detector liveness probe reported a healthy detector as SILENT**
   once a deployment had accumulated any `BlockRule` history. The dry-run
