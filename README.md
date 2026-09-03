@@ -167,9 +167,11 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | `DJANGO_WAF_RATE_LIMIT_BURST` | `10` | Max requests per IP per second |
 | `DJANGO_WAF_RATE_LIMIT_PER_MINUTE` | `120` | Max requests per IP per minute |
 | `DJANGO_WAF_RATE_LIMIT_PER_5MIN` | `600` | Max requests per IP per 5 minutes |
-| `DJANGO_WAF_RATE_LIMIT_PATHS` | `{}` | Per-path rate limits: `{path_prefix: (max_requests, window_seconds)}`. Checked before the global windows; the longest matching prefix wins. Cannot cover `/waf/verify/` if it is also in `DJANGO_WAF_EXEMPT_PATHS`, see the dedicated setting below |
+| `DJANGO_WAF_RATE_LIMIT_PATHS` | `{}` | Per-path rate limits: `{path_prefix: (max_requests, window_seconds)}`, or, from BR-RATE-004, `{path_prefix: (max_requests, window_seconds, methods)}` where `methods` is an iterable of HTTP method strings (e.g. `("POST",)`) that scopes the entry to those methods only. The two-item form is unchanged and still limits every method. Checked before the global windows; the longest matching prefix wins, falling through to the next-longest matching prefix if the longest one's method scope excludes the request (see the settings reference spec for the full resolution rule). Malformed entries are refused at boot by `django_waf.E009`. Cannot cover `/waf/verify/` if it is also in `DJANGO_WAF_EXEMPT_PATHS`, see the dedicated setting below |
 | `DJANGO_WAF_VERIFY_RATE_LIMIT_MAX` | `20` | Max `POST /waf/verify/` solve attempts per IP within the window below, independent of the settings above (issue #81) |
 | `DJANGO_WAF_VERIFY_RATE_LIMIT_WINDOW_SECONDS` | `300` | Window (seconds) for `DJANGO_WAF_VERIFY_RATE_LIMIT_MAX`. A breach returns `429` with `Retry-After`, never a block; fails open on Redis errors |
+| `DJANGO_WAF_BLOCK_RESPONSE_HANDLER` | `""` | Dotted path to a callable `handler(request, result) -> HttpResponse` that produces the response for a BLOCKED verdict (BR-EVAL-012). Unset (the default) keeps the built-in `HttpResponseForbidden("Access denied.")`, byte for byte. `result.retry_after` is always `None` on this path |
+| `DJANGO_WAF_THROTTLE_RESPONSE_HANDLER` | `""` | Dotted path to a callable `handler(request, result) -> HttpResponse` that produces the response for a THROTTLED verdict (BR-EVAL-014), mirroring `DJANGO_WAF_BLOCK_RESPONSE_HANDLER` above. Unset (the default) keeps the built-in 429 with its existing `Retry-After` logic, byte for byte. Unlike the BLOCKED path, `result.retry_after` IS populated here |
 
 ### Challenges
 
