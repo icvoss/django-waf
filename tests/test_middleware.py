@@ -528,6 +528,141 @@ class TestVerdictDispatch:
 
 
 # ---------------------------------------------------------------------------
+# Unroutable challenge URLs (#102)
+# ---------------------------------------------------------------------------
+
+
+class TestChallengedVerdictWithUnroutedUrlconf:
+    """A CHALLENGED verdict on a deployment that never routed
+    ``django_waf.urls`` must fail open, not 500 (#102, BR-EVAL-007).
+
+    ``_get_challenge_paths`` is ``setting or reverse(...)``, so with
+    ``DJANGO_WAF_CHALLENGE_URL`` and ``DJANGO_WAF_VERIFY_URL`` both empty and
+    the ``django_waf`` namespace absent from the active urlconf,
+    ``reverse("django_waf:challenge")`` raises ``NoReverseMatch``. Before
+    this fix the CHALLENGED branch of ``_handle_verdict`` called it
+    unguarded and the exception escaped ``__call__``, so a legitimate
+    visitor who merely tripped a detector got a 500 rather than a
+    challenge. There is no page to send them to, so the WAF must let the
+    request through and tell the operator loudly.
+
+    ``tests/urls_no_waf.py`` is a real urlconf that genuinely omits the
+    include: the resolver does the failing on its own, rather than the test
+    hand-building a ``NoReverseMatch`` that would pass whether or not the
+    guard exists.
+    """
+
+    def _run_challenged_on_unrouted_urlconf(self, caplog):
+        import logging
+
+        factory = RequestFactory()
+        request = factory.get("/page/")
+        request.user = MagicMock(is_authenticated=False)
+        request.COOKIES = {}
+        get_response = MagicMock(return_value=HttpResponse("view response"))
+
+        with (
+            override_settings(
+                DJANGO_WAF_ENABLED=True,
+                ROOT_URLCONF="tests.urls_no_waf",
+                DJANGO_WAF_CHALLENGE_URL="",
+                DJANGO_WAF_VERIFY_URL="",
+            ),
+            patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+            patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+            patch("django_waf.middleware._emit_request_blocked"),
+            patch("django_waf.middleware._emit_request_throttled"),
+            caplog.at_level(logging.ERROR, logger="django_waf.middleware"),
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_validate.return_value = False
+            mock_eval.return_value = _make_result("challenged")
+
+            middleware = _make_middleware(get_response)
+            response = middleware(request)
+
+        return response, get_response
+
+    def test_challenged_verdict_passes_through_instead_of_500(self, caplog):
+        """The regression assertion for #102: the view is reached and its
+        response returned, rather than NoReverseMatch escaping as a 500."""
+        response, get_response = self._run_challenged_on_unrouted_urlconf(caplog)
+
+        assert response.status_code == 200
+        assert response.content == b"view response"
+        get_response.assert_called_once()
+
+    def test_challenged_verdict_logs_an_error_naming_the_fix(self, caplog):
+        """Failing open silently would leave an operator with a WAF that has
+        quietly stopped challenging anyone. The log must be at ERROR and must
+        name both remedies concretely, not just report that something went
+        wrong."""
+        self._run_challenged_on_unrouted_urlconf(caplog)
+
+        errors = [record.getMessage() for record in caplog.records if record.levelname == "ERROR"]
+        assert errors, "expected an ERROR log when the challenge URLs cannot be resolved"
+        message = "\n".join(errors)
+        assert "django_waf.urls" in message
+        assert "DJANGO_WAF_CHALLENGE_URL" in message
+        assert "DJANGO_WAF_VERIFY_URL" in message
+
+    def test_explicit_url_settings_still_redirect_on_unrouted_urlconf(self, caplog):
+        """The control for the two tests above: the same unrouted urlconf,
+        but with the explicit overrides set. ``reverse()`` is never reached,
+        so the challenge redirect happens exactly as normal. Without this,
+        the pass-through assertion could be satisfied by a middleware that
+        had simply stopped challenging altogether."""
+        import logging
+
+        factory = RequestFactory()
+        request = factory.get("/page/")
+        request.user = MagicMock(is_authenticated=False)
+        request.COOKIES = {}
+        get_response = MagicMock(return_value=HttpResponse("view response"))
+
+        with (
+            override_settings(
+                DJANGO_WAF_ENABLED=True,
+                ROOT_URLCONF="tests.urls_no_waf",
+                DJANGO_WAF_CHALLENGE_URL="/custom/challenge/",
+                DJANGO_WAF_VERIFY_URL="/custom/verify/",
+            ),
+            patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+            patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+            patch("django_waf.middleware._emit_request_blocked"),
+            patch("django_waf.middleware._emit_request_throttled"),
+            caplog.at_level(logging.ERROR, logger="django_waf.middleware"),
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_validate.return_value = False
+            mock_eval.return_value = _make_result("challenged")
+
+            middleware = _make_middleware(get_response)
+            response = middleware(request)
+
+        assert response.status_code == 302
+        assert response["Location"].startswith("/custom/challenge/")
+        get_response.assert_not_called()
+        # Scoped to the fail-open log specifically, not to "no ERROR at all".
+        # The challenge path writes a RequestLog row, and this test carries no
+        # django_db mark (it asserts on the redirect, not on persistence), so
+        # that write raises and _record_request_log logs its own ERROR. A
+        # blanket "no ERROR records" assertion therefore fails for a reason
+        # that has nothing to do with the guard under test. What must be
+        # absent is the NoReverseMatch fail-open message: with both explicit
+        # overrides set, reverse() is never reached, so the guard must not
+        # have fired.
+        fail_open_errors = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelname == "ERROR" and "cannot resolve the challenge/verify URLs" in record.getMessage()
+        ]
+        assert not fail_open_errors, f"the fail-open guard fired despite explicit URL overrides: {fail_open_errors}"
+
+
+# ---------------------------------------------------------------------------
 # Fail-open behaviour
 # ---------------------------------------------------------------------------
 
