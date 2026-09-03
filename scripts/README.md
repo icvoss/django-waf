@@ -84,3 +84,29 @@ Standard library only, no dependencies. Python 3.
 - `1`: a dangling citation was found, a control failed, or the spec
   directory was missing or empty (and `--allow-missing-spec` was not
   passed).
+
+### Why this is not a CI check
+
+Deliberate, not an omission or a task left undone.
+
+django-waf is a public package. The spec it reconciles against lives in a
+private umbrella repository. `ci.yml` triggers on `pull_request`, and a
+public repo accepts pull requests from forks, so any secret granting read
+access to the umbrella would sit in a workflow surface reachable by
+outside contributors. That is a credential-exfiltration path for private
+spec content, created in order to lint citation strings, and the trade is
+not worth making.
+
+The alternatives fail the same way. Triggering the check from the umbrella
+instead avoids the secret but puts a public package's merge gate inside a
+private repo, so an external contributor gets a check they cannot inspect
+or reproduce. Mirroring the spec into this repo would publish private
+content and create a second source of truth for canon that is supposed to
+live in one place.
+
+So it is a local and maintainer-side check, which is the right scope for a
+check whose reference data is not public. The accepted cost, stated plainly:
+nothing blocks a dangling citation from reaching `main` automatically. If
+that starts happening in practice, the fix is a pre-push hook in the
+maintainer's own workspace, not a CI job reaching across a visibility
+boundary.
