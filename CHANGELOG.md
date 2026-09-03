@@ -5,7 +5,7 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.6.0] - 2026-09-03
 ### Added
 
 - **A replaceable block response** (#74, BR-EVAL-012).
@@ -107,25 +107,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one serving traffic. Setting both URL overrides is the escape for
   that case, and is what the package already recommends there.
 
-### Removed
-
-- **`DJANGO_WAF_FORM_REPLAY_STORE`, a setting that was never read** (#73).
-  The setting was defined in `conf.py` with a default of `"session"` and
-  documented as choosing between a session-backed and a Redis-backed
-  replay store, but no Redis store was ever built: the only implementation
-  (`store_in_session` / `fetch_from_session` / `discard_from_session` in
-  `forms/services/replay.py`) goes straight to the session and never
-  consults the setting at all. Nobody asked for a Redis replay store, and
-  building one now purely to give a dead config key something to do would
-  be backwards: the setting is removed instead.
-
-  This is not a behaviour change for any consumer. A setting nothing reads
-  has no runtime effect to preserve, so a project with
-  `DJANGO_WAF_FORM_REPLAY_STORE = "session"` in its settings keeps working
-  identically after upgrading: Django ignores settings names a package
-  does not define, exactly as it always has for this one. The change is
-  purely that the package no longer claims a knob it never turned.
-
 - **A system check for `DJANGO_WAF_*` settings set only as environment
   variables** (#106, `django_waf.W010`). Every `DJANGO_WAF_*` setting is
   resolved from `django.conf.settings` only: `conf._get_setting` never
@@ -151,6 +132,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only step a site needs to start reporting") without saying *where*
   (the Django settings module, never the environment), the misreading
   that produced the original report.
+
+### Removed
+
+- **`DJANGO_WAF_FORM_REPLAY_STORE`, a setting that was never read** (#73).
+  The setting was defined in `conf.py` with a default of `"session"` and
+  documented as choosing between a session-backed and a Redis-backed
+  replay store, but no Redis store was ever built: the only implementation
+  (`store_in_session` / `fetch_from_session` / `discard_from_session` in
+  `forms/services/replay.py`) goes straight to the session and never
+  consults the setting at all. Nobody asked for a Redis replay store, and
+  building one now purely to give a dead config key something to do would
+  be backwards: the setting is removed instead.
+
+  This is not a behaviour change for any consumer. A setting nothing reads
+  has no runtime effect to preserve, so a project with
+  `DJANGO_WAF_FORM_REPLAY_STORE = "session"` in its settings keeps working
+  identically after upgrading: Django ignores settings names a package
+  does not define, exactly as it always has for this one. The change is
+  purely that the package no longer claims a knob it never turned.
+
 
 ### Fixed
 
