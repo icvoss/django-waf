@@ -2,7 +2,7 @@
 UA Analyser service for django-waf.
 
 Provides heuristic scoring and classification of User-Agent strings. All
-functions are pure — no DB or Redis access.
+functions are pure, no DB or Redis access.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 # ---------------------------------------------------------------------------
-# Pre-compiled regex patterns (module-level for performance — BR-UA-004)
+# Pre-compiled regex patterns (module-level for performance, BR-UA-004)
 # ---------------------------------------------------------------------------
 
 # Known scraper / HTTP library strings. Used by classify_ua only (weight
@@ -35,7 +35,7 @@ _RE_IMPOSSIBLE_COMBO_IOS_WINDOWS = re.compile(r"(iPhone|iPad|iOS).*Windows NT", 
 _RE_IMPOSSIBLE_COMBO_ANDROID_IOS = re.compile(r"Android.*iPhone|iPhone.*Android", re.IGNORECASE)
 _RE_IMPOSSIBLE_COMBO_ANDROID_WINDOWS = re.compile(r"Android.*Windows NT", re.IGNORECASE)
 
-# Missing / anomalous version format — UA has no slash-version tokens (weight 1.5)
+# Missing / anomalous version format, UA has no slash-version tokens (weight 1.5)
 # A legitimate browser UA almost always contains at least one "Word/X.Y" token.
 _RE_VERSION_TOKEN = re.compile(r"\w+/[\d.]+")
 
@@ -77,11 +77,11 @@ def score_user_agent(user_agent: str) -> float:
         Float score in range [0.0, 10.0].
     """
     if not user_agent:
-        return min(1.0, 10.0)  # empty UA — weight 1.0
+        return min(1.0, 10.0)  # empty UA, weight 1.0
 
     score: float = 0.0
 
-    # Weight 3.0 — impossible OS/browser combination
+    # Weight 3.0, impossible OS/browser combination
     if (
         _RE_IMPOSSIBLE_COMBO_IOS_WINDOWS.search(user_agent)
         or _RE_IMPOSSIBLE_COMBO_ANDROID_IOS.search(user_agent)
@@ -89,7 +89,7 @@ def score_user_agent(user_agent: str) -> float:
     ):
         score += 3.0
 
-    # Weight 2.0 — ancient browser version
+    # Weight 2.0, ancient browser version
     if _RE_ANCIENT_BROWSER.search(user_agent):
         score += 2.0
 
@@ -109,12 +109,12 @@ def score_user_agent(user_agent: str) -> float:
     # of whether it also matches a library string. Do not reintroduce this
     # weight without a fresh measurement justifying it, see issue #82.
 
-    # Weight 1.5 — missing or anomalous version format
+    # Weight 1.5, missing or anomalous version format
     # Real UAs always contain at least one "Token/version" component.
     if not _RE_VERSION_TOKEN.search(user_agent):
         score += 1.5
 
-    # Weight 1.0 — extremely short (< 15 chars)
+    # Weight 1.0, extremely short (< 15 chars)
     if len(user_agent) < 15:
         score += 1.0
 

@@ -3,11 +3,11 @@
 A marker is a short-lived Redis key whose **presence** means "this
 token has not yet been spent on a successful submission." Lifecycle:
 
-1. ``issue_marker(nonce)`` at form render — SETEX with ``token_ttl``.
-2. ``marker_exists(nonce)`` on submit — read; if absent and the token's
+1. ``issue_marker(nonce)`` at form render, SETEX with ``token_ttl``.
+2. ``marker_exists(nonce)`` on submit, read; if absent and the token's
    render-time is older than the 5-second grace window, treat as
    replayed.
-3. ``consume_marker(nonce)`` **only on overall PASS verdict** — DEL
+3. ``consume_marker(nonce)`` **only on overall PASS verdict**, DEL
    the key so the token can't be reused.
 
 The "only on PASS" rule is the load-bearing semantic for HTMX
@@ -31,7 +31,7 @@ def _key(nonce: str) -> str:
 def issue_marker(redis_client, nonce: str, ttl_seconds: int) -> None:
     """Set the one-shot marker for a freshly-issued token.
 
-    Idempotent under Redis semantics — re-issuing the same nonce just
+    Idempotent under Redis semantics, re-issuing the same nonce just
     refreshes the TTL. In practice the nonce is random per call so
     collisions don't happen, but the contract holds either way.
     """
@@ -45,7 +45,7 @@ def marker_exists(redis_client, nonce: str) -> bool:
     window indicates replay (the marker was consumed by a previous
     successful submission, or expired by TTL).
 
-    Defensive against Redis returning a falsy non-None — coerced via
+    Defensive against Redis returning a falsy non-None, coerced via
     bool() rather than ``is not None`` so values of ``0`` from a wrong
     key type don't read as "present."
     """

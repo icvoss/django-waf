@@ -219,7 +219,7 @@ class TestDetectorSourceAwareness:
         ip = "203.0.113.9"
         now = timezone.now()
 
-        # Only 2 real (middleware) challenged verdicts — below min_challenged=3.
+        # Only 2 real (middleware) challenged verdicts, below min_challenged=3.
         for _ in range(2):
             RequestLogFactory(
                 ip_address=ip,

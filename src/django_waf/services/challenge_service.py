@@ -77,7 +77,7 @@ def _is_mobile_user_agent(user_agent: str) -> bool:
 
     Honest about its limits: UA strings lie, "tablet" sits in the middle,
     and a high-end phone can outpace a low-end laptop. Used only to pick a
-    PoW difficulty band — wrong guesses cost a 1–3s solve discrepancy, not
+    PoW difficulty band, wrong guesses cost a 1 to 3s solve discrepancy, not
     a lockout. Refer to ``DJANGO_WAF_CHALLENGE_DIFFICULTY_*`` to tune.
     """
     if not user_agent:
@@ -283,7 +283,7 @@ def verify_challenge_solution(
     db_token_obj.nonce = nonce
     db_token_obj.save(update_fields=["status", "solved_at", "nonce"])
 
-    # Remove Redis key — token is consumed
+    # Remove Redis key, token is consumed
     redis_client.delete(redis_key)
 
     try:
@@ -361,7 +361,7 @@ def issue_pass_cookie(
 def validate_pass_cookie(cookie_value: str, ip_address: str) -> bool:
     """Validate the waf_pass cookie value from a request.
 
-    Pure function — no DB or Redis access.
+    Pure function, no DB or Redis access.
 
     Only understands the versioned "v2|token|ip|expiry|signature" format
     (see ``issue_pass_cookie``). A cookie issued by the pre-fix colon-joined

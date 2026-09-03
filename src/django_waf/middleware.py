@@ -28,14 +28,14 @@ _SITE_PASSWORD_MISCONFIGURED_ERROR = _("This site is temporarily unavailable.")
 
 
 class WafMiddleware:
-    """Django WAF middleware — new-style __init__/__call__ pattern.
+    """Django WAF middleware, new-style __init__/__call__ pattern.
 
     Evaluation order per BR-EVAL-003:
     1. Exempt paths and hosts bypass all WAF checks (BR-EVAL-001)
     2. Master switch DJANGO_WAF_ENABLED (BR-EVAL-002)
     3. Staff/superuser bypass rate limiting (BR-RATE-003)
     4. Valid waf_pass cookie → pass through (BR-CHAL-006)
-    5. evaluate_request() — allow / block / challenge / throttle / log
+    5. evaluate_request(), allow / block / challenge / throttle / log
     6. Handle verdict, log, emit signals
     """
 
@@ -75,18 +75,18 @@ class WafMiddleware:
         if not conf.DJANGO_WAF_ENABLED:
             return self._get_response(request)
 
-        # BR-EVAL-001: exempt paths — prefix match
+        # BR-EVAL-001: exempt paths, prefix match
         path = request.path_info
 
         for prefix in conf.DJANGO_WAF_EXEMPT_PATHS:
             if path.startswith(prefix):
                 return self._get_response(request)
 
-        # BR-EVAL-001: exempt hosts — exact or subdomain match
+        # BR-EVAL-001: exempt hosts, exact or subdomain match
         if conf.DJANGO_WAF_EXEMPT_HOSTS and _is_exempt_host(request, conf.DJANGO_WAF_EXEMPT_HOSTS):
             return self._get_response(request)
 
-        # BR-SP-008: site password gate — after the enabled/exempt/health
+        # BR-SP-008: site password gate, after the enabled/exempt/health
         # short-circuits above, before country-block/threat evaluation
         # below. A locked site prompts for the password before spending any
         # WAF evaluation effort; the prompt and verify paths must themselves
@@ -95,30 +95,30 @@ class WafMiddleware:
         if gate_response is not None:
             return gate_response
 
-        # HTTP method filtering — 405 for disallowed methods
+        # HTTP method filtering, 405 for disallowed methods
         allowed = conf.DJANGO_WAF_ALLOWED_METHODS
         if allowed is not None and request.method not in allowed:
             response = HttpResponse("Method not allowed.", status=405)
             response["Allow"] = ", ".join(allowed)
             return response
 
-        # Extract client IP — fail-open if unavailable
+        # Extract client IP, fail-open if unavailable
         ip_address = _extract_ip(request)
         if not ip_address:
             return self._get_response(request)
         user_agent = request.META.get("HTTP_USER_AGENT", "")
 
-        # Country blocking — fail-open on any GeoIP error or missing database.
+        # Country blocking, fail-open on any GeoIP error or missing database.
         if conf.DJANGO_WAF_BLOCKED_COUNTRIES:
             blocked_response = self._check_country_block(request, ip_address, user_agent, path)
             if blocked_response is not None:
                 return blocked_response
 
-        # BR-RATE-003: staff/superuser bypass — skip WAF entirely
+        # BR-RATE-003: staff/superuser bypass, skip WAF entirely
         if _is_staff_user(request):
             return self._get_response(request)
 
-        # Get Redis connection — fail-open if unavailable
+        # Get Redis connection, fail-open if unavailable
         redis_client = _get_redis_client()
         if redis_client is None:
             return self._get_response(request)
@@ -129,7 +129,7 @@ class WafMiddleware:
 
             cookie_value = request.COOKIES.get("waf_pass", "")
             if cookie_value and validate_pass_cookie(cookie_value, ip_address):
-                # Cookie is valid — pass through
+                # Cookie is valid, pass through
                 return self._get_response(request)
         except Exception:
             logger.exception("django-waf: error validating waf_pass cookie")
@@ -149,7 +149,7 @@ class WafMiddleware:
             )
         except Exception:
             # Fail-open: if evaluation raises, pass the request through
-            logger.exception("django-waf: evaluation error — failing open")
+            logger.exception("django-waf: evaluation error, failing open")
             return self._get_response(request)
 
         # Build and return verdict-specific response
@@ -224,7 +224,7 @@ class WafMiddleware:
 
             country = lookup_country(ip_address)
             if not country:
-                # No database / lookup failure — fail open.
+                # No database / lookup failure, fail open.
                 return None
 
             blocked_countries = {c.upper() for c in conf.DJANGO_WAF_BLOCKED_COUNTRIES}
@@ -262,7 +262,7 @@ class WafMiddleware:
             )
             return self._build_block_response(request, result)
         except Exception:
-            logger.exception("django-waf: error during country-block check — failing open")
+            logger.exception("django-waf: error during country-block check, failing open")
             return None
 
     def _check_site_password(self, request, path):
@@ -293,7 +293,7 @@ class WafMiddleware:
         if sp.is_misconfigured():
             logger.error(
                 "django-waf: DJANGO_WAF_SITE_PASSWORD_ENABLED is True but "
-                "DJANGO_WAF_SITE_PASSWORD is empty — failing closed (BR-SP-002)."
+                "DJANGO_WAF_SITE_PASSWORD is empty, failing closed (BR-SP-002)."
             )
             return self._render_site_password_prompt(request, error=_SITE_PASSWORD_MISCONFIGURED_ERROR)
 
@@ -344,7 +344,7 @@ class WafMiddleware:
         throttle_result = sp.record_guess_throttle_hit_detailed(ip_address, redis_client)
         if throttle_result.exceeded:
             response = HttpResponse("Too many attempts. Please retry later.", status=429)
-            # Accurate sliding-window value (#30) — falls back to 60 only
+            # Accurate sliding-window value (#30), falls back to 60 only
             # when the limiter genuinely returned none (fail-open path).
             retry_after = throttle_result.retry_after
             response["Retry-After"] = str(retry_after) if retry_after is not None else "60"
@@ -595,7 +595,7 @@ class WafMiddleware:
 
             # Suppress challenge redirect when already on a challenge/verify
             # path to prevent infinite redirect loops. BLOCKED and THROTTLED
-            # verdicts still apply — only the redirect is suppressed.
+            # verdicts still apply, only the redirect is suppressed.
             if path.startswith(challenge_path) or path.startswith(verify_path):
                 return self._get_response(request)
 
@@ -617,7 +617,7 @@ class WafMiddleware:
             challenge_url = f"{challenge_path}?next={path}"
             return HttpResponseRedirect(challenge_url)
 
-        # ALLOWED, PASSED, LOGGED — pass through to the view
+        # ALLOWED, PASSED, LOGGED, pass through to the view
         return self._get_response(request)
 
     def _log_request(self, request, result, ip_address, user_agent, path, response_code):
@@ -662,7 +662,7 @@ class WafMiddleware:
 
 
 def _lookup_country(ip_address: str) -> str:
-    """Backwards-compatibility shim — the real implementation lives in
+    """Backwards-compatibility shim, the real implementation lives in
     ``django_waf.services.geoip.lookup_country`` (moved in v0.10.6 so the
     admin can share the same lazy reader)."""
     from django_waf.services.geoip import lookup_country

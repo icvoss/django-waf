@@ -10,15 +10,15 @@ the verified-flag and password-check logic, not two.
 The verified flag is the gate's own signed cookie, not Django's session.
 ``WafMiddleware`` is documented (README) to sit before
 ``SessionMiddleware`` in the middleware stack so it can block requests as
-early as possible — ``request.session`` does not exist at that point, so
+early as possible, ``request.session`` does not exist at that point, so
 the gate cannot depend on it (this was a real defect: see the regression
 test ``TestNoSessionMiddlewareRegression`` in tests/test_site_password.py).
 Instead, the flag is a ``django.core.signing.TimestampSigner``-signed
 marker stored in a cookie the gate owns, verified independently of the
 session framework. The signature uses the package's own signing key
 (``django_waf.forms.services.tokens.get_signing_key``, i.e.
-``DJANGO_WAF_SIGNING_KEY`` with a ``SECRET_KEY``-derived fallback) — the
-same key every other signed artefact in this package uses — rather than
+``DJANGO_WAF_SIGNING_KEY`` with a ``SECRET_KEY``-derived fallback), the
+same key every other signed artefact in this package uses, rather than
 Django's session/cookie signer. The TTL is enforced live by passing
 ``max_age`` to ``TimestampSigner.unsign`` on every request, so a
 ``DJANGO_WAF_SITE_PASSWORD_TTL`` change takes effect immediately without
@@ -52,7 +52,7 @@ def is_gate_enabled() -> bool:
     """Return True if the site password gate is switched on.
 
     Per BR-SP-001: unset/empty password and DJANGO_WAF_SITE_PASSWORD_ENABLED
-    both defaulting False means no gate — this must be cheap and side-effect
+    both defaulting False means no gate, this must be cheap and side-effect
     free since it runs on every request via the middleware.
     """
     from django_waf import conf
@@ -121,7 +121,7 @@ def has_valid_cookie(request: HttpRequest) -> bool:
 def set_verified_cookie(response: HttpResponse, request: HttpRequest) -> None:
     """Set the signed verified-flag cookie on the response.
 
-    Never stores the password itself — only a signed marker (BR-SP-005:
+    Never stores the password itself, only a signed marker (BR-SP-005:
     the password is never rendered, logged, or persisted anywhere beyond
     the settings value it is read from). Set on the *response*, not the
     request, and independent of Django's session -- this cookie is the
@@ -158,7 +158,7 @@ def check_password(submitted: str) -> bool:
     """Constant-time comparison of the submitted password against config.
 
     Per BR-SP-005. Returns False (never raises) for an empty submission or
-    a misconfigured (empty) stored password — an empty stored password
+    a misconfigured (empty) stored password, an empty stored password
     must never compare equal to an empty submission, which would otherwise
     let a blank form field through.
     """
@@ -179,13 +179,13 @@ def record_guess_throttle_hit(ip_address: str, redis_client) -> bool:
     limiter, keyed on the verify path so guess attempts are counted
     independently of the IP's ordinary browsing traffic. Fails open (returns
     False) on any Redis error, matching the WAF's existing fail-open policy
-    for infrastructure failures — a throttling outage must never turn into
+    for infrastructure failures, a throttling outage must never turn into
     a site-wide lockout on its own.
 
     Returns a plain bool (not the RateLimitResult) so this stays a drop-in
     "should I throttle?" check. Callers that also need the accurate
     Retry-After value (#30) should call
-    ``record_guess_throttle_hit_detailed`` instead — this function is kept
+    ``record_guess_throttle_hit_detailed`` instead, this function is kept
     for callers that only need the boolean.
     """
     return record_guess_throttle_hit_detailed(ip_address, redis_client).exceeded

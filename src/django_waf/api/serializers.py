@@ -44,7 +44,7 @@ class AllowRuleSerializer(serializers.ModelSerializer):
 
 
 class RequestLogSerializer(serializers.ModelSerializer):
-    """Read-only serializer for RequestLog — an audit log, never written via the API."""
+    """Read-only serializer for RequestLog, an audit log, never written via the API."""
 
     class Meta:
         model = RequestLog
@@ -53,7 +53,7 @@ class RequestLogSerializer(serializers.ModelSerializer):
 
 
 class IPReputationSerializer(serializers.ModelSerializer):
-    """Read-only serializer for IPReputation — maintained by the scoring service."""
+    """Read-only serializer for IPReputation, maintained by the scoring service."""
 
     class Meta:
         model = IPReputation

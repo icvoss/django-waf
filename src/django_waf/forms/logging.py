@@ -60,7 +60,7 @@ def log_form_submission(*, form_id: str, request, result: FormEvaluationResult) 
     user_id = _extract_user_id(request)
 
     # Sampling decision for passed submissions.
-    if result.verdict == FormVerdict.PASSED:  # noqa: SIM102 — nested reads clearer with the comment
+    if result.verdict == FormVerdict.PASSED:  # noqa: SIM102, nested reads clearer with the comment
         if random.random() >= conf.DJANGO_WAF_LOG_SAMPLE_RATE:
             # Suppressed by sampling; still dispatch the signal if
             # operators opted in.
@@ -149,7 +149,7 @@ def _dispatch_signal(
                 outcomes=result.outcomes,
             )
         else:  # BLOCKED
-            # Pick a representative reason — first block outcome, or
+            # Pick a representative reason, first block outcome, or
             # the highest-scoring flag if scores crossed the block
             # threshold without any single defence blocking.
             reason = ""

@@ -1,8 +1,7 @@
-"""SignupVelocityDefence — per-IP signup-rate throttle.
+"""SignupVelocityDefence, per-IP signup-rate throttle.
 
 Counts *completed* signups per IP rather than attempts, so the user
-who crosses the threshold sees the challenge on their *next* submit
-— not the one that crossed it. The orchestrator calls
+who crosses the threshold sees the challenge on their *next* submit, not the one that crossed it. The orchestrator calls
 ``record_signup()`` only when the form's overall verdict is PASS.
 
 Per PRD §3.7.

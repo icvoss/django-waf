@@ -23,7 +23,7 @@ from django_waf.enums import (
 )
 
 # ---------------------------------------------------------------------------
-# Abstract base model — UUID PK + timestamps
+# Abstract base model, UUID PK + timestamps
 # ---------------------------------------------------------------------------
 
 
@@ -31,7 +31,7 @@ class BaseModel(models.Model):
     """Abstract base with UUID primary key and created/updated timestamps.
 
     Field-compatible with ``icv_core.models.BaseModel`` for projects that use
-    the ICV-Django ecosystem, but fully standalone — no external dependency.
+    the ICV-Django ecosystem, but fully standalone, no external dependency.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -54,7 +54,7 @@ class BlockRuleManager(models.Manager):
         """Return all active, non-expired rules ordered by priority.
 
         Excludes rules whose expires_at has passed even when is_active is
-        still True — the periodic expire_rules task deactivates those, but
+        still True, the periodic expire_rules task deactivates those, but
         evaluation must not enforce a rule that has expired in the gap
         before that task next runs (#25).
         """
@@ -328,7 +328,7 @@ class AllowRuleManager(models.Manager):
         """Return all active, non-expired allow rules.
 
         Excludes rules whose expires_at has passed even when is_active is
-        still True — mirrors BlockRuleManager.active() (#25). Without this,
+        still True, mirrors BlockRuleManager.active() (#25). Without this,
         an expired feed or crawler AllowRule keeps bypassing every WAF
         check until the periodic expire_rules task next deactivates it.
         """
@@ -493,7 +493,7 @@ class RequestLog(BaseModel):
     """
     Sampled log of requests evaluated by the WAF middleware.
 
-    Not every request is recorded — the sample rate is controlled by
+    Not every request is recorded, the sample rate is controlled by
     DJANGO_WAF_LOG_SAMPLE_RATE. Blocked and challenged requests are always logged
     regardless of the sample rate.
 
@@ -535,7 +535,7 @@ class RequestLog(BaseModel):
         db_index=True,
         verbose_name=_("verdict"),
     )
-    # Plain UUID — not a FK so log rows survive rule deletion.
+    # Plain UUID, not a FK so log rows survive rule deletion.
     matched_rule_id = models.UUIDField(
         null=True,
         blank=True,
@@ -549,7 +549,7 @@ class RequestLog(BaseModel):
         default="",
         verbose_name=_("matched rule type"),
         help_text=_(
-            "Which rule table matched — 'block' = a BlockRule, 'allow' = an "
+            "Which rule table matched: 'block' = a BlockRule, 'allow' = an "
             "AllowRule. This is the source table, NOT the enforced action: a "
             "BlockRule with action=challenge produces matched_rule_type='block' "
             "and verdict='challenged'. Use the verdict column for enforcement "
@@ -579,7 +579,7 @@ class RequestLog(BaseModel):
         blank=True,
         db_index=True,
         verbose_name=_("HTTP fingerprint"),
-        help_text=_("SHA-256 hash of normalised HTTP headers — identifies real client software."),
+        help_text=_("SHA-256 hash of normalised HTTP headers: identifies real client software."),
     )
     fingerprint_verdict = models.CharField(
         max_length=20,

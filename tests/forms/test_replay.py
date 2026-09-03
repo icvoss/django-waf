@@ -190,7 +190,7 @@ class TestSessionStorage:
         assert fetch_from_session(req, session_key=key) is None
 
     def test_cap_keeps_at_most_five_records(self):
-        """Session bloat protection — don't let stale flagged forms
+        """Session bloat protection, don't let stale flagged forms
         accumulate indefinitely under one session."""
         from django_waf.forms.services.replay import store_in_session
 

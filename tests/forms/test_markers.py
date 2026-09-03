@@ -2,7 +2,7 @@
 
 Markers are the load-bearing primitive for replay protection. The
 "delete only on PASS" rule (see PRD §4.3) is what makes HTMX
-re-renders work — these tests pin that rule so a future change to the
+re-renders work, these tests pin that rule so a future change to the
 orchestrator can't quietly regress the semantics.
 """
 
@@ -57,7 +57,7 @@ class TestMarkerExists:
         assert marker_exists(r, "abc") is False
 
     def test_returns_false_for_none_response(self):
-        """Defensive — some Redis clients return None instead of 0."""
+        """Defensive, some Redis clients return None instead of 0."""
         from django_waf.forms.services.markers import marker_exists
 
         r = _redis()

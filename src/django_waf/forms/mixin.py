@@ -1,4 +1,4 @@
-"""ProtectedForm mixin — Django Form integration for the orchestrator.
+"""ProtectedForm mixin, Django Form integration for the orchestrator.
 
 Subclasses declare a class-level ``waf = FormProtection(...)``. The
 mixin wires the orchestrator into the Django form lifecycle:
@@ -12,7 +12,7 @@ mixin wires the orchestrator into the Django form lifecycle:
   ``self.waf_result`` so the view can decide whether to redirect
   through the challenge flow.
 
-The mixin does NOT do the challenge redirect itself — that's a view
+The mixin does NOT do the challenge redirect itself, that's a view
 concern, handled by block 6's decorator (and block 7's replay flow).
 Keeping the mixin scoped to form validation means it composes with
 any view, including class-based generic views.
@@ -48,7 +48,7 @@ logger = logging.getLogger("django_waf.forms")
 
 
 # Generic ValidationError message shown on BLOCKED. Deliberately
-# uninformative — telling an attacker exactly which defence fired
+# uninformative, telling an attacker exactly which defence fired
 # would help them tune around it. Operators see the structured log
 # for the details (block 6).
 _BLOCKED_MESSAGE = "Submission rejected. Please try again."
@@ -140,10 +140,10 @@ class ProtectedForm(_ProtectedFormBase):
         from django.utils.safestring import mark_safe
 
         fields = self.waf.render_fields(self._waf_request)
-        # Sort keys for deterministic output — eases testing and
+        # Sort keys for deterministic output, eases testing and
         # cache-key stability on HTMX re-renders.
         html = "".join(fields[k] for k in sorted(fields))
-        return mark_safe(html)  # noqa: S308 — each fragment is already SafeString
+        return mark_safe(html)  # noqa: S308, each fragment is already SafeString
 
     # ------------------------------------------------------------------
     # Validation hook
@@ -161,7 +161,7 @@ class ProtectedForm(_ProtectedFormBase):
         if cleaned is None:
             cleaned = getattr(self, "cleaned_data", {}) or {}
 
-        # Run the orchestrator against the raw POST data — defences
+        # Run the orchestrator against the raw POST data, defences
         # read their own hidden fields by name, not the cleaned form
         # fields. Scalarise via ``scalarise_submitted_data`` because
         # ``self.data`` is a ``QueryDict`` for real bound forms and
@@ -176,7 +176,7 @@ class ProtectedForm(_ProtectedFormBase):
         self.waf_result = result
 
         # Structured log + signal dispatch. Done here (not in the
-        # orchestrator) because logging is an entry-point concern —
+        # orchestrator) because logging is an entry-point concern,
         # mixin vs. decorator decide their own format choices, the
         # orchestrator just produces the result.
         from django_waf.forms.logging import log_form_submission

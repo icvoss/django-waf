@@ -88,7 +88,7 @@ def _invalidate_rule_cache() -> None:
 
 
 # ---------------------------------------------------------------------------
-# BlockRule — invalidate rule cache on every change
+# BlockRule, invalidate rule cache on every change
 # ---------------------------------------------------------------------------
 
 
@@ -96,18 +96,18 @@ def _invalidate_rule_cache() -> None:
 def on_block_rule_save(sender, instance, **kwargs) -> None:
     """Invalidate the compiled rule cache when a BlockRule is saved."""
     _invalidate_rule_cache()
-    logger.debug("BlockRule %r saved — rule cache invalidated.", str(instance))
+    logger.debug("BlockRule %r saved, rule cache invalidated.", str(instance))
 
 
 @receiver(post_delete, sender="django_waf.BlockRule")
 def on_block_rule_delete(sender, instance, **kwargs) -> None:
     """Invalidate the compiled rule cache when a BlockRule is deleted."""
     _invalidate_rule_cache()
-    logger.debug("BlockRule %r deleted — rule cache invalidated.", str(instance))
+    logger.debug("BlockRule %r deleted, rule cache invalidated.", str(instance))
 
 
 # ---------------------------------------------------------------------------
-# AllowRule — invalidate rule cache on every change
+# AllowRule, invalidate rule cache on every change
 # ---------------------------------------------------------------------------
 
 
@@ -115,18 +115,18 @@ def on_block_rule_delete(sender, instance, **kwargs) -> None:
 def on_allow_rule_save(sender, instance, **kwargs) -> None:
     """Invalidate the compiled rule cache when an AllowRule is saved."""
     _invalidate_rule_cache()
-    logger.debug("AllowRule %r saved — rule cache invalidated.", str(instance))
+    logger.debug("AllowRule %r saved, rule cache invalidated.", str(instance))
 
 
 @receiver(post_delete, sender="django_waf.AllowRule")
 def on_allow_rule_delete(sender, instance, **kwargs) -> None:
     """Invalidate the compiled rule cache when an AllowRule is deleted."""
     _invalidate_rule_cache()
-    logger.debug("AllowRule %r deleted — rule cache invalidated.", str(instance))
+    logger.debug("AllowRule %r deleted, rule cache invalidated.", str(instance))
 
 
 # ---------------------------------------------------------------------------
-# request_blocked — structured logging
+# request_blocked, structured logging
 # ---------------------------------------------------------------------------
 
 

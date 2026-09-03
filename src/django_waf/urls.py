@@ -34,12 +34,12 @@ app_name = "django_waf"
 # include() result (URLResolver), so the list genuinely holds both types.
 urlpatterns: list[URLPattern | URLResolver] = [
     # -----------------------------------------------------------------------
-    # Challenge flow — AllowAny
+    # Challenge flow, AllowAny
     # -----------------------------------------------------------------------
     path("challenge/", views.challenge_view, name="challenge"),
     path("verify/", views.verify_view, name="verify"),
     # -----------------------------------------------------------------------
-    # Site password gate — WafMiddleware intercepts POSTs to
+    # Site password gate, WafMiddleware intercepts POSTs to
     # DJANGO_WAF_SITE_PASSWORD_VERIFY_PATH directly (see
     # WafMiddleware._handle_site_password_verify); this route exists as a
     # fallback so reverse() resolves and a direct hit still gets a
@@ -72,7 +72,7 @@ urlpatterns: list[URLPattern | URLResolver] = [
 ]
 
 # -----------------------------------------------------------------------
-# Optional DRF API — off by default, requires django-waf[api]
+# Optional DRF API, off by default, requires django-waf[api]
 # -----------------------------------------------------------------------
 if conf.DJANGO_WAF_API_ENABLED:
     try:

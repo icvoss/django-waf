@@ -339,7 +339,7 @@
                 return;
             }
 
-            // Server returned an error — extract reason and retry token.
+            // Server returned an error, extract reason and retry token.
             var data = null;
             try {
                 data = await resp.json();

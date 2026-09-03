@@ -1,4 +1,4 @@
-"""TimeTrapDefence — submissions that come back implausibly fast or slow.
+"""TimeTrapDefence, submissions that come back implausibly fast or slow.
 
 Reads ``render_time`` off the verified token payload (set on
 ``EvaluateContext.token_payload`` by the orchestrator after
@@ -9,7 +9,7 @@ Reads ``render_time`` off the verified token payload (set on
 * delta > max         → flag  (``time_trap:expired``)
 * otherwise           → pass
 
-The 0.5s hard cutoff is the only deterministic threshold — anything
+The 0.5s hard cutoff is the only deterministic threshold, anything
 that comes back in under half a second is mechanically impossible for
 a human to read-and-fill. The flag bands are configurable per-form
 (short forms like newsletter signups lower the min).
@@ -37,7 +37,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from django.utils.safestring import SafeString
 
 
-# Hard floor — any submission faster than this is mechanically
+# Hard floor, any submission faster than this is mechanically
 # impossible for a human, regardless of form length or per-form
 # configuration. Block, don't flag.
 _TOO_FAST_THRESHOLD_SECONDS = 0.5
@@ -56,7 +56,7 @@ class TimeTrapDefence:
     name = "time_trap"
 
     def render_fields(self, ctx: RenderContext) -> dict[str, SafeString]:
-        """No fields needed — render time rides on the render token."""
+        """No fields needed, render time rides on the render token."""
         return {}
 
     def evaluate(self, ctx: EvaluateContext) -> Outcome:
@@ -77,7 +77,7 @@ class TimeTrapDefence:
         delta = (datetime.now(tz=UTC) - rt).total_seconds()
 
         # Negative deltas indicate clock skew between processes. Treat
-        # as too fast — better to flag a false positive than to ignore
+        # as too fast, better to flag a false positive than to ignore
         # a genuine replay-from-the-future.
         if delta < _TOO_FAST_THRESHOLD_SECONDS:
             return blocked("time_trap:too_fast", score=_TOO_FAST_SCORE)

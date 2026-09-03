@@ -16,7 +16,7 @@ class DjangoWafConfig(AppConfig):
         # with every other opt-in wiring in this method.
         from django_waf import conf
 
-        from . import checks, handlers  # noqa: F401 — register handlers & system checks
+        from . import checks, handlers  # noqa: F401, register handlers & system checks
 
         if conf.DJANGO_WAF_TRUSTED_COOKIE_ENABLED:
             from . import receivers

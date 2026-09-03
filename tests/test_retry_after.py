@@ -6,7 +6,7 @@ Previously ``retry_after = window_seconds - (now - cutoff)`` where
 and the middleware sent a fixed 60-second header regardless of real state
 (EvaluationResult had no retry_after field at all, so
 ``hasattr(result, "retry_after")`` was always False on the real NamedTuple
-too — a double bug).
+too, a double bug).
 
 The fix makes the sliding-window limiter return
 ``oldest_event_in_window + window_seconds - now``: the real number of
@@ -46,7 +46,7 @@ def _make_redis() -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# _retry_after_from_oldest — pure maths, no Redis
+# _retry_after_from_oldest, pure maths, no Redis
 # ---------------------------------------------------------------------------
 
 
@@ -88,7 +88,7 @@ class TestRetryAfterFromOldest:
 
 
 # ---------------------------------------------------------------------------
-# check_rate_limit — concrete Retry-After values via the pipeline
+# check_rate_limit, concrete Retry-After values via the pipeline
 # ---------------------------------------------------------------------------
 
 
@@ -120,14 +120,14 @@ class TestCheckRateLimitConcreteRetryAfter:
         # truncates toward zero, and 0 would violate the floor, so this
         # must be at least 1.
         assert result.retry_after >= 1
-        # The oldest event is 0.4s old in a 1s window, so ~0.6s remain —
+        # The oldest event is 0.4s old in a 1s window, so ~0.6s remain,
         # truncated to 0 by int(), then floored to 1. Assert the exact
         # floored value to catch a regression to the old constant-0 maths.
         assert result.retry_after == 1
 
     def test_retry_after_scales_with_window_occupancy(self):
         """A per-path window whose oldest event is fresher yields a longer
-        retry_after than one whose oldest event is stale — proving the
+        retry_after than one whose oldest event is stale, proving the
         value tracks real occupancy rather than being a fixed constant."""
         import django_waf.conf as conf_mod
 
@@ -157,7 +157,7 @@ class TestCheckRateLimitConcreteRetryAfter:
 
 
 # ---------------------------------------------------------------------------
-# EvaluationResult.retry_after — populated on THROTTLED, absent elsewhere
+# EvaluationResult.retry_after, populated on THROTTLED, absent elsewhere
 # ---------------------------------------------------------------------------
 
 
@@ -219,7 +219,7 @@ class TestEvaluationResultRetryAfter:
 
 
 # ---------------------------------------------------------------------------
-# Middleware — sends the real Retry-After header, not a fixed fallback
+# Middleware, sends the real Retry-After header, not a fixed fallback
 # ---------------------------------------------------------------------------
 
 

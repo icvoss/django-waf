@@ -84,7 +84,7 @@ def _make_user(*, username="user", is_staff=False, is_superuser=False, perms=())
 
 
 def _waf_admin_user(**kwargs):
-    """A staff user with django_waf.change_blockrule — satisfies IsWafAdmin without superuser."""
+    """A staff user with django_waf.change_blockrule, satisfies IsWafAdmin without superuser."""
     return _make_user(is_staff=True, perms=["django_waf.change_blockrule"], **kwargs)
 
 

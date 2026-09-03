@@ -1,4 +1,4 @@
-"""Tests for UaConsistencyDefence — short defence, short tests."""
+"""Tests for UaConsistencyDefence, short defence, short tests."""
 
 from __future__ import annotations
 

@@ -6,7 +6,7 @@ real client software, independent of the User-Agent string. Bots that rotate
 UAs but use the same HTTP library produce identical fingerprints.
 
 Key signals:
-- Sec-CH-UA / Sec-CH-UA-Platform (Chrome 89+, Edge, Opera — absent from bots)
+- Sec-CH-UA / Sec-CH-UA-Platform (Chrome 89+, Edge, Opera, absent from bots)
 - Sec-Fetch-Site / Sec-Fetch-Mode / Sec-Fetch-Dest (all modern browsers)
 - Accept-Language (bots omit or send ``*``)
 - Accept header (browsers send complex content negotiation, bots send ``*/*``)
@@ -14,7 +14,7 @@ Key signals:
 
 The fingerprint hash is a SHA-256 of the normalised header tuple. The
 mismatch score detects when a UA claims to be a browser but the headers
-don't match — a deterministic signal with near-zero false positives.
+don't match, a deterministic signal with near-zero false positives.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def score_fingerprint_mismatch(user_agent: str, meta: dict) -> float:
     if chrome_match:
         chrome_version = int(chrome_match.group(1))
         if chrome_version >= _CHROMIUM_MIN_VERSION_FOR_CH and not meta.get("HTTP_SEC_CH_UA"):
-            score += 2.0  # Strong signal — deterministic
+            score += 2.0  # Strong signal, deterministic
 
     # Check 2: Browser UA but no Sec-Fetch-* headers
     if _SEC_FETCH_BROWSERS_RE.search(user_agent):
@@ -164,7 +164,7 @@ def register_known_fingerprint(fp_hash: str, redis_client) -> None:
 
     Called by VerifyView when a real user solves the JS proof-of-work. This
     builds a dynamic allowlist of browser fingerprints without any static
-    profile list — as new browser versions roll out, real users solving
+    profile list, as new browser versions roll out, real users solving
     challenges automatically register their fingerprints.
 
     A failure here is a false-positive amplifier, not a neutral fail-open:

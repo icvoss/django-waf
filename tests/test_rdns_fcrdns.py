@@ -1,7 +1,7 @@
 """Tests for forward-confirmed reverse DNS (FCrDNS) verified crawler allows (#34).
 
 Prior to this fix, ``_verify_rdns`` did a bare PTR (reverse-DNS) lookup and
-matched the resolved hostname against ``rdns_pattern`` — no forward lookup
+matched the resolved hostname against ``rdns_pattern``, no forward lookup
 anywhere. An attacker who controls the PTR record of their own IP (any cloud
 VM with settable rDNS) could set a PTR record like
 ``fake-crawler.googlebot.com`` and pass the check without being Google at
@@ -10,8 +10,8 @@ actually points back at that IP.
 
 The fix forward-resolves the PTR hostname after a pattern match and requires
 the original IP to appear among the forward-resolved addresses (both IPv4
-and IPv6 families via ``socket.getaddrinfo``). Any DNS error — reverse or
-forward — fails closed. The final verified verdict is cached per (ip,
+and IPv6 families via ``socket.getaddrinfo``). Any DNS error, reverse or
+forward, fails closed. The final verified verdict is cached per (ip,
 rdns_pattern): 24 hours for a positive verification, a short
 DJANGO_WAF_RDNS_FAILURE_CACHE_TTL (default 300s) for a negative one, so a
 transient resolver outage does not suppress a legitimate crawler's
@@ -65,7 +65,7 @@ class TestSpoofedVsGenuineFCrDNS:
     def test_spoofed_ptr_suffix_matches_but_forward_resolves_elsewhere_is_denied(self):
         """An attacker-controlled PTR record that happens to match the
         pattern suffix is denied when the hostname's forward resolution
-        does not include the attacker's own IP — they control the PTR of
+        does not include the attacker's own IP, they control the PTR of
         their IP, but not example.com's DNS zone."""
         redis = _make_redis()
 
@@ -132,7 +132,7 @@ class TestAddressFamilies:
 
     def test_ipv6_forward_confirmation(self):
         """getaddrinfo's IPv6 sockaddr tuple is (address, port, flowinfo,
-        scope_id) — address is still element 0 of the sockaddr, which is
+        scope_id), address is still element 0 of the sockaddr, which is
         info[4][0], same as IPv4."""
         redis = _make_redis()
 
@@ -201,7 +201,7 @@ class TestFailsClosedOnEitherDnsFailure:
 
     def test_forward_dns_failure_fails_closed_even_after_ptr_match(self):
         """The PTR hostname matches the pattern, but the forward lookup
-        itself raises — must still deny, not fall back to trusting the PTR."""
+        itself raises, must still deny, not fall back to trusting the PTR."""
         redis = _make_redis()
 
         with (
@@ -275,7 +275,7 @@ class TestCacheTtlDifferentiation:
 
     def test_dns_failure_result_also_cached_with_short_ttl_not_24h(self):
         """A DNS error (not just a pattern/forward mismatch) is a negative
-        verdict too, and must not get the 24-hour positive TTL — otherwise
+        verdict too, and must not get the 24-hour positive TTL, otherwise
         a transient resolver outage would suppress a legitimate crawler's
         AllowRule match for a full day per IP."""
         redis = _make_redis()

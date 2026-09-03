@@ -1,4 +1,4 @@
-"""HoneypotDefence — hidden fields that humans can't fill in.
+"""HoneypotDefence, hidden fields that humans can't fill in.
 
 Renders one or more hidden ``<input>`` fields with names drawn from
 ``DJANGO_WAF_FORM_HONEYPOT_FIELD_NAMES``. The name set is rotated
@@ -32,12 +32,12 @@ from django_waf.forms.defences.base import (
 
 # How many honeypot fields to render per form. Two is enough to make
 # random-fill bots fail reliably without producing a visually-jarring
-# DOM. Operators don't get to override this — it's a coverage choice,
+# DOM. Operators don't get to override this, it's a coverage choice,
 # not a security knob.
 _FIELDS_PER_FORM = 2
 
 # CSS used for the visually-hidden style. Specifically NOT
-# ``display:none`` — most scrapers detect that. The position-off-screen
+# ``display:none``, most scrapers detect that. The position-off-screen
 # pattern is the long-standing accessibility-friendly honeypot recipe.
 _HIDDEN_STYLE = "position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden;"
 
@@ -55,7 +55,7 @@ def _pick_field_names(form_id: str, pool: list[str], count: int) -> list[str]:
     digest = hashlib.sha256(form_id.encode("utf-8")).digest()
     offset = int.from_bytes(digest[:4], "big") % len(pool)
     # Walk the pool starting at offset. If count > len(pool), the names
-    # will repeat — operators who really want more than the pool size
+    # will repeat, operators who really want more than the pool size
     # should expand the pool, not get duplicates rendered.
     return [pool[(offset + i) % len(pool)] for i in range(min(count, len(pool)))]
 
@@ -68,7 +68,7 @@ def _render_field(name: str) -> str:
     so a misconfigured pool can't introduce XSS.
     """
     # Restrict the name to a safe subset. Any name containing
-    # characters outside [a-z0-9_-] is silently dropped — operators
+    # characters outside [a-z0-9_-] is silently dropped, operators
     # who add weird names to the pool find out via the unit test, not
     # an injection.
     safe_name = "".join(c for c in name if c.isalnum() or c in "_-")
@@ -85,7 +85,7 @@ def _render_field(name: str) -> str:
 class HoneypotDefence:
     """Hidden honeypot inputs detect form-filling bots.
 
-    Stateless across requests — the defence reads its config from the
+    Stateless across requests, the defence reads its config from the
     ``RenderContext``/``EvaluateContext`` rather than holding any
     instance state.
     """
@@ -106,7 +106,7 @@ class HoneypotDefence:
         # key is just for de-duplication when multiple defences
         # contribute to the same form.
         html = "".join(_render_field(n) for n in names)
-        return {"_waf_honeypot": mark_safe(html)}  # noqa: S308 — constant template, escaped name
+        return {"_waf_honeypot": mark_safe(html)}  # noqa: S308, constant template, escaped name
 
     def evaluate(self, ctx: EvaluateContext) -> Outcome:
         from django_waf import conf
@@ -119,7 +119,7 @@ class HoneypotDefence:
             if value:
                 # Any non-empty value is a hard block. Use the field
                 # name in the reason so logs distinguish 'bot filled
-                # url' from 'bot filled email_confirm' — operators
+                # url' from 'bot filled email_confirm', operators
                 # tune the pool when they see one consistently.
                 return blocked(f"honeypot:{name}", score=5.0)
 

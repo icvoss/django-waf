@@ -4,7 +4,7 @@ Pairs with the ``{% waf_protect %}`` template tag for forms that
 don't go through Django's Form layer (handwritten HTML). The
 decorator validates POSTs; the tag renders the hidden fields.
 
-The mixin (block 5) handles Django Forms — that's the recommended
+The mixin (block 5) handles Django Forms, that's the recommended
 path. The decorator exists because some sites have hand-rolled HTML
 forms that bypass the Form layer, and they still need protection.
 
@@ -67,10 +67,10 @@ def waf_protect_post(
     2. On each POST, runs ``protection.evaluate(request, request.POST)``
        before the view sees the request.
     3. On BLOCKED, returns 403 with the generic message (enumeration
-       safety — no defence name in the response).
+       safety, no defence name in the response).
     4. On PASSED, calls the view, then consumes the token marker.
     5. On FLAGGED, calls the view. The challenge-redirect flow lands
-       in block 7; until then, FLAGGED views run normally — operators
+       in block 7; until then, FLAGGED views run normally, operators
        see the verdict in logs and can act on it themselves.
     6. GET requests pass through untouched (defences only run on
        POST; render happens via the template tag).
@@ -111,7 +111,7 @@ def _handle_post(request, view_func, args, kwargs, form_id, protection):
     Extracted from the wrapper so the GET-replay path can reuse it
     without duplicating the verdict logic.
     """
-    # Scalarise via ``scalarise_submitted_data`` — see protection.py
+    # Scalarise via ``scalarise_submitted_data``, see protection.py
     # for the rationale. ``dict(request.POST)`` would produce list
     # values that crash the defence chain.
     from django_waf.forms.protection import scalarise_submitted_data
@@ -121,7 +121,7 @@ def _handle_post(request, view_func, args, kwargs, form_id, protection):
         submitted_data=scalarise_submitted_data(request.POST),
     )
 
-    # Structured log — happens regardless of verdict so logs
+    # Structured log, happens regardless of verdict so logs
     # always reflect the chain's verdict.
     log_form_submission(form_id=form_id, request=request, result=result)
 
@@ -199,7 +199,7 @@ def _try_replay(request, *, form_id: str):
     request.POST = qd
     request.method = "POST"
 
-    # One-shot — discard so a replay can't be reused.
+    # One-shot, discard so a replay can't be reused.
     discard_from_session(request, session_key=payload["session_key"])
     return request
 
@@ -241,13 +241,13 @@ def _maybe_redirect_to_challenge(*, request, form_id: str, result):
     )
     if session_key is None:
         # Session storage unavailable. Fall back to letting the view
-        # handle FLAGGED — operators see the verdict in the log.
+        # handle FLAGGED, operators see the verdict in the log.
         logger.info("django-waf: session storage unavailable for form replay; falling back")
         return None
 
     replay_token = issue_replay_token(form_id=form_id, ip=ip, session_key=session_key)
 
-    # Use the existing WAF challenge URL — honour DJANGO_WAF_CHALLENGE_URL
+    # Use the existing WAF challenge URL, honour DJANGO_WAF_CHALLENGE_URL
     # override for django-hosts setups (same shape as middleware /
     # ChallengeView from v0.10.5/v0.10.6).
     challenge_path = conf.DJANGO_WAF_CHALLENGE_URL or reverse("django_waf:challenge")

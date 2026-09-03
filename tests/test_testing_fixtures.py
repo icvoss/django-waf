@@ -1,7 +1,7 @@
 """Tests for the pytest fixtures and helpers in django_waf.testing.
 
 Each fixture/helper gets a focused test verifying it does what its name
-says. These are consumed by projects via ``django_waf.testing`` — the
+says. These are consumed by projects via ``django_waf.testing``, the
 tests here double as usage examples.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from django.utils import timezone
 
-from django_waf.testing.fixtures import (  # noqa: F401 — re-exported as pytest fixtures
+from django_waf.testing.fixtures import (  # noqa: F401, re-exported as pytest fixtures
     allow_rule,
     block_rule,
     challenge_token,

@@ -30,7 +30,7 @@ from django_waf.forms.services.tokens import get_signing_key
 logger = logging.getLogger("django_waf.forms")
 
 
-# Replay token lifetime — much shorter than the form-token TTL
+# Replay token lifetime, much shorter than the form-token TTL
 # because the only legitimate use is 'user solves challenge within
 # 60s and gets routed back'. Longer would widen the replay window
 # for an attacker who steals the token from a flagged response.
@@ -40,10 +40,10 @@ _REPLAY_TTL_SECONDS = 60
 _SESSION_KEY = "waf_form_replay"
 
 # Field names matching any of these patterns are stripped before
-# storage. Conservative — better to require a re-entry than to
+# storage. Conservative, better to require a re-entry than to
 # round-trip a password through session storage.
 # Matches password / passwd, secret, token, api_key, csrf, anywhere in the
-# field name with reasonable boundary handling — so password1/password2
+# field name with reasonable boundary handling, so password1/password2
 # (Django's confirm-password convention), user_password, csrfmiddlewaretoken
 # all hit.
 _SENSITIVE_FIELD_RE = re.compile(
@@ -165,7 +165,7 @@ def store_in_session(request, *, form_id: str, post_url: str, data: dict[str, An
         "data": filter_sensitive_fields(data),
         "stored_at": int(time.time()),
     }
-    # Cap session bloat — keep at most 5 outstanding replays per session.
+    # Cap session bloat, keep at most 5 outstanding replays per session.
     if len(stash) > 5:
         oldest = sorted(stash.items(), key=lambda kv: kv[1].get("stored_at", 0))
         for old_key, _ in oldest[:-5]:
@@ -186,7 +186,7 @@ def fetch_from_session(request, *, session_key: str) -> dict[str, Any] | None:
     record = stash.get(session_key)
     if record is None:
         return None
-    # Optional age check — the replay token has its own expiry, but
+    # Optional age check, the replay token has its own expiry, but
     # double-check here in case storage outlived it.
     if int(time.time()) - record.get("stored_at", 0) > _REPLAY_TTL_SECONDS + 60:
         return None

@@ -8,9 +8,9 @@ in bits, so the default of 4 became unsolvable).
 Difficulty here is counted in **leading zero bits** of the SHA-256 digest.
 Expected attempts is ``2 ** difficulty``. Thresholds:
 
-* ``> 28`` (~268M hashes, > 60s on most laptops) — Error.
-* ``> 24`` (~16M hashes, ~5–20s on phones) — Warning.
-* ``< 8``  (256 hashes, no real bot deterrence) — Warning.
+* ``> 28`` (~268M hashes, > 60s on most laptops): Error.
+* ``> 24`` (~16M hashes, ~5 to 20s on phones): Warning.
+* ``< 8``  (256 hashes, no real bot deterrence): Warning.
 
 Silent when the WAF is disabled (``DJANGO_WAF_ENABLED = False``, #95): the
 challenge flow this check protects never runs when the master switch is
@@ -26,7 +26,7 @@ off.
 The feed-URL scheme check (``django_waf.W005``) warns when the threat feed
 is enabled but its URL is not ``https://``. The feed drives BlockRule
 creation; fetching it over plaintext lets a network attacker inject or
-suppress rules in transit. Scheme validation only — the check never issues
+suppress rules in transit. Scheme validation only, the check never issues
 a live HTTP request.
 
 The middleware-ordering check (``django_waf.W004``) warns when
@@ -266,7 +266,7 @@ def check_challenge_difficulty(app_configs, **kwargs):
         return []
 
     messages = []
-    # (name, value, allow_none) — desktop/mobile may be None to fall through
+    # (name, value, allow_none), desktop/mobile may be None to fall through
     # to the single-value DJANGO_WAF_CHALLENGE_DIFFICULTY.
     fields = (
         ("DJANGO_WAF_CHALLENGE_DIFFICULTY", conf.DJANGO_WAF_CHALLENGE_DIFFICULTY, False),
@@ -309,7 +309,7 @@ def check_challenge_difficulty(app_configs, **kwargs):
             messages.append(
                 Warning(
                     f"{name}={value} (~{2**value} hashes) offers little bot "
-                    "deterrence — the PoW is effectively instant.",
+                    "deterrence, the PoW is effectively instant.",
                     hint="Raise to 18+ for meaningful proof-of-work cost.",
                     id="django_waf.W002",
                 )
@@ -323,8 +323,8 @@ def check_signing_key(app_configs, **kwargs):
     """Warn when ``DJANGO_WAF_SIGNING_KEY`` is unset and the package falls back
     to a ``SECRET_KEY``-derived value, unless the WAF is disabled (#95).
 
-    Falling back is supported — it's how v0.10.x → v0.11.0 upgrades stay
-    seamless — but tying WAF signatures to ``SECRET_KEY`` means rotating
+    Falling back is supported, it's how v0.10.x → v0.11.0 upgrades stay
+    seamless, but tying WAF signatures to ``SECRET_KEY`` means rotating
     one forces rotating the other and logs every user out. The W003
     warning nudges operators toward an explicit dedicated key.
     """
@@ -339,7 +339,7 @@ def check_signing_key(app_configs, **kwargs):
     if not conf.DJANGO_WAF_SIGNING_KEY:
         return [
             Warning(
-                "DJANGO_WAF_SIGNING_KEY is not set — falling back to a SECRET_KEY-derived signing key for WAF tokens.",
+                "DJANGO_WAF_SIGNING_KEY is not set, falling back to a SECRET_KEY-derived signing key for WAF tokens.",
                 hint=(
                     'Generate a dedicated key with `python -c "import '
                     'secrets; print(secrets.token_urlsafe(64))"` and set '
@@ -375,7 +375,7 @@ def check_feed_url_scheme(app_configs, **kwargs):
     return [
         Warning(
             f"DJANGO_WAF_FEED_URL is not HTTPS ({url!r}) while "
-            "DJANGO_WAF_FEED_ENABLED is True — feed rules would be fetched "
+            "DJANGO_WAF_FEED_ENABLED is True, feed rules would be fetched "
             "over an untrusted channel.",
             hint=(
                 "Use an https:// feed URL so an on-path attacker cannot "
@@ -448,7 +448,7 @@ def check_middleware_ordering(app_configs, **kwargs):
             Warning(
                 "django_waf.middleware.WafMiddleware runs before "
                 "django.contrib.auth.middleware.AuthenticationMiddleware "
-                "(or AuthenticationMiddleware is missing) — request.user is "
+                "(or AuthenticationMiddleware is missing), request.user is "
                 "not available when the WAF evaluates the request, so the "
                 "staff bypass silently fails and staff/superuser accounts "
                 "can be blocked or challenged like anonymous traffic.",
@@ -699,7 +699,7 @@ def check_site_password_configured(app_configs, **kwargs):
     return [
         Error(
             "DJANGO_WAF_SITE_PASSWORD_ENABLED is True but "
-            "DJANGO_WAF_SITE_PASSWORD is empty — the site-password gate "
+            "DJANGO_WAF_SITE_PASSWORD is empty, the site-password gate "
             "will fail closed and deny every non-exempt request.",
             hint=(
                 "Set DJANGO_WAF_SITE_PASSWORD to a non-empty value (load it "
