@@ -101,6 +101,16 @@ def parse_access_log(log_path: str | None = None) -> dict:
     the stored offset is treated as invalid and reset to 0 rather than
     silently skipping the file's live tail forever.
 
+    A line whose IP address does not pass the same validation
+    ``RequestLog.ip_address`` (``GenericIPAddressField``) would apply at
+    write time, or whose status code exceeds the ``response_code`` column's
+    smallint range, is skipped (counted in ``skipped_lines``) rather than
+    included in the batch (#72). Access logs are attacker-influenced input,
+    so a malformed value in either position is an expected condition: before
+    this validation, one bad IP raised ``ValueError`` from Django's own
+    field validation inside ``bulk_create``, escaped the ``except OSError``
+    below, and discarded the whole batch, including every well-formed row.
+
     Args:
         log_path: Override path. Defaults to DJANGO_WAF_ACCESS_LOG_PATH.
 
@@ -112,6 +122,8 @@ def parse_access_log(log_path: str | None = None) -> dict:
     import os
 
     from django.core.cache import cache
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    from django.core.validators import validate_ipv46_address
 
     from django_waf import conf
     from django_waf.enums import RequestLogSource
@@ -151,6 +163,7 @@ def parse_access_log(log_path: str | None = None) -> dict:
         stored_offset = 0
 
     parsed_lines = created_records = skipped_lines = 0
+    skipped_ip_lines = 0
 
     # Combined log format pattern:
     # IP - - [timestamp] "METHOD /path HTTP/x.x" status size "referer" "ua"
@@ -158,6 +171,13 @@ def parse_access_log(log_path: str | None = None) -> dict:
         r'^(\S+)\s+-\s+-\s+\[([^\]]+)\]\s+"(\S+)\s+(\S+)\s+\S+"\s+(\d+)\s+\S+'
         r'(?:\s+"[^"]*"\s+"([^"]*)")?'
     )
+
+    # response_code is a PositiveSmallIntegerField (SQL smallint), max 32767
+    # across every backend Django supports. The regex only guarantees the
+    # matched group is digits, not that it fits the column, so a corrupted
+    # or crafted line with an oversized status code is validated the same
+    # way as the IP address below rather than reaching bulk_create.
+    _MAX_SMALLINT = 32767
 
     records_to_create = []
 
@@ -192,6 +212,27 @@ def parse_access_log(log_path: str | None = None) -> dict:
                 status_code = int(match.group(5))
                 user_agent = (match.group(6) or "")[:1024]
 
+                # Access logs are attacker-influenced input, so a malformed
+                # value in the IP position is an expected condition, not an
+                # exceptional one (#72). validate_ipv46_address is the exact
+                # validator RequestLog.ip_address (GenericIPAddressField,
+                # protocol="both") runs at full_clean() time, so "valid"
+                # here means precisely what the field will accept at write
+                # time; previously nothing validated this before
+                # bulk_create, so one malformed IP raised ValueError from
+                # Django's own field validation deep inside bulk_create and
+                # discarded the whole batch, including every well-formed row.
+                try:
+                    validate_ipv46_address(ip_address)
+                except DjangoValidationError:
+                    skipped_lines += 1
+                    skipped_ip_lines += 1
+                    continue
+
+                if status_code > _MAX_SMALLINT:
+                    skipped_lines += 1
+                    continue
+
                 log_timestamp = _parse_nginx_timestamp(timestamp_str)
                 event_id = _build_source_event_id(ip_address, timestamp_str, method, path_str, status_code)
 
@@ -216,6 +257,17 @@ def parse_access_log(log_path: str | None = None) -> dict:
             created_records = len(records_to_create)
 
         cache.set(offset_key, new_offset, timeout=None)
+
+        if skipped_ip_lines:
+            # One summarising line rather than one per bad line: a burst of
+            # malformed IPs (a proxy misconfiguration, a crafted header) is
+            # exactly the condition this validation exists to survive, so
+            # logging per-line at WARNING would itself flood production.
+            logger.warning(
+                "django-waf: skipped %d access log line(s) with a malformed IP address (path=%s)",
+                skipped_ip_lines,
+                path,
+            )
 
     except OSError as exc:
         logger.error("django-waf: error reading access log %s: %s", path, exc)

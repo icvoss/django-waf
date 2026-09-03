@@ -5,6 +5,31 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **A malformed IP in the nginx access log no longer aborts the whole
+  `parse_access_log` batch** (#72). The parse loop took `ip_address` straight
+  from the regex match with no validation; the first `ValueError` Django's
+  own `GenericIPAddressField` validation raised, from deep inside
+  `bulk_create`, escaped the surrounding `except OSError` and discarded the
+  entire batch, including every well-formed row. Observed in production at
+  a consuming application: 54 Bugsnag events. Access logs are
+  attacker-influenced input, so a malformed value in the IP position is an
+  expected condition, not an exceptional one.
+
+  The loop now validates each IP with `django.core.validators.validate_ipv46_address`,
+  the exact validator `RequestLog.ip_address` (`GenericIPAddressField`,
+  `protocol="both"`) runs at write time, and skips the row (counted in the
+  existing `skipped_lines`) rather than including it in the batch. The
+  status code is checked the same way against the `response_code` column's
+  smallint range, since the regex only guarantees digits, not that the
+  value fits the column, and an out-of-range value is the same
+  batch-abort failure mode. A single summarising `WARNING` log line reports
+  how many lines were skipped for a malformed IP, rather than one line per
+  bad row.
+
 ## [2.5.0] - 2026-09-03
 
 ### Added

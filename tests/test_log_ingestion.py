@@ -244,3 +244,125 @@ class TestDetectorSourceAwareness:
         rules = detect_unsolved_challenges(window_minutes=10, min_challenged=3)
 
         assert rules == []
+
+
+# ---------------------------------------------------------------------------
+# malformed IP does not abort the batch (#72)
+# ---------------------------------------------------------------------------
+
+
+class TestMalformedIPDoesNotAbortBatch:
+    @pytest.mark.django_db
+    def test_one_malformed_ip_is_skipped_and_good_rows_still_persist(self):
+        """A malformed IP is skipped; every well-formed row in the same batch still persists.
+
+        This is the key regression test for #72. Against the unfixed code,
+        the malformed IP on the middle line reaches
+        RequestLog.objects.bulk_create unvalidated. Django's own
+        GenericIPAddressField validation raises ValueError from inside
+        bulk_create; nothing in this task catches ValueError (only OSError
+        is caught), so it propagates out of parse_access_log entirely, and
+        the whole batch, including the two well-formed rows either side of
+        the bad one, is lost. Fixed, the malformed line is validated and
+        skipped before being appended to records_to_create, so the task
+        does not raise and the two good rows are created.
+        """
+        log_content = (
+            '1.2.3.4 - - [07/Apr/2026:10:00:00 +0000] "GET /a/ HTTP/1.1" 200 10 "-" "ua"\n'
+            '999.999.999.999 - - [07/Apr/2026:10:00:01 +0000] "GET /bad/ HTTP/1.1" 200 10 "-" "ua"\n'
+            '5.6.7.8 - - [07/Apr/2026:10:00:02 +0000] "GET /b/ HTTP/1.1" 200 10 "-" "ua"\n'
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as fh:
+            fh.write(log_content)
+            log_path = fh.name
+
+        from django_waf.models import RequestLog
+        from django_waf.tasks import parse_access_log
+
+        # Must not raise. This is the actual defect (#72): a ValueError from
+        # Django's field validation escaping the task entirely.
+        result = parse_access_log(log_path=log_path)
+
+        assert result["parsed_lines"] == 3
+        assert result["created_records"] == 2
+        assert result["skipped_lines"] == 1
+
+        assert RequestLog.objects.count() == 2
+        assert RequestLog.objects.filter(path="/a/").exists()
+        assert RequestLog.objects.filter(path="/b/").exists()
+        assert not RequestLog.objects.filter(path="/bad/").exists()
+
+    @pytest.mark.django_db
+    def test_malformed_ip_summary_logged_once_not_per_line(self, caplog):
+        """Skipped malformed IPs are reported as one summarising WARNING, not one per line."""
+        import logging
+
+        log_content = (
+            '999.999.999.999 - - [07/Apr/2026:10:00:00 +0000] "GET /x/ HTTP/1.1" 200 10 "-" "ua"\n'
+            'also-not-an-ip - - [07/Apr/2026:10:00:01 +0000] "GET /y/ HTTP/1.1" 200 10 "-" "ua"\n'
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as fh:
+            fh.write(log_content)
+            log_path = fh.name
+
+        from django_waf.tasks import parse_access_log
+
+        with caplog.at_level(logging.WARNING, logger="django_waf.tasks"):
+            result = parse_access_log(log_path=log_path)
+
+        assert result["skipped_lines"] == 2
+        malformed_ip_lines = [r for r in caplog.records if "malformed ip" in r.message.lower()]
+        assert len(malformed_ip_lines) == 1
+        assert "2" in malformed_ip_lines[0].message
+
+    @pytest.mark.django_db
+    def test_all_good_rows_batch_is_unaffected(self):
+        """A batch of entirely well-formed rows behaves exactly as before, no regression."""
+        log_content = (
+            '1.2.3.4 - - [07/Apr/2026:10:00:00 +0000] "GET /a/ HTTP/1.1" 200 10 "-" "ua"\n'
+            '5.6.7.8 - - [07/Apr/2026:10:00:01 +0000] "GET /b/ HTTP/1.1" 200 10 "-" "ua"\n'
+            '::1 - - [07/Apr/2026:10:00:02 +0000] "GET /c/ HTTP/1.1" 200 10 "-" "ua"\n'
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as fh:
+            fh.write(log_content)
+            log_path = fh.name
+
+        from django_waf.models import RequestLog
+        from django_waf.tasks import parse_access_log
+
+        result = parse_access_log(log_path=log_path)
+
+        assert result["parsed_lines"] == 3
+        assert result["created_records"] == 3
+        assert result["skipped_lines"] == 0
+        assert RequestLog.objects.count() == 3
+
+    @pytest.mark.django_db
+    def test_out_of_range_status_code_is_skipped_not_abort_the_batch(self):
+        """A status code outside the response_code column's smallint range is skipped, not fatal.
+
+        response_code is a PositiveSmallIntegerField (SQL smallint, max
+        32767). The regex only guarantees the matched group is digits, not
+        that it fits the column, so a corrupted or crafted line with an
+        oversized status code is the same batch-abort failure mode as the
+        malformed-IP case, and is validated the same way.
+        """
+        log_content = (
+            '1.2.3.4 - - [07/Apr/2026:10:00:00 +0000] "GET /a/ HTTP/1.1" 999999 10 "-" "ua"\n'
+            '5.6.7.8 - - [07/Apr/2026:10:00:01 +0000] "GET /b/ HTTP/1.1" 200 10 "-" "ua"\n'
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as fh:
+            fh.write(log_content)
+            log_path = fh.name
+
+        from django_waf.models import RequestLog
+        from django_waf.tasks import parse_access_log
+
+        result = parse_access_log(log_path=log_path)
+
+        assert result["parsed_lines"] == 2
+        assert result["created_records"] == 1
+        assert result["skipped_lines"] == 1
+        assert RequestLog.objects.count() == 1
+        assert RequestLog.objects.filter(path="/b/").exists()
+        assert not RequestLog.objects.filter(path="/a/").exists()
