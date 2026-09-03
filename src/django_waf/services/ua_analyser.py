@@ -13,7 +13,9 @@ import re
 # Pre-compiled regex patterns (module-level for performance — BR-UA-004)
 # ---------------------------------------------------------------------------
 
-# Known scraper / HTTP library strings (weight 2.5)
+# Known scraper / HTTP library strings. Used by classify_ua only (weight
+# 2.5 for this pattern was removed from score_user_agent, see the comment
+# on that function).
 _RE_SCRAPER_LIBS = re.compile(
     r"(python-requests|Go-http-client|libwww-perl|Wget/|curl/|"
     r"urllib|[Ss]crapy|mechanize|aiohttp|httpx/)",
@@ -91,9 +93,21 @@ def score_user_agent(user_agent: str) -> float:
     if _RE_ANCIENT_BROWSER.search(user_agent):
         score += 2.0
 
-    # Weight 2.5 — known scraper library string
-    if _RE_SCRAPER_LIBS.search(user_agent):
-        score += 2.5
+    # No weight for _RE_SCRAPER_LIBS here, deliberately. It used to add
+    # 2.5 for a UA honestly declaring itself an automated client (curl,
+    # python-requests, Go-http-client, and so on). Measured in production
+    # (issue #82): 12,053 requests penalised this way came from 22 distinct
+    # IPs in a single /24, an honest UA attached to a scanner, so honesty
+    # was never a signal of good behaviour there. It also inverted the
+    # incentive the WAF wants: it made silence, not disclosure, the safer
+    # choice. Removing the penalty does not reward honesty either, that
+    # would be a score reduction, exploitable by any scanner willing to
+    # send curl in its UA, it only stops punishing it. Every behavioural
+    # signal (volume gating, path scoring, subnet, rate limiting,
+    # fingerprint mismatch) is unchanged and still applies at full weight;
+    # a short or malformed UA still scores via the checks below regardless
+    # of whether it also matches a library string. Do not reintroduce this
+    # weight without a fresh measurement justifying it, see issue #82.
 
     # Weight 1.5 — missing or anomalous version format
     # Real UAs always contain at least one "Token/version" component.

@@ -117,6 +117,18 @@ def score_fingerprint_mismatch(user_agent: str, meta: dict) -> float:
 def classify_fingerprint(user_agent: str, meta: dict) -> str:
     """Classify a request as 'browser', 'bot', or 'suspicious' based on fingerprint.
 
+    Every check in ``score_fingerprint_mismatch`` is gated on the UA
+    claiming to be a browser (matching ``_CHROMIUM_UA_RE`` or
+    ``_SEC_FETCH_BROWSERS_RE``), so a UA that makes no such claim always
+    scores 0.0 here regardless of how consistent or inconsistent its
+    headers actually are. Falling through to 'browser' for that case would
+    label an honest library or crawler UA a browser purely because nothing
+    contradicted a claim it never made (issue #82: this recorded
+    ``curl/7.68.0`` as ``fingerprint_verdict='browser'`` in RequestLog,
+    which is wrong on its face). 'unknown' is the honest label: the
+    fingerprint mechanism has no signal to offer either way for a client
+    that does not claim to be a browser.
+
     Args:
         user_agent: The User-Agent header value.
         meta: Django ``request.META`` dict.
@@ -130,7 +142,11 @@ def classify_fingerprint(user_agent: str, meta: dict) -> str:
         return "bot"
     if mismatch >= 1.5:
         return "suspicious"
-    if mismatch == 0.0 and not user_agent:
+    if not user_agent:
+        return "unknown"
+    if not (_CHROMIUM_UA_RE.search(user_agent) or _SEC_FETCH_BROWSERS_RE.search(user_agent)):
+        # No browser claim made, so no fingerprint signal is possible
+        # (mismatch is always 0.0 here by construction, see above).
         return "unknown"
     return "browser"
 
