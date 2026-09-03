@@ -611,8 +611,21 @@ def _DJANGO_WAF_CLOUD_SPRAY_UA_RULE() -> bool:
     return _get_setting("DJANGO_WAF_CLOUD_SPRAY_UA_RULE", False)
 
 
-# Per-path rate limits: {path_prefix: (max_requests, window_seconds)}.
-# Longest-prefix match wins; checked before the global IP windows.
+# Per-path rate limits: {path_prefix: (max_requests, window_seconds)} or,
+# from BR-RATE-004, {path_prefix: (max_requests, window_seconds, methods)}
+# where methods is an iterable of HTTP method strings (e.g. ("POST",)) that
+# scopes the entry to only those methods. The two-item form is unchanged and
+# still limits every method, exactly as every prior release did; the
+# three-item form is opt-in per entry.
+#
+# Longest-prefix match wins, checked before the global IP windows, with one
+# refinement for method scoping: if the longest matching prefix carries a
+# method scope that excludes this request's method, evaluation falls through
+# to the next-longest matching prefix rather than stopping. See
+# ``django_waf.services.rate_limiter._check_path_rate_limit`` for the
+# resolution algorithm and why fall-through, not stop, is the chosen
+# behaviour. Validated at boot by ``django_waf.checks.check_rate_limit_paths``
+# (``django_waf.E009``).
 def _DJANGO_WAF_RATE_LIMIT_PATHS() -> dict:
     return _get_setting("DJANGO_WAF_RATE_LIMIT_PATHS", {})
 
@@ -639,10 +652,31 @@ def _DJANGO_WAF_BLOCKED_COUNTRIES() -> list:
 # built-in response and log at ERROR. The WAF never 500s on its own
 # misconfiguration.
 #
-# This is the only dotted-path setting in the package; every other setting
-# resolves to a scalar, list or dict.
+# This and DJANGO_WAF_THROTTLE_RESPONSE_HANDLER below are the only two
+# dotted-path settings in the package; every other setting resolves to a
+# scalar, list or dict.
 def _DJANGO_WAF_BLOCK_RESPONSE_HANDLER() -> str:
     return _get_setting("DJANGO_WAF_BLOCK_RESPONSE_HANDLER", "")
+
+
+# Dotted path to a callable returning the response for a THROTTLED verdict
+# (BR-EVAL-014). Empty (the default) keeps the built-in 429 response with its
+# existing Retry-After logic, byte for byte.
+#
+# Mirrors DJANGO_WAF_BLOCK_RESPONSE_HANDLER exactly: resolved with
+# import_string at call time on each throttled request, not at import time,
+# so override_settings and the pytest settings fixture work; the same three
+# failure classes (unimportable path, handler raises, handler returns a
+# non-HttpResponse) fall back to the built-in response and log at ERROR
+# distinctly. See
+# ``django_waf.middleware.WafMiddleware._build_throttle_response`` for the
+# full contract.
+#
+# Unlike the BLOCKED path, ``result.retry_after`` IS populated here (it is
+# always None on the BLOCKED path); a handler that wants to set its own
+# Retry-After header reads it from ``result.retry_after``.
+def _DJANGO_WAF_THROTTLE_RESPONSE_HANDLER() -> str:
+    return _get_setting("DJANGO_WAF_THROTTLE_RESPONSE_HANDLER", "")
 
 
 # Enable the optional DRF API under waf/api/ (requires the [api] extra).

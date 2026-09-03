@@ -8,6 +8,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.6.0] - 2026-09-03
 ### Added
 
+- **Method-aware `DJANGO_WAF_RATE_LIMIT_PATHS`** (BR-RATE-004).
+  A configured entry can now be `(max_requests, window_seconds, methods)`,
+  where `methods` is an iterable of HTTP method strings such as
+  `("POST",)`, scoping the limit to only those methods. The existing
+  `(max_requests, window_seconds)` shape is completely unchanged and keeps
+  limiting every method, exactly as every prior release did: this is a
+  widely deployed setting, so nothing about it changes silently.
+
+  The need is a URL that serves two very different kinds of traffic: a
+  scan-landing page and its own submit endpoint mounted at the same path
+  (`path("scan/", ScanFormView.as_view())`). A budget meant for submit
+  attempts previously counted ordinary page-view GETs against the same
+  limit, because prefix matching alone cannot say "the POST but not the
+  GET" at one URL. Splitting the route onto two URLs is not always an
+  option, and moving unrelated routes off the shared prefix (the previous
+  workaround) does not fix the shared route itself.
+
+  **Resolution rule, read this before adding a scoped entry.** Prefixes
+  are still tried longest-first, but a prefix that matches the path while
+  its method scope excludes the current request is skipped, and evaluation
+  falls through to the next-longest matching prefix rather than treating
+  the request as having no path limit at all. Concretely: with `"/scan/":
+  (2, 60)` (unscoped) and `"/scan/submit/": (100, 60, ("POST",))`
+  configured together, a GET to `/scan/submit/` is evaluated against the
+  shorter `"/scan/"` entry, not left unlimited. Stopping at the longest
+  match regardless of scope would mean adding one scoped rule for a single
+  route silently turns off rate limiting for every other method at that
+  URL, which is the opposite of what adding a scoped rule is for.
+
+  A malformed entry (wrong tuple length, a non-positive `max_requests` or
+  `window_seconds`, an empty or non-string `methods` collection) is now
+  refused at boot by a new check, `django_waf.E009`, rather than raising
+  deep in the per-request evaluation path the first time a matching
+  request arrived, where it was swallowed by `evaluate_request`'s
+  fail-open wrapper as a generic evaluation error and never reached the
+  operator. Silent when `DJANGO_WAF_ENABLED = False`, matching
+  `django_waf.E001`/`E002`'s gating: rate limiting never runs while the
+  WAF is disabled.
+
+- **A replaceable throttle response** (BR-EVAL-014), mirroring the
+  block-response hook below exactly. `DJANGO_WAF_THROTTLE_RESPONSE_HANDLER`
+  takes a dotted path to a callable `handler(request, result) ->
+  HttpResponse` for a THROTTLED verdict, and the middleware returns
+  whatever it produces, unaltered. Unset (the default), the response is
+  exactly what every prior release returned: a 429 with the body
+  `"Too many requests. Please retry later."` and the existing
+  `Retry-After` logic (the accurate `result.retry_after` value when
+  present, else the fixed `"60"` fallback per #30); the built-in response
+  is now produced by a single named method that both the no-hook path and
+  every fallback path return, so the two cannot drift apart.
+
+  The need is the same fingerprinting problem the block-response hook
+  closes, on the other verdict: an unstyled, hardcoded 429 body rendering
+  on a public page with no supported way to restyle it. Unlike the BLOCKED
+  path, `result.retry_after` **is** populated here, so a handler that
+  wants to set its own `Retry-After` header can read it straight off the
+  result rather than recomputing it.
+
+  Three failure modes fall back to the built-in 429 and log at ERROR,
+  distinguished so you can tell which happened: the path will not import,
+  the handler raises, or it returns something that is not an
+  `HttpResponse`. The path is resolved on each throttled request rather
+  than once at import, so `override_settings` works.
+
+  **If you subclass `WafMiddleware` and override the private
+  `_handle_verdict`, you will not pick this up.** Your override keeps
+  working exactly as before and nothing breaks, but it will not honour the
+  new setting until you either rebase onto the new `_handle_verdict` or
+  call `self._build_throttle_response(request, result)` yourself where you
+  currently build the 429.
+
+  Scope is THROTTLED verdicts only, exactly as the block-response hook is
+  scoped to BLOCKED only: BLOCKED and CHALLENGED keep their own responses.
+
 - **A replaceable block response** (#74, BR-EVAL-012).
   `DJANGO_WAF_BLOCK_RESPONSE_HANDLER` takes a dotted path to a callable
   `handler(request, result) -> HttpResponse`, and the middleware returns

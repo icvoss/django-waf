@@ -408,8 +408,9 @@ def evaluate_request(
             return _gate_challenge_or_escalate(ip_address, redis_client, block_eval_result, fingerprint_verdict)
         return block_eval_result
 
-    # Step 7: Rate limits
-    rate_result = check_rate_limit(ip_address, redis_client, path=path)
+    # Step 7: Rate limits. method threads BR-RATE-004's method scoping
+    # through to DJANGO_WAF_RATE_LIMIT_PATHS entries.
+    rate_result = check_rate_limit(ip_address, redis_client, path=path, method=method)
     if rate_result.exceeded:
         return EvaluationResult(
             verdict=Verdict.THROTTLED,

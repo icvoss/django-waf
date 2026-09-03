@@ -243,6 +243,22 @@ does not raise when actually called: none of that is observable without
 invoking the handler with a real request, which a boot-time check must
 not do. Those three failure modes are caught only at runtime, by the
 fallbacks ``_build_block_response`` already documents.
+
+The rate-limit-paths shape check (``django_waf.E009``) errors
+(BR-RATE-004) when a ``DJANGO_WAF_RATE_LIMIT_PATHS`` entry is malformed:
+not a 2- or 3-item tuple/list, a non-positive ``max_requests`` or
+``window_seconds``, or (for the 3-item, method-scoped form) an empty or
+non-string-only ``methods`` collection. Before this check, a malformed
+entry was never validated at all: ``_check_path_rate_limit`` would raise
+``TypeError`` or ``ValueError`` deep in the per-request evaluation path the
+first time a matching request arrived, which ``evaluate_request``'s
+fail-open wrapper then swallows as a generic evaluation error (BR-EVAL-007)
+rather than surfacing the operator's typo. Gated on
+``DJANGO_WAF_ENABLED = True``, matching ``django_waf.E001``/``E002``
+(``check_challenge_difficulty``): with the WAF disabled, rate limiting
+never runs at all, so a malformed entry behind it is not a live
+misconfiguration, only a latent one that will be caught the moment the WAF
+is switched on and this check runs again.
 """
 
 from __future__ import annotations
@@ -1110,3 +1126,99 @@ def check_block_response_handler_importable(app_configs, **kwargs):
         ]
 
     return []
+
+
+@register()
+def check_rate_limit_paths(app_configs, **kwargs):
+    """Error (``django_waf.E009``) when a ``DJANGO_WAF_RATE_LIMIT_PATHS``
+    entry is malformed (BR-RATE-004).
+
+    A valid entry is ``{prefix: (max_requests, window_seconds)}`` (the
+    original, unscoped form) or ``{prefix: (max_requests, window_seconds,
+    methods)}`` (the method-scoped form). This check validates every entry:
+
+    - the value is a tuple or list of length 2 or 3;
+    - ``max_requests`` is a positive int;
+    - ``window_seconds`` is a positive int;
+    - for a 3-item entry, ``methods`` is a non-empty iterable of non-empty
+      strings (an empty ``methods`` collection would make the entry
+      unreachable by any request, silently disabling it rather than
+      raising, since ``_entry_applies_to_method`` treats "nothing listed"
+      as "nothing matches").
+
+    Gated on ``DJANGO_WAF_ENABLED = True``, matching the challenge-difficulty
+    checks (``django_waf.E001``/``E002``): rate limiting never runs while
+    the WAF is disabled, so a malformed entry behind it is latent, not live.
+    """
+    from django_waf import conf
+
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
+
+    rate_limit_paths = conf.DJANGO_WAF_RATE_LIMIT_PATHS
+    if not rate_limit_paths:
+        return []
+
+    messages = []
+
+    for prefix, entry in rate_limit_paths.items():
+        if not isinstance(entry, (tuple, list)) or len(entry) not in (2, 3):
+            messages.append(
+                Error(
+                    f"DJANGO_WAF_RATE_LIMIT_PATHS[{prefix!r}] = {entry!r} is not a valid entry.",
+                    hint=(
+                        "Each value must be (max_requests, window_seconds) or "
+                        "(max_requests, window_seconds, methods), e.g. "
+                        "(5, 300) or (5, 300, ('POST',))."
+                    ),
+                    id="django_waf.E009",
+                )
+            )
+            continue
+
+        max_requests, window_seconds = entry[0], entry[1]
+        if not isinstance(max_requests, int) or isinstance(max_requests, bool) or max_requests <= 0:
+            messages.append(
+                Error(
+                    f"DJANGO_WAF_RATE_LIMIT_PATHS[{prefix!r}]: max_requests must be a "
+                    f"positive integer (got {max_requests!r}).",
+                    hint="The first tuple item is the request budget for the window.",
+                    id="django_waf.E009",
+                )
+            )
+
+        if not isinstance(window_seconds, int) or isinstance(window_seconds, bool) or window_seconds <= 0:
+            messages.append(
+                Error(
+                    f"DJANGO_WAF_RATE_LIMIT_PATHS[{prefix!r}]: window_seconds must be a "
+                    f"positive integer (got {window_seconds!r}).",
+                    hint="The second tuple item is the sliding window length in seconds.",
+                    id="django_waf.E009",
+                )
+            )
+
+        if len(entry) == 3:
+            methods = entry[2]
+            valid_methods = (
+                hasattr(methods, "__iter__")
+                and not isinstance(methods, (str, bytes))
+                and all(isinstance(m, str) and m for m in methods)
+                and len(list(methods)) > 0
+            )
+            if not valid_methods:
+                messages.append(
+                    Error(
+                        f"DJANGO_WAF_RATE_LIMIT_PATHS[{prefix!r}]: the third tuple item "
+                        f"must be a non-empty iterable of non-empty HTTP method strings "
+                        f"(got {methods!r}).",
+                        hint=(
+                            "For example (5, 300, ('POST',)). An empty methods "
+                            "collection matches no request, silently disabling the "
+                            "entry rather than limiting all methods, use the "
+                            "two-item form (5, 300) for that."
+                        ),
+                        id="django_waf.E009",
+                    )
+                )
+
+    return messages

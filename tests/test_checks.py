@@ -135,6 +135,12 @@ def _run_block_response_handler_check():
     return check_block_response_handler_importable(app_configs=None)
 
 
+def _run_rate_limit_paths_check():
+    from django_waf.checks import check_rate_limit_paths
+
+    return check_rate_limit_paths(app_configs=None)
+
+
 class TestChallengeDifficultyCheck:
     def test_recommended_defaults_produce_no_messages(self):
         import django_waf.conf as conf_mod
@@ -1301,3 +1307,113 @@ class TestManagePyCheckWithUnroutedChallengeUrls:
                 assert "django_waf.E007" in str(exc)
             else:
                 raise AssertionError("expected SystemCheckError from django_waf.E007")
+
+
+class TestRateLimitPathsCheck:
+    """django_waf.E009 (BR-RATE-004): errors when a
+    DJANGO_WAF_RATE_LIMIT_PATHS entry is malformed. Before this check
+    existed, a malformed entry raised deep in the per-request evaluation
+    path the first time a matching request arrived, swallowed by
+    evaluate_request's fail-open wrapper as a generic evaluation error
+    rather than surfaced to the operator.
+    """
+
+    def test_empty_dict_is_silent(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {}):
+            assert _run_rate_limit_paths_check() == []
+
+    def test_valid_two_item_entries_are_silent(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": (10, 60), "/scan/": (5, 300)}):
+            assert _run_rate_limit_paths_check() == []
+
+    def test_valid_three_item_method_scoped_entry_is_silent(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/scan/": (5, 300, ("POST",))}):
+            assert _run_rate_limit_paths_check() == []
+
+    def test_wrong_length_tuple_errors(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": (10,)}):
+            messages = _run_rate_limit_paths_check()
+
+        assert any(m.id == "django_waf.E009" for m in messages)
+
+    def test_non_tuple_value_errors(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": 10}):
+            messages = _run_rate_limit_paths_check()
+
+        assert any(m.id == "django_waf.E009" for m in messages)
+
+    def test_non_positive_max_requests_errors(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": (0, 60)}):
+            messages = _run_rate_limit_paths_check()
+
+        assert any(m.id == "django_waf.E009" for m in messages)
+
+    def test_negative_window_seconds_errors(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": (10, -60)}):
+            messages = _run_rate_limit_paths_check()
+
+        assert any(m.id == "django_waf.E009" for m in messages)
+
+    def test_non_int_max_requests_errors(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": ("ten", 60)}):
+            messages = _run_rate_limit_paths_check()
+
+        assert any(m.id == "django_waf.E009" for m in messages)
+
+    def test_empty_methods_collection_errors(self):
+        """An empty methods collection would silently disable the entry
+        rather than limiting all methods (the two-item form does that);
+        this is a shape error, not a permitted "match nothing"."""
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/scan/": (5, 300, ())}):
+            messages = _run_rate_limit_paths_check()
+
+        assert any(m.id == "django_waf.E009" for m in messages)
+
+    def test_methods_as_a_bare_string_errors(self):
+        """A common mistake: ``"POST"`` iterates as four single-character
+        strings ("P", "O", "S", "T"), not the intended method. Must be
+        rejected rather than silently misinterpreted."""
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/scan/": (5, 300, "POST")}):
+            messages = _run_rate_limit_paths_check()
+
+        assert any(m.id == "django_waf.E009" for m in messages)
+
+    def test_message_names_the_offending_prefix(self):
+        import django_waf.conf as conf_mod
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/broken/": (0, 60)}):
+            messages = _run_rate_limit_paths_check()
+
+        assert any("/broken/" in m.msg for m in messages)
+
+    def test_silent_when_waf_disabled(self):
+        """Rate limiting never runs while the WAF is disabled, so a
+        malformed entry behind it is latent, not a live misconfiguration
+        (mirrors django_waf.E001/E002's own gating)."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", False),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": (0, -60)}),
+        ):
+            assert _run_rate_limit_paths_check() == []

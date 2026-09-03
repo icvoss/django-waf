@@ -529,6 +529,136 @@ class WafMiddleware:
 
         return response
 
+    def _default_throttle_response(self, result) -> HttpResponse:
+        """Return the package's built-in THROTTLED response (BR-RATE-002).
+
+        Kept as a single named source so the hook's fallback path and the
+        no-hook path cannot drift apart: both return this, byte for byte.
+
+        Preserves the existing Retry-After logic unchanged: the accurate
+        ``result.retry_after`` when present, else the fixed ``"60"``
+        fallback (see the comment inline about #30).
+        """
+        response = HttpResponse("Too many requests. Please retry later.", status=429)
+        # hasattr() was always True for the real EvaluationResult NamedTuple
+        # even before it carried a real retry_after value, so this always
+        # sent the fixed fallback (#30). Use the accurate sliding-window
+        # value when present; only fall back to a fixed 60 seconds when the
+        # result genuinely carries none (e.g. a test double or a pre-#30
+        # caller).
+        retry_after = getattr(result, "retry_after", None)
+        response["Retry-After"] = str(retry_after) if retry_after is not None else "60"
+        return response
+
+    def _build_throttle_response(self, request, result) -> HttpResponse:
+        """Return the response for a THROTTLED verdict (BR-EVAL-014).
+
+        With ``DJANGO_WAF_THROTTLE_RESPONSE_HANDLER`` unset (the default)
+        this is exactly what every release before the hook returned: a 429
+        with the body ``"Too many requests. Please retry later."`` and the
+        existing ``Retry-After`` logic, unchanged.
+
+        HANDLER CONTRACT
+
+        ``DJANGO_WAF_THROTTLE_RESPONSE_HANDLER`` is a dotted path to a
+        callable with this signature::
+
+            def handler(request: HttpRequest, result: EvaluationResult) -> HttpResponse
+
+        ``request`` is the live ``HttpRequest``. The handler runs before the
+        view, so nothing downstream has touched it.
+
+        ``result`` is the ``EvaluationResult`` NamedTuple from
+        ``django_waf.services.rule_engine``, carrying ``verdict``,
+        ``action``, ``matched_rule_id``, ``matched_rule_type``,
+        ``anomaly_score`` and ``retry_after``. ``verdict`` is always
+        ``Verdict.THROTTLED`` here, and **unlike the BLOCKED path,
+        ``retry_after`` IS populated** (it is always ``None`` on the BLOCKED
+        path -- see ``_build_block_response``). A handler that wants to set
+        its own ``Retry-After`` header reads it from ``result.retry_after``.
+
+        The return value must be an ``HttpResponse``, of any subclass and
+        any status code. The middleware returns it unaltered.
+
+        The dotted path is resolved with ``import_string`` on each throttled
+        request rather than once at import time, following the package's
+        call-time settings resolution (see ``django_waf.conf``), so
+        ``override_settings`` and the pytest ``settings`` fixture work.
+
+        FAILURE BEHAVIOUR
+
+        A misconfigured WAF must never break a request. That is the same
+        fail-open posture BR-EVAL-007 sets for evaluation. All three
+        failure modes fall back to ``_default_throttle_response(result)`` and
+        log at ERROR, classified distinctly so an operator can tell which
+        one happened:
+
+        1. the dotted path will not import, for any reason: a typo, a moved
+           module, or the handler module's own top-level code raising
+           something that is not an ``ImportError``;
+        2. the handler raises;
+        3. the handler returns something that is not an ``HttpResponse``.
+
+        The request is still throttled in all three cases. Falling back to
+        the built-in 429 is the safe direction: a broken hook must not turn
+        a throttle into a pass.
+
+        SCOPE
+
+        THROTTLED verdicts only. BLOCKED and CHALLENGED keep their own
+        responses (see ``_build_block_response`` and the CHALLENGED branch
+        of ``_handle_verdict``).
+
+        SUBCLASSING WARNING
+
+        If you subclass ``WafMiddleware`` and override the private
+        ``_handle_verdict``, you will not pick this up: your override keeps
+        working exactly as before, but it will not honour this setting until
+        you either rebase onto the new ``_handle_verdict`` or call
+        ``self._build_throttle_response(request, result)`` yourself where you
+        currently build the 429.
+        """
+        from django_waf import conf
+
+        dotted_path = conf.DJANGO_WAF_THROTTLE_RESPONSE_HANDLER
+        if not dotted_path:
+            return self._default_throttle_response(result)
+
+        try:
+            handler = import_string(dotted_path)
+        except Exception:
+            # Deliberately broader than ImportError, mirroring
+            # _build_block_response: importing the handler's module runs
+            # that module's own top-level code, which can raise anything.
+            # None of those may reach the client as a 500 on a request the
+            # WAF is already throttling.
+            logger.exception(
+                "django-waf: DJANGO_WAF_THROTTLE_RESPONSE_HANDLER %r could not be imported. "
+                "Falling back to the built-in throttle response.",
+                dotted_path,
+            )
+            return self._default_throttle_response(result)
+
+        try:
+            response = handler(request, result)
+        except Exception:
+            logger.exception(
+                "django-waf: throttle response handler %r raised. Falling back to the built-in throttle response.",
+                dotted_path,
+            )
+            return self._default_throttle_response(result)
+
+        if not isinstance(response, HttpResponse):
+            logger.error(
+                "django-waf: throttle response handler %r returned %s, not an HttpResponse. "
+                "Falling back to the built-in throttle response.",
+                dotted_path,
+                type(response).__name__,
+            )
+            return self._default_throttle_response(result)
+
+        return response
+
     def _handle_verdict(self, request, result, ip_address, user_agent, path, redis_client):
         from django_waf.enums import Verdict
 
@@ -553,16 +683,7 @@ class WafMiddleware:
 
         if verdict == Verdict.THROTTLED:
             _emit_request_throttled(result, ip_address)
-            response = HttpResponse("Too many requests. Please retry later.", status=429)
-            # hasattr() was always True for the real EvaluationResult
-            # NamedTuple even before it carried a real retry_after value, so
-            # this always sent the fixed fallback (#30). Use the accurate
-            # sliding-window value when present; only fall back to a fixed
-            # 60 seconds when the result genuinely carries none (e.g. a
-            # test double or a pre-#30 caller).
-            retry_after = getattr(result, "retry_after", None)
-            response["Retry-After"] = str(retry_after) if retry_after is not None else "60"
-            return response
+            return self._build_throttle_response(request, result)
 
         if verdict == Verdict.CHALLENGED:
             try:

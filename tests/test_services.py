@@ -486,6 +486,163 @@ class TestCheckRateLimitPerPath:
 
 
 # ---------------------------------------------------------------------------
+# check_rate_limit, method-scoped per-path limits (BR-RATE-004)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckRateLimitMethodScoping:
+    """Tests for the three-item, method-scoped form of
+    DJANGO_WAF_RATE_LIMIT_PATHS: {prefix: (max_requests, window_seconds,
+    methods)}.
+    """
+
+    def test_two_item_entry_still_limits_every_method_unchanged(self):
+        """The pre-existing two-item form must keep limiting every method,
+        exactly as every prior release did: no silent behaviour change for
+        a widely deployed setting."""
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(11)  # over the limit of 10
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", {"/api/": (10, 60)}):
+            get_result = check_rate_limit("1.2.3.4", redis, path="/api/widgets/", method="GET")
+            post_result = check_rate_limit("1.2.3.4", redis, path="/api/widgets/", method="POST")
+            no_method_result = check_rate_limit("1.2.3.4", redis, path="/api/widgets/")
+
+        assert get_result.exceeded is True
+        assert post_result.exceeded is True
+        assert no_method_result.exceeded is True
+
+    def test_scoped_entry_limits_only_the_named_method(self):
+        """A three-item entry scoped to POST must not throttle a GET at the
+        same prefix."""
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(11)  # would breach if checked
+
+        rate_limit_paths = {"/scan/": (5, 300, ("POST",))}
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", rate_limit_paths),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 1000),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 1000),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 1000),
+        ):
+            get_result = check_rate_limit("1.2.3.4", redis, path="/scan/", method="GET")
+
+        # The GET never matched the scoped entry, so no path-level breach;
+        # falls through to the (deliberately generous) global windows.
+        assert get_result.exceeded is False
+
+    def test_scoped_entry_limits_the_named_method(self):
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(6)  # over the limit of 5
+
+        rate_limit_paths = {"/scan/": (5, 300, ("POST",))}
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", rate_limit_paths):
+            post_result = check_rate_limit("1.2.3.4", redis, path="/scan/", method="POST")
+
+        assert post_result.exceeded is True
+        assert post_result.window == "path"
+
+    def test_method_matching_is_case_insensitive(self):
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(6)
+
+        rate_limit_paths = {"/scan/": (5, 300, ("post",))}
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", rate_limit_paths):
+            result = check_rate_limit("1.2.3.4", redis, path="/scan/", method="POST")
+
+        assert result.exceeded is True
+
+    def test_no_method_supplied_does_not_match_a_scoped_entry(self):
+        """A caller with no method to offer (empty string, the default)
+        cannot match a method-scoped entry: matching would mean guessing
+        which method was meant."""
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(11)
+
+        rate_limit_paths = {"/scan/": (5, 300, ("POST",))}
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", rate_limit_paths),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 1000),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 1000),
+            patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_5MIN", 1000),
+        ):
+            result = check_rate_limit("1.2.3.4", redis, path="/scan/")
+
+        assert result.exceeded is False
+
+    def test_longer_scoped_prefix_falls_through_to_shorter_unscoped_prefix(self):
+        """Pins the resolution rule: a longer prefix that matches the path
+        but is method-scoped away for this request falls through to a
+        shorter, unscoped prefix rather than the request seeing no path
+        limit at all.
+        """
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(3)  # over the shorter limit of 2
+
+        rate_limit_paths = {
+            "/scan/": (2, 60),  # shorter, unscoped: covers every method
+            "/scan/submit/": (100, 60, ("POST",)),  # longer, scoped to POST only
+        }
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", rate_limit_paths):
+            get_result = check_rate_limit("1.2.3.4", redis, path="/scan/submit/", method="GET")
+
+        # The longer prefix matched the path but not the method, so
+        # evaluation fell through to the shorter, unscoped prefix, whose
+        # limit of 2 is breached by the mocked count of 3.
+        assert get_result.exceeded is True
+        assert get_result.window == "path"
+
+        import hashlib
+
+        expected_hash = hashlib.sha1(b"/scan/").hexdigest()[:12]
+        zadd_calls = redis.pipeline.return_value.zadd.call_args_list
+        used_keys = {c.args[0] for c in zadd_calls}
+        assert f"waf:rate:1.2.3.4:path:{expected_hash}" in used_keys
+
+    def test_longer_scoped_prefix_wins_when_method_matches(self):
+        """The same configuration as above, but with the method the longer
+        prefix scopes to: the longer, more specific prefix wins as usual."""
+        import django_waf.conf as conf_mod
+
+        redis = _make_redis()
+        redis.pipeline.return_value = _make_pipeline_mock(101)  # over the longer limit of 100
+
+        rate_limit_paths = {
+            "/scan/": (2, 60),
+            "/scan/submit/": (100, 60, ("POST",)),
+        }
+
+        with patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PATHS", rate_limit_paths):
+            post_result = check_rate_limit("1.2.3.4", redis, path="/scan/submit/", method="POST")
+
+        assert post_result.exceeded is True
+
+        import hashlib
+
+        expected_hash = hashlib.sha1(b"/scan/submit/").hexdigest()[:12]
+        zadd_calls = redis.pipeline.return_value.zadd.call_args_list
+        used_keys = {c.args[0] for c in zadd_calls}
+        assert f"waf:rate:1.2.3.4:path:{expected_hash}" in used_keys
+
+
+# ---------------------------------------------------------------------------
 # load_rule_cache
 # ---------------------------------------------------------------------------
 

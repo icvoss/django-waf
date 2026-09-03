@@ -56,18 +56,60 @@ def _retry_after_from_oldest(oldest_in_window: list, window_seconds: int, now: f
     return max(1, retry_after)
 
 
+def _entry_applies_to_method(entry: tuple, method: str) -> bool:
+    """Return whether a ``DJANGO_WAF_RATE_LIMIT_PATHS`` entry covers ``method``.
+
+    ``entry`` is the configured tuple for a matched prefix: either
+    ``(max_requests, window_seconds)`` (BR-RATE-001, unscoped, applies to
+    every method, unchanged since the setting's introduction) or
+    ``(max_requests, window_seconds, methods)`` (BR-RATE-004, opt-in
+    method scoping). A two-item entry always applies. A three-item entry
+    applies only when ``method`` (already upper-cased by the caller) is a
+    member of its ``methods`` collection, compared case-insensitively
+    against each configured value.
+
+    ``method`` may be the empty string when the caller has no method to
+    offer (a pre-existing call site not yet passing one through); an
+    unscoped two-item entry still applies in that case, but a three-item
+    scoped entry never matches an unknown method, since matching would mean
+    guessing which method the caller meant.
+    """
+    if len(entry) == 2:
+        return True
+    _max_requests, _window_seconds, methods = entry
+    if not method:
+        return False
+    return method in {m.upper() for m in methods}
+
+
 def _check_path_rate_limit(
     ip_address: str,
     path: str,
     redis_client,
     now: float,
+    method: str = "",
 ) -> RateLimitResult | None:
-    """Check the per-path rate limit for the longest matching configured prefix.
+    """Check the per-path rate limit for the longest matching configured
+    prefix whose method scope covers ``method`` (BR-RATE-001, BR-RATE-004).
 
     Mirrors the sliding-window sorted-set algorithm used by the global
     windows in ``check_rate_limit`` (ZADD, ZREMRANGEBYSCORE, ZCARD, EXPIRE),
     but keyed per-prefix so a hot path can be throttled independently of
     the IP's overall traffic.
+
+    RESOLUTION RULE (BR-RATE-004): candidate prefixes are tried
+    longest-first. A prefix that matches the path but whose entry is
+    method-scoped (the three-item tuple form) to methods excluding this
+    request's method is skipped, and evaluation FALLS THROUGH to the next
+    longest matching prefix, rather than stopping there with "no path
+    limit". This is the less surprising of the two readings: a scoped
+    submit-only rule (for example ``POST`` on ``"scan/"``) is not meant to
+    also silently exempt every other method at that same prefix from a
+    shorter, unscoped rule that legitimately wants to cover the whole tree
+    (for example ``"/"``). Stopping at the longest match regardless of scope
+    would make adding a method-scoped rule for one route quietly turn off
+    rate limiting for every other method at that URL, which is the opposite
+    of what an operator adding a scoped rule is trying to do.
 
     Args:
         ip_address: Client IP address string.
@@ -75,11 +117,15 @@ def _check_path_rate_limit(
         redis_client: Configured Redis client instance.
         now: Current time (``time.time()``), passed in so callers share a
             single timestamp across the path and global checks.
+        method: HTTP method string (any case; normalised to upper case
+            here). Empty string (the default) means the caller has no
+            method to offer, in which case only unscoped (two-item) entries
+            can match.
 
     Returns:
         A ``RateLimitResult`` with ``window="path"`` if the matching prefix's
-        limit was breached, or ``None`` if no prefix matched or the matching
-        prefix's limit was not breached.
+        limit was breached, or ``None`` if no prefix's scope matched, or the
+        matching prefix's limit was not breached.
     """
     from django_waf import conf  # lazy, avoids circular import at module load
 
@@ -87,18 +133,31 @@ def _check_path_rate_limit(
     if not path or not rate_limit_paths:
         return None
 
-    # Longest-prefix match wins.
+    method = method.upper()
+
+    # Longest-prefix match wins, falling through past a matching prefix
+    # whose method scope excludes this request (see the resolution rule in
+    # the docstring above).
+    candidate_prefixes = sorted(
+        (prefix for prefix in rate_limit_paths if path.startswith(prefix)),
+        key=len,
+        reverse=True,
+    )
     matched_prefix = None
-    for prefix in rate_limit_paths:
-        if path.startswith(prefix) and (matched_prefix is None or len(prefix) > len(matched_prefix)):
+    for prefix in candidate_prefixes:
+        if _entry_applies_to_method(rate_limit_paths[prefix], method):
             matched_prefix = prefix
+            break
 
     if matched_prefix is None:
         return None
 
-    max_requests, window_seconds = rate_limit_paths[matched_prefix]
+    entry = rate_limit_paths[matched_prefix]
+    max_requests, window_seconds = entry[0], entry[1]
     # Not a security use, just a stable, short cache-key fragment derived
-    # from the configured prefix string.
+    # from the configured prefix string. Method-scoped entries at the same
+    # prefix share this key: BR-RATE-004 scopes which requests count
+    # against a budget, not a separate budget per method.
     prefix_hash = hashlib.sha1(matched_prefix.encode(), usedforsecurity=False).hexdigest()[:12]
     key = f"waf:rate:{ip_address}:path:{prefix_hash}"
     cutoff = now - window_seconds
@@ -183,6 +242,7 @@ def check_rate_limit(
     ip_address: str,
     redis_client,
     path: str = "",
+    method: str = "",
 ) -> RateLimitResult:
     """Check whether the IP has exceeded any rate limit window.
 
@@ -195,16 +255,21 @@ def check_rate_limit(
     When ``path`` is supplied and ``DJANGO_WAF_RATE_LIMIT_PATHS`` configures a
     matching prefix, that per-path limit is checked first using the same
     sliding-window algorithm, keyed independently of the global IP windows.
-    The longest matching prefix wins. A breach there returns immediately
-    with ``window="path"`` without touching the global windows.
+    The longest matching prefix whose method scope covers ``method`` wins
+    (BR-RATE-004; see ``_check_path_rate_limit`` for the fall-through
+    resolution rule). A breach there returns immediately with
+    ``window="path"`` without touching the global windows.
 
-    Per BR-RATE-001 and BR-RATE-002.
+    Per BR-RATE-001, BR-RATE-002 and BR-RATE-004.
 
     Args:
         ip_address: Client IP address string.
         redis_client: Configured Redis client instance.
         path: Request path, used to match per-path rate limits. Empty string
             (default) skips per-path checking entirely.
+        method: HTTP method string, used to resolve method-scoped entries in
+            ``DJANGO_WAF_RATE_LIMIT_PATHS`` (BR-RATE-004). Empty string
+            (default) matches only unscoped entries.
 
     Returns:
         RateLimitResult namedtuple. If any window is exceeded, ``exceeded``
@@ -226,7 +291,7 @@ def check_rate_limit(
 
     now = time.time()
 
-    path_result = _check_path_rate_limit(ip_address, path, redis_client, now)
+    path_result = _check_path_rate_limit(ip_address, path, redis_client, now, method=method)
     if path_result is not None:
         return path_result
 
