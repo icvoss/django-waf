@@ -94,8 +94,8 @@ class TestTokenRoundTrip:
     def test_issued_token_is_url_safe(self):
         """Token must survive being placed into an HTML attribute and a URL.
 
-        We base64url-encode and strip padding, which is exactly that, but the test pins the contract so future changes
-        don't
+        We base64url-encode and strip padding, which is exactly that,
+        but the test pins the contract so future changes don't
         silently introduce `+` or `/` characters that would break
         attribute serialisation.
         """

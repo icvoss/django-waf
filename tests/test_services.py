@@ -3259,8 +3259,8 @@ class TestVerifyRdns:
 
     def test_returns_false_when_forward_resolution_does_not_confirm(self):
         """Spoofed PTR: the hostname matches the pattern, but forward
-        resolution of that hostname does not include the original IP, the attacker controls the PTR record but not the
-        pattern's DNS
+        resolution of that hostname does not include the original IP:
+        the attacker controls the PTR record but not the pattern's DNS
         zone (#34's core fix)."""
         from django_waf.services.rule_engine import _verify_rdns
 
