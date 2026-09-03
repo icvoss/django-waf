@@ -5,6 +5,36 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **A system check for `DJANGO_WAF_*` settings set only as environment
+  variables** (#106, `django_waf.W010`). Every `DJANGO_WAF_*` setting is
+  resolved from `django.conf.settings` only: `conf._get_setting` never
+  consults `os.environ`, which is deliberate (Django settings stay the
+  single source of truth), but it means an operator who sets one as an
+  environment variable, the natural reading of a deployment-time flag,
+  gets no error, no log line and no indication anything is wrong. Found on
+  a real deployment where `DJANGO_WAF_FEED_REPORT=True` was set in `.env`
+  and telemetry had never been sent.
+
+  `check_env_only_settings` warns when a name in `conf._RESOLVERS` (every
+  setting the package resolves, not a hand-written list that could drift
+  from it) is present in `os.environ` but absent from `settings`, naming
+  the offending variable(s). Silent when the Django setting is also
+  assigned (the environment variable's presence is then redundant, not a
+  misconfiguration) and silent when neither is set. Not gated on
+  `DJANGO_WAF_ENABLED`, mirroring `django_waf.W008`/`W009`: this is a
+  static fact about configuration plumbing, not a live per-request
+  evaluation path.
+
+  Also corrects the comment above `_DJANGO_WAF_FEED_REPORT` (`conf.py`),
+  which read as a completeness guarantee ("Setting this to True is the
+  only step a site needs to start reporting") without saying *where*
+  (the Django settings module, never the environment), the misreading
+  that produced the original report.
+
 ## [2.5.0] - 2026-09-03
 
 ### Added

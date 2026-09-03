@@ -172,9 +172,43 @@ all (BR-EVAL-002 already makes a present-but-enabled middleware a total
 pass-through), so the absence of a middleware nobody asked to run is not a
 misconfiguration, matching the gating rationale #95 established for every
 other check in this module.
+
+The environment-variable check (``django_waf.W010``) warns when a
+``DJANGO_WAF_*`` name is present in ``os.environ`` but the resolved Django
+setting of the same name is not explicitly configured, so the environment
+variable has no effect (issue #106). Every ``DJANGO_WAF_*`` setting is
+resolved from ``django.conf.settings`` only (``conf._get_setting`` is a
+plain ``getattr(settings, name, default)``; it never consults
+``os.environ``). That is by design: ``django.conf.settings`` is the
+single source of truth this package resolves against, and reading the
+environment as a silent fallback would surprise a consumer who
+deliberately keeps environment and settings separate. The trap is that a
+deployment-time flag such as ``DJANGO_WAF_FEED_REPORT=True`` in a
+``.env`` file reads as a perfectly reasonable way to set it, and nothing
+before this check told the operator otherwise: the URLs it depends on
+resolve to working defaults regardless, and the feature it gates (feed
+telemetry reporting) produces no local artefact whose absence would be
+noticed. Found on a real deployment where telemetry had never been sent.
+Every ``DJANGO_WAF_*`` name is checked, not only ``DJANGO_WAF_FEED_REPORT``:
+the same trap applies to any of them, and a check scoped to one setting
+would leave the rest silent. The setting names checked against come from
+``conf._RESOLVERS`` (the same dict backing ``conf.__getattr__``), so a
+setting added or renamed in ``conf.py`` is covered automatically rather
+than needing a second, hand-maintained list that can drift from the first.
+Silent when both are set (the operator has also set the Django setting, so
+the environment variable's presence is redundant, not a misconfiguration)
+and silent when neither is set. Deliberately NOT gated on
+``DJANGO_WAF_ENABLED``: unlike the checks gated on it (#95), this is not
+about a live evaluation path being switched off. It is a static fact
+about the deployment's configuration plumbing (an environment variable
+that silently does nothing), true or false independent of whether the WAF
+is currently enforcing requests, mirroring the rationale ``django_waf.W008``
+and ``django_waf.W009`` already give for staying ungated.
 """
 
 from __future__ import annotations
+
+import os
 
 from django.core.checks import Error, Warning, register
 
@@ -781,5 +815,60 @@ def check_redis_version(app_configs, **kwargs):
                 "meets the floor."
             ),
             id="django_waf.E005",
+        )
+    ]
+
+
+@register()
+def check_env_only_settings(app_configs, **kwargs):
+    """Warn (``django_waf.W010``) when a ``DJANGO_WAF_*`` name is present in
+    ``os.environ`` but has no matching Django setting, so it has no effect
+    (issue #106).
+
+    Every ``DJANGO_WAF_*`` setting is resolved from ``django.conf.settings``
+    only (``conf._get_setting`` never consults ``os.environ``), which is
+    deliberate: Django settings stay the single source of truth. This check
+    does not change that resolution; it only warns when it looks like the
+    operator believes the environment variable is doing something it is
+    not, as happened on a real deployment where ``DJANGO_WAF_FEED_REPORT``
+    was set in ``.env`` and telemetry was never sent.
+
+    Checked against every name in ``conf._RESOLVERS`` (the same dict that
+    backs ``conf.__getattr__``'s call-time resolution), not a hand-written
+    list, so a setting added or renamed in ``conf.py`` is covered without a
+    second place to update. Silent when the Django setting is also present:
+    the operator has taken the deliberate step of assigning it, so the
+    environment variable's presence alongside it is redundant rather than
+    a misconfiguration. This check does not compare values, only
+    presence.
+
+    Not gated on ``DJANGO_WAF_ENABLED``: this is a static fact about the
+    deployment's configuration plumbing, not a live per-request evaluation
+    path, mirroring the ungated rationale ``django_waf.W008`` and
+    ``django_waf.W009`` already document.
+    """
+    from django.conf import settings
+
+    from django_waf import conf
+
+    _unset = object()
+    ineffective = sorted(
+        name for name in conf._RESOLVERS if name in os.environ and getattr(settings, name, _unset) is _unset
+    )
+    if not ineffective:
+        return []
+
+    names = ", ".join(ineffective)
+    return [
+        Warning(
+            f"Set in the environment but not as a Django setting, so it has "
+            f"no effect: {names}. django-waf reads Django settings only, "
+            "never os.environ.",
+            hint=(
+                "Assign the setting in your settings module instead, e.g. "
+                "DJANGO_WAF_FEED_REPORT = os.environ.get('DJANGO_WAF_FEED_REPORT') "
+                "== 'True', or your project's usual env-parsing helper."
+            ),
+            id="django_waf.W010",
         )
     ]
