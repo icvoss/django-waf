@@ -511,6 +511,123 @@ class TestExpireRules:
 
 
 # ---------------------------------------------------------------------------
+# prune_stale_rules
+# ---------------------------------------------------------------------------
+
+
+class TestPruneStaleRules:
+    """Tests for the prune_stale_rules task (wave 2, the rule-provenance wave).
+
+    The task-level gate (DJANGO_WAF_RULE_PRUNE_ENABLED) is what makes the
+    task safe to schedule unconditionally in DJANGO_WAF_CELERY_BEAT_SCHEDULE
+    from day one. These tests exercise that gate directly; the predicate
+    itself (which rows count as stale) is exercised end-to-end through the
+    django_waf_prune_rules command tests in test_commands.py, and via
+    BlockRuleManager.stale() here for the deletion path.
+    """
+
+    @staticmethod
+    def _stale_kwargs(days_expired: int = 100):
+        from django_waf.enums import ReviewStatus, RuleSource
+
+        return {
+            "source": RuleSource.AUTO,
+            "is_active": False,
+            "expires_at": timezone.now() - timedelta(days=days_expired),
+            "review_status": ReviewStatus.NOT_APPLICABLE,
+        }
+
+    @pytest.mark.django_db
+    def test_disabled_by_default_reports_without_deleting(self):
+        """With DJANGO_WAF_RULE_PRUNE_ENABLED unset (default False), nothing is deleted."""
+        BlockRuleFactory(**self._stale_kwargs())
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        from django_waf.tasks import prune_stale_rules
+
+        result = prune_stale_rules(days=90)
+
+        assert result == {"deleted_count": 0, "dry_run": True}
+        assert BlockRule.objects.count() == 1
+
+    @pytest.mark.django_db
+    def test_enabled_deletes_matching_rows(self):
+        """With the gate enabled, a genuinely stale row is deleted.
+
+        Proves the gate and the predicate both have teeth: this is the
+        counterpart to the disabled test above, and the one place in this
+        wave a real deletion actually happens.
+        """
+        stale = BlockRuleFactory(**self._stale_kwargs())
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        with patch("django_waf.conf.DJANGO_WAF_RULE_PRUNE_ENABLED", True):
+            from django_waf.tasks import prune_stale_rules
+
+            result = prune_stale_rules(days=90)
+
+        assert result == {"deleted_count": 1, "dry_run": False}
+        assert not BlockRule.objects.filter(pk=stale.pk).exists()
+
+    @pytest.mark.django_db
+    def test_enabled_survives_active_pending_confirmed_and_rejected(self):
+        """With the gate enabled, the predicate's exclusions still hold.
+
+        Redundant with the command-level survival tests by design: this
+        confirms the task path (not just the command path) honours the
+        same predicate, since both call BlockRuleManager.stale() but a
+        divergence between the two call sites would only be caught here.
+        """
+        from django_waf.enums import ReviewStatus
+
+        active = BlockRuleFactory(**{**self._stale_kwargs(), "is_active": True})
+        pending = BlockRuleFactory(**{**self._stale_kwargs(), "review_status": ReviewStatus.PENDING})
+        confirmed = BlockRuleFactory(**{**self._stale_kwargs(), "review_status": ReviewStatus.CONFIRMED})
+        rejected = BlockRuleFactory(**{**self._stale_kwargs(), "review_status": ReviewStatus.REJECTED})
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 4
+
+        with patch("django_waf.conf.DJANGO_WAF_RULE_PRUNE_ENABLED", True):
+            from django_waf.tasks import prune_stale_rules
+
+            result = prune_stale_rules(days=90)
+
+        assert result["deleted_count"] == 0
+        for survivor in (active, pending, confirmed, rejected):
+            assert BlockRule.objects.filter(pk=survivor.pk).exists()
+
+    @pytest.mark.django_db
+    def test_uses_default_retention_days_from_conf(self):
+        """Task uses DJANGO_WAF_RULE_RETENTION_DAYS when days argument is omitted."""
+        from django_waf import conf
+
+        default_days = conf.DJANGO_WAF_RULE_RETENTION_DAYS
+        kwargs = self._stale_kwargs()
+        kwargs["expires_at"] = timezone.now() - timedelta(days=default_days + 1)
+        stale = BlockRuleFactory(**kwargs)
+
+        from django_waf.models import BlockRule
+
+        assert BlockRule.objects.count() == 1
+
+        with patch("django_waf.conf.DJANGO_WAF_RULE_PRUNE_ENABLED", True):
+            from django_waf.tasks import prune_stale_rules
+
+            result = prune_stale_rules()
+
+        assert result["deleted_count"] == 1
+        assert not BlockRule.objects.filter(pk=stale.pk).exists()
+
+
+# ---------------------------------------------------------------------------
 # update_ip_reputation
 # ---------------------------------------------------------------------------
 

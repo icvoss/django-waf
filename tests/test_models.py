@@ -11,6 +11,7 @@ from django.utils import timezone
 from django_waf.enums import (
     ChallengeStatus,
     MatchType,
+    ReviewStatus,
     RuleAction,
     RuleSource,
     RuleType,
@@ -170,6 +171,108 @@ class TestBlockRule:
 
         assert qs.count() == 1
         assert qs.first().pk == nginx_eligible.pk
+
+    # -----------------------------------------------------------------
+    # stale(), wave 2 retention predicate (the wave 2 rule-provenance plan)
+    # -----------------------------------------------------------------
+    #
+    # Every test below builds the one row that should qualify (via
+    # _stale_kwargs) plus one row that differs by exactly the field under
+    # test, so a failure isolates which clause of the predicate broke
+    # rather than only proving the predicate is non-empty.
+
+    @staticmethod
+    def _stale_kwargs(days_expired: int = 100):
+        return {
+            "source": RuleSource.AUTO,
+            "is_active": False,
+            "expires_at": timezone.now() - timezone.timedelta(days=days_expired),
+            "review_status": ReviewStatus.NOT_APPLICABLE,
+        }
+
+    def test_stale_returns_qualifying_auto_rule(self, db):
+        """A genuinely stale row (expired, inactive, auto, not_applicable) is returned."""
+        stale = BlockRuleFactory(**self._stale_kwargs())
+
+        qs = BlockRule.objects.stale(days=90)
+
+        assert qs.count() == 1
+        assert qs.first().pk == stale.pk
+
+    def test_stale_excludes_active(self, db):
+        """An active rule is excluded regardless of age."""
+        BlockRuleFactory(**{**self._stale_kwargs(), "is_active": True})
+
+        assert BlockRule.objects.stale(days=90).count() == 0
+
+    def test_stale_excludes_unexpired(self, db):
+        """A rule whose expires_at has not passed is excluded."""
+        BlockRuleFactory(**{**self._stale_kwargs(), "expires_at": timezone.now() + timezone.timedelta(days=1)})
+
+        assert BlockRule.objects.stale(days=90).count() == 0
+
+    def test_stale_excludes_never_expires(self, db):
+        """A rule with expires_at=None is excluded even when inactive.
+
+        The only way a source=AUTO, is_active=False row reaches
+        expires_at=None is BR-ANOM-007's quarantine-on-create path, which
+        means "awaiting review", not "safe to reclaim".
+        """
+        BlockRuleFactory(**{**self._stale_kwargs(), "expires_at": None})
+
+        assert BlockRule.objects.stale(days=90).count() == 0
+
+    def test_stale_excludes_pending_review(self, db):
+        """A PENDING rule is excluded."""
+        BlockRuleFactory(**{**self._stale_kwargs(), "review_status": ReviewStatus.PENDING})
+
+        assert BlockRule.objects.stale(days=90).count() == 0
+
+    def test_stale_excludes_confirmed(self, db):
+        """A CONFIRMED rule is excluded."""
+        BlockRuleFactory(**{**self._stale_kwargs(), "review_status": ReviewStatus.CONFIRMED})
+
+        assert BlockRule.objects.stale(days=90).count() == 0
+
+    def test_stale_excludes_rejected(self, db):
+        """A REJECTED rule is excluded, deliberate, see BlockRuleManager.stale()'s docstring."""
+        BlockRuleFactory(**{**self._stale_kwargs(), "review_status": ReviewStatus.REJECTED})
+
+        assert BlockRule.objects.stale(days=90).count() == 0
+
+    def test_stale_includes_expired_unreviewed(self, db):
+        """An EXPIRED_UNREVIEWED rule IS included: the counterpart to the REJECTED exclusion."""
+        expired_unreviewed = BlockRuleFactory(
+            **{**self._stale_kwargs(), "review_status": ReviewStatus.EXPIRED_UNREVIEWED}
+        )
+
+        qs = BlockRule.objects.stale(days=90)
+
+        assert qs.count() == 1
+        assert qs.first().pk == expired_unreviewed.pk
+
+    def test_stale_excludes_admin_source(self, db):
+        """An admin-sourced rule is excluded regardless of state."""
+        BlockRuleFactory(**{**self._stale_kwargs(), "source": RuleSource.ADMIN})
+
+        assert BlockRule.objects.stale(days=90).count() == 0
+
+    def test_stale_excludes_feed_source(self, db):
+        """A feed-sourced rule is excluded regardless of state."""
+        BlockRuleFactory(**{**self._stale_kwargs(), "source": RuleSource.FEED})
+
+        assert BlockRule.objects.stale(days=90).count() == 0
+
+    def test_stale_window_boundary(self, db):
+        """A row just inside the window is excluded; just outside is included."""
+        cutoff = timezone.now() - timezone.timedelta(days=90)
+        just_inside = BlockRuleFactory(**{**self._stale_kwargs(), "expires_at": cutoff + timezone.timedelta(hours=1)})
+        just_outside = BlockRuleFactory(**{**self._stale_kwargs(), "expires_at": cutoff - timezone.timedelta(hours=1)})
+
+        qs = BlockRule.objects.stale(days=90)
+
+        assert qs.filter(pk=just_inside.pk).exists() is False
+        assert qs.filter(pk=just_outside.pk).exists() is True
 
     def test_pk_is_uuid(self, db):
         """BlockRule inherits UUID primary key from BaseModel."""

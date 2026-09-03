@@ -60,6 +60,7 @@ class TestCeleryBeatScheduleDefault:
             "django_waf.tasks.update_ip_reputation",
             "django_waf.tasks.prune_request_logs",
             "django_waf.tasks.prune_challenge_tokens",
+            "django_waf.tasks.prune_stale_rules",
             "django_waf.tasks.sync_threat_feed",
             "django_waf.tasks.report_threat_telemetry",
             "django_waf.tasks.update_geoip_database",

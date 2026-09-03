@@ -57,7 +57,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `django_settings_module = "tests.settings"` and mypy exits 2 having
   checked nothing at all, a no-op that reads as a pass when scripted.
 
+- **A production-outcome report for every detector** (BR-ANOM-015). Closes
+  the fourth link of the chain-of-command rule: a WAF feature must declare
+  what it is, what it does, why it is there, and what its outcome was. The
+  first three were enforced; nothing in the package could answer the
+  fourth. Producing the per-detector picture on a live consumer took ad-hoc
+  ORM queries run against production, which is the gap this closes.
+
+  `django_waf_detector_outcomes` (`--days`, default 30) reports rules
+  created, rules ever hit, hit rate, total hits attributed, most recent
+  rule created, and the existing `auto_rule_review_outcomes` breakdown
+  (BR-ANOM-010). Read-only. Every `DETECTOR_NAMES` entry is zero-filled, so
+  a detector producing nothing is an explicit zero row rather than an
+  absent one, which is the state that hid a dead detector before.
+
+  `BlockRule.detectors` is a superset of the registry, not a mirror of it:
+  `rule_engine._create_escalation_rule` writes `challenge_escalation`,
+  which is not a `DETECTOR_NAMES` member. Those names are reported in a
+  separate section rather than dropped or folded into the registry, and the
+  comma-separated field is parsed by exact membership rather than substring
+  containment, so a name that is a prefix of another cannot be miscounted.
+  The report issues two queries regardless of row count, measured with
+  `CaptureQueriesContext` and pinned by a test; no new index was needed at
+  60,000 rows.
+
+- **Retention for `BlockRule`** (`DJANGO_WAF_RULE_RETENTION_DAYS`, default
+  90). `RequestLog` has had retention and a nightly prune since 1.0;
+  `BlockRule` had expiry but no deletion, so nothing ever removed a row. A
+  live 2.4.0 consumer carried 48,319 rules older than 90 days and none
+  older than 150, the table's own age. The expiry path works and those rows
+  do not enforce, so this is an audit-trail and growth problem rather than
+  an enforcement one, and it is scoped accordingly.
+
+  Ships behind two independent gates, because this is the only path in the
+  package that destroys data. `django_waf_prune_rules` is dry-run by
+  default and needs `--execute` to delete; the scheduled `prune_stale_rules`
+  task is additionally gated on `DJANGO_WAF_RULE_PRUNE_ENABLED` (default
+  `False`), so the exported beat entry cannot delete anything for a
+  consumer who merges `DJANGO_WAF_CELERY_BEAT_SCHEDULE` as documented until
+  they opt in.
+
+  `BlockRuleManager.stale()` deletes a row only when all of: `source=auto`,
+  `is_active=False`, `expires_at` set and older than the window, and
+  `review_status` is `not_applicable` or `expired_unreviewed`. `pending` and
+  `confirmed` are excluded per the plan; `rejected` is excluded too, which
+  the plan did not specify against the five-state enum. A rejected rule
+  records an operator's decision that a pattern must not be blocked, and
+  deleting it erases only the record, leaving the detector free to recreate
+  the rule for the operator to reject again. A never-expiring auto rule is
+  excluded unconditionally: BR-ANOM-007's quarantine path is how one
+  reaches `is_active=False` with no expiry, and that state means awaiting
+  review, not safe to reclaim.
+
+- **`django_waf.W009`**, a boot-time check catching a desync between
+  `DETECTOR_NAMES` and `DETECTOR_NAME_TO_RESULT_KEY` in either direction. A
+  detector must currently be hand-added in seven places and nothing
+  enforced two of them. A name in `DETECTOR_NAMES` with no result key reads
+  to the probe as a permanently silent detector, indistinguishable from a
+  dead one without reading the code; a result key with no `DETECTOR_NAMES`
+  entry is invisible to the probe, to `W008` and to observe-only mode, with
+  nothing failing. Not gated on `DJANGO_WAF_ENABLED`, for the same reason
+  `W008` is not: anomaly detection runs on its own schedule, so gating it
+  would hide the wiring bug from exactly the deployments running detection
+  with enforcement off.
+
 ### Fixed
+
+- **The detector liveness probe reported a healthy detector as SILENT**
+  once a deployment had accumulated any `BlockRule` history. The dry-run
+  branch of `_get_or_create_auto_rule` checks
+  `BlockRule.objects.filter(rule_type, pattern, source=auto, action)` with
+  no `is_active` and no `expires_at` filter, and the probe counts only
+  `created=True`, so a single surviving auto rule on a fixture's exact
+  pattern tuple made that detector report SILENT permanently. Reproduced
+  with one rule expired 365 days earlier and already inactive: it silenced
+  `detect_cloud_spray`, `detect_ua_rotation` and `detect_scraper_404_ratio`,
+  against a control run on an empty table reporting every detector alive.
+  Because nothing deleted `BlockRule` rows, the collision never cleared,
+  which is the same root cause as the retention gap above.
+
+  BR-ANOM-012 had asserted this could not happen, on the grounds that
+  fixture IPs are drawn from TEST-NET documentation ranges. That reasoning
+  holds for `RequestLog` and not for `BlockRule`: an operator,
+  `django_waf_import_rules`, or a threat feed can write an auto-sourced
+  rule on a documentation range, and the probe's forced rollback cannot
+  remove a row it never created.
+
+  Fixed with a keyword-only `count_refresh_as_created` parameter, default
+  `False` everywhere and passed `True` only by `run_detector_probe`. The
+  probe asks whether the detector's logic fired; dry-run asks whether a new
+  row would be written. They are different questions, and the fix answers
+  the first without corrupting the second, so BR-ANOM-006's guarantee that
+  "would create N rules" matches a subsequent real run is unchanged. A
+  detector patched to return nothing still reports SILENT.
+
+- **`django_waf_detect_anomalies` double-counted its own summary** (#99).
+  The results loop iterated `results.items()`, which includes
+  `total_rules_created`, so the pre-summed total was printed as though it
+  were a detector and added to the total a second time. A live run reported
+  two rules as four. Now skipped, pinned by a regression test that
+  reproduces the exact doubling when the fix is reverted.
+
 
 - **`_deduplicate_block_rules` could raise `AttributeError` on a
   concurrent delete** (#111). It called `.pk` on the result of

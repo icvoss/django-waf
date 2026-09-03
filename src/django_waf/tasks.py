@@ -11,6 +11,7 @@ Scheduled tasks (Celery Beat):
   - parse_access_log        — every 10 minutes
   - prune_request_logs      — daily 04:00 (BR-LOG-003)
   - prune_challenge_tokens  — daily 04:15
+  - prune_stale_rules       : daily 04:20 (wave 2, the rule-provenance wave)
   - expire_rules            — every 30 minutes (BR-LIFE-002)
   - update_ip_reputation    — every 6 hours
   - sync_threat_feed        — daily 04:30
@@ -358,6 +359,76 @@ def expire_rules() -> dict:
         "expired_count": total,
         "expired_unreviewed_count": expired_unreviewed_count,
     }
+
+
+@shared_task
+def prune_stale_rules(days: int | None = None) -> dict:
+    """Hard-delete expired, inactive, auto-generated BlockRules older than the retention window.
+
+    Mirrors prune_request_logs' shape. Per DJANGO_WAF_RULE_RETENTION_DAYS
+    (default 90, the wave 2 rule-provenance plan): measured on a live 2.4.0 deployment,
+    48,319 BlockRule rows were older than 90 days with nothing older than
+    150 (the table's own age since expire_rules only deactivates, never
+    deletes). Unbounded row growth is not the only cost: a surviving
+    expired-and-inactive, source=auto row whose pattern coincides with a
+    detector's probe fixture permanently reports that detector SILENT in
+    django_waf_probe_detectors, because the probe's dry-run existence check
+    filters on neither is_active nor expires_at. This task is what stops
+    that collision from being permanent as well as what bounds the table.
+
+    The predicate (BlockRuleManager.stale(), see models.py for the full
+    reasoning) never deletes an active rule, an unexpired rule, a rule
+    still PENDING review, one an operator CONFIRMED, or one an operator
+    REJECTED. A rejection is a decision the operator already made once,
+    and deleting its record only forces them to make it again the next
+    time a detector re-observes the same pattern. It is scoped to
+    source=AUTO only: a hand-authored admin rule or a feed-sourced rule is
+    never touched by this task regardless of age, is_active, or
+    review_status, since neither regenerates itself on the next detector
+    run the way an auto rule does.
+
+    This is the one destructive task in the package: unlike
+    prune_request_logs (sampled, low-value rows) and
+    prune_challenge_tokens (ephemeral proof-of-work state), a deleted
+    BlockRule is a decision record. Gated on DJANGO_WAF_RULE_PRUNE_ENABLED
+    (default False): while disabled, this task still runs on schedule and
+    still counts and logs how many rows are stale, but deletes nothing, so
+    a consumer who merges DJANGO_WAF_CELERY_BEAT_SCHEDULE unmodified gets a
+    standing visibility signal rather than either silent inaction or
+    silent deletion. An operator turns deletion on deliberately once
+    satisfied with what the count reports. See
+    management/commands/django_waf_prune_rules.py for the equivalent
+    report-first default on the manual path.
+
+    Args:
+        days: Number of days to retain. Defaults to DJANGO_WAF_RULE_RETENTION_DAYS.
+
+    Returns:
+        Dict with keys: deleted_count, dry_run.
+
+    Scheduled: daily at 04:20, immediately after prune_challenge_tokens'
+    04:15 slot, keeping the retention-sweep tasks clustered in the
+    package's quiet-hours window rather than scattered across the day.
+    """
+    from django_waf import conf
+    from django_waf.models import BlockRule
+
+    retention_days = days if days is not None else conf.DJANGO_WAF_RULE_RETENTION_DAYS
+    stale_qs = BlockRule.objects.stale(days=retention_days)
+
+    if not conf.DJANGO_WAF_RULE_PRUNE_ENABLED:
+        count = stale_qs.count()
+        logger.info(
+            "django-waf: %d stale BlockRule record(s) older than %d days would be pruned "
+            "(DJANGO_WAF_RULE_PRUNE_ENABLED is False, nothing deleted)",
+            count,
+            retention_days,
+        )
+        return {"deleted_count": 0, "dry_run": True}
+
+    deleted, _ = stale_qs.delete()
+    logger.info("django-waf: pruned %d stale BlockRule record(s) older than %d days", deleted, retention_days)
+    return {"deleted_count": deleted, "dry_run": False}
 
 
 @shared_task

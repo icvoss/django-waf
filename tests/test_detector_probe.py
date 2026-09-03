@@ -28,13 +28,16 @@ real query path, for every detector it names, is worth nothing.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from io import StringIO
 from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.utils import timezone
 
+from django_waf.enums import MatchType, ReviewStatus, RuleAction, RuleSource, RuleType
 from django_waf.services.anomaly_detector import DETECTOR_NAMES
 from django_waf.services.detector_probe import run_detector_probe
 
@@ -393,6 +396,165 @@ class TestRunDetectorProbeFalsifiability:
             assert result[detector_name]["rules_reported"] > 0
 
 
+# ---------------------------------------------------------------------------
+# run_detector_probe: BlockRule history must not silence a healthy detector
+# ---------------------------------------------------------------------------
+#
+# Reproduces the real defect this step of the wave fixes: a real deployment
+# accumulates BlockRule rows over its lifetime, and _get_or_create_auto_
+# rule's dry-run existence check (anomaly_detector.py) matches on
+# (rule_type, pattern, source=AUTO, action) alone, with no is_active or
+# expires_at filter. Before this fix, ANY surviving source=AUTO row on a
+# fixture's exact pattern, however old or inactive, made
+# _get_or_create_auto_rule report created=False forever, which made the
+# probe report a genuinely firing detector as SILENT. This is the
+# reproduction the plan's Step 1 investigation confirmed by hand
+# (seeding a single expired+inactive row silenced detect_cloud_spray,
+# detect_ua_rotation, and detect_scraper_404_ratio simultaneously); the
+# tests below turn that manual reproduction into a permanent, parametrised
+# regression guard, one case per detector, plus a control proving the fix
+# has not made the probe blind to a genuinely broken detector.
+
+
+class TestRunDetectorProbeSurvivesBlockRuleHistory:
+    """One parametrised case per DETECTOR_NAMES entry: seed an expired,
+    inactive source=AUTO BlockRule on every exact (rule_type, pattern,
+    action) shape that detector's own probe fixture is about to drive, then
+    assert the detector still reports alive. Each row below is
+    independently hand-written against services/detector_probe.py's
+    fixture IPs/subnets and services/anomaly_detector.py's own
+    rule_type/action literals for each detector's _get_or_create_auto_rule
+    call, not derived from either module, so a drift between this list and
+    the real fixture shapes would show up as a test failure (a seeded
+    collision on the wrong pattern would simply never collide, and the
+    detector would report alive whether or not this fix exists, which is
+    exactly the kind of vacuous coverage this test is written to avoid:
+    see the falsifiability class above for why every case here must also
+    be provable to fail without the fix, checked directly below in
+    test_seeding_a_collision_without_the_fix_reproduces_the_defect).
+
+    detect_subnet_burst genuinely needs BOTH of its rows seeded to make the
+    control test meaningful: its query aggregates every RequestLog row in
+    the probe's fixture window regardless of which detector's fixture
+    wrote it (see detector_probe.py's own module comment), so the combined
+    volume from three OTHER detectors' fixture IPs sharing 192.0.2.0/24
+    (_UA_ROTATION_IP, _UNSOLVED_CHALLENGE_IP, _SCRAPER_404_IP) already
+    clears its burst floor on its own, independently of
+    _SUBNET_BURST_SUBNET_BASE (198.51.100.0/24). A control that seeded
+    only the 198.51.100.0/24 collision left the 192.0.2.0/24 rule free to
+    create normally, so detect_subnet_burst kept reporting alive even with
+    the fix reverted, a genuinely vacuous control caught by running it
+    against the real code before trusting it.
+    """
+
+    # detector_name -> list of (rule_type, match_type, pattern, action)
+    # rows, one entry per BlockRule shape that detector's
+    # _get_or_create_auto_rule calls write against the fixture traffic
+    # _build_fixture_traffic() builds for it. detect_cloud_spray's row here
+    # is its subnet path only (the UA path is opt-in via
+    # DJANGO_WAF_CLOUD_SPRAY_UA_RULE, default off, and is not exercised by
+    # the probe on default settings, per this wave's Step 1 finding).
+    _COLLIDING_FIXTURE_ROWS: dict[str, list[tuple]] = {
+        "detect_ua_rotation": [
+            (RuleType.IP, MatchType.EXACT, "192.0.2.10", RuleAction.CHALLENGE),
+        ],
+        "detect_subnet_burst": [
+            (RuleType.CIDR, MatchType.CIDR, "198.51.100.0/24", RuleAction.CHALLENGE),
+            (RuleType.CIDR, MatchType.CIDR, "192.0.2.0/24", RuleAction.CHALLENGE),
+        ],
+        "detect_challenge_farms": [
+            (RuleType.IP, MatchType.EXACT, "203.0.113.10", RuleAction.BLOCK),
+        ],
+        "detect_unsolved_challenges": [
+            (RuleType.IP, MatchType.EXACT, "192.0.2.50", RuleAction.BLOCK),
+        ],
+        "detect_cloud_spray": [
+            (RuleType.CIDR, MatchType.CIDR, "203.0.113.0/24", RuleAction.CHALLENGE),
+        ],
+        "detect_scraper_404_ratio": [
+            (RuleType.IP, MatchType.EXACT, "192.0.2.90", RuleAction.CHALLENGE),
+        ],
+    }
+
+    @staticmethod
+    def _seed_colliding_rows(detector_name: str) -> None:
+        from django_waf.testing.factories import BlockRuleFactory
+
+        colliding_rows = TestRunDetectorProbeSurvivesBlockRuleHistory._COLLIDING_FIXTURE_ROWS[detector_name]
+        for rule_type, match_type, pattern, action in colliding_rows:
+            BlockRuleFactory(
+                rule_type=rule_type,
+                match_type=match_type,
+                pattern=pattern,
+                action=action,
+                source=RuleSource.AUTO,
+                is_active=False,
+                review_status=ReviewStatus.NOT_APPLICABLE,
+                expires_at=timezone.now() - timedelta(days=365),
+            )
+
+    @pytest.mark.parametrize("detector_name", sorted(_COLLIDING_FIXTURE_ROWS))
+    def test_expired_inactive_auto_rule_does_not_silence_the_detector(self, db, detector_name):
+        """An expired, inactive source=AUTO BlockRule sitting on a
+        detector's exact fixture pattern must not make that detector
+        report SILENT: the row is history, not evidence the detector is
+        dead.
+
+        Expired 365 days ago AND is_active=False is deliberately the
+        least favourable surviving row for the OLD (unfixed) behaviour to
+        get right: it is exactly the shape a real deployment accumulates
+        once DJANGO_WAF_RULE_RETENTION_DAYS-style pruning has not yet run
+        (retention is a separate step of this wave, not shipped here), and
+        it is unambiguously not a live enforcing rule by any reading, yet
+        the unfiltered dry-run lookup in _get_or_create_auto_rule matched
+        it anyway before this fix.
+        """
+        self._seed_colliding_rows(detector_name)
+
+        result = run_detector_probe(dry_run=True)
+
+        assert result[detector_name]["alive"] is True, (
+            f"{detector_name} reported SILENT with a stale BlockRule collision present: {result[detector_name]}"
+        )
+        assert result[detector_name]["rules_reported"] > 0
+
+    @pytest.mark.parametrize("detector_name", sorted(_COLLIDING_FIXTURE_ROWS))
+    def test_seeding_a_collision_without_the_fix_reproduces_the_defect(self, db, detector_name):
+        """Proves the case above is not vacuous: with
+        count_refresh_as_created forced back to its old always-False
+        behaviour, the identical seeded row(s) DO silence the detector.
+
+        This is the direct analogue of the plan's Step 1 manual
+        reproduction, reproduced here as an automated control rather than
+        asserted only by inspection. Patches run_all_detectors to strip
+        the keyword before forwarding to the real function, rather than
+        patching _get_or_create_auto_rule directly, so every real detector
+        query and the real fixture-building path still execute unmodified;
+        only the one line this fix touches is reverted.
+        """
+        from django_waf.services import anomaly_detector as anomaly_detector_mod
+
+        self._seed_colliding_rows(detector_name)
+
+        real_run_all_detectors = anomaly_detector_mod.run_all_detectors
+
+        def _run_all_detectors_ignoring_the_fix(*args, **kwargs):
+            kwargs["count_refresh_as_created"] = False
+            return real_run_all_detectors(*args, **kwargs)
+
+        with patch(
+            "django_waf.services.anomaly_detector.run_all_detectors",
+            side_effect=_run_all_detectors_ignoring_the_fix,
+        ):
+            result = run_detector_probe(dry_run=True)
+
+        assert result[detector_name]["alive"] is False, (
+            f"{detector_name} reported alive even with count_refresh_as_created reverted; "
+            "this case cannot prove the fix has teeth."
+        )
+        assert result[detector_name]["rules_reported"] == 0
+
+
 class TestRunDetectorProbeReportingLogic:
     """Mapping/reporting-logic tests: a hand-written run_all_detectors result
     dict becomes the correct alive/silent report. These do NOT exercise any
@@ -524,6 +686,11 @@ class TestRunDetectorProbeLeavesNoRowsBehind:
 
 class TestRunDetectorProbeDryRunForwarding:
     def test_dry_run_true_is_forwarded_to_run_all_detectors(self, db):
+        """count_refresh_as_created=True is also asserted here, always,
+        regardless of dry_run: it is the probe's own opt-in (see
+        run_detector_probe's call site), never forwarded from the
+        function's dry_run argument, so it must appear unconditionally.
+        """
         from django_waf.services.anomaly_detector import DETECTOR_NAME_TO_RESULT_KEY
 
         with patch(
@@ -532,9 +699,15 @@ class TestRunDetectorProbeDryRunForwarding:
         ) as mock_run:
             run_detector_probe(dry_run=True)
 
-        mock_run.assert_called_once_with(dry_run=True)
+        mock_run.assert_called_once_with(dry_run=True, count_refresh_as_created=True)
 
     def test_dry_run_false_exercise_writes_is_forwarded(self, db):
+        """count_refresh_as_created=True still holds under exercise-writes:
+        it only ever changes what counts as "created" for the probe's own
+        reporting, never whether a write happens, and the surrounding
+        forced rollback in run_detector_probe makes exercise-writes safe
+        either way.
+        """
         from django_waf.services.anomaly_detector import DETECTOR_NAME_TO_RESULT_KEY
 
         with patch(
@@ -543,7 +716,7 @@ class TestRunDetectorProbeDryRunForwarding:
         ) as mock_run:
             run_detector_probe(dry_run=False)
 
-        mock_run.assert_called_once_with(dry_run=False)
+        mock_run.assert_called_once_with(dry_run=False, count_refresh_as_created=True)
 
     def test_result_dry_run_key_echoes_argument(self, db):
         result_true = run_detector_probe(dry_run=True)

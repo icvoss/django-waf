@@ -1727,6 +1727,90 @@ class TestRunAllDetectors:
 
 
 # ---------------------------------------------------------------------------
+# DETECTOR_NAMES / DETECTOR_NAME_TO_RESULT_KEY wiring guard (wave 2, #99's
+# sibling defect class, django_waf.W009's own test-suite counterpart)
+# ---------------------------------------------------------------------------
+
+
+class TestDetectorNamesResultKeyWiring:
+    """Guards the invariant django_waf.W009 (checks.py) checks at boot:
+    DETECTOR_NAMES and DETECTOR_NAME_TO_RESULT_KEY must name exactly the
+    same six detectors, and run_all_detectors' real return dict must
+    actually produce a result key for every one of them.
+
+    Follows tests/test_conf.py's TestCeleryBeatScheduleDefault shape
+    (:47-68): an INDEPENDENT, hand-written expected set, not derived from
+    DETECTOR_NAMES or DETECTOR_NAME_TO_RESULT_KEY themselves, compared
+    against the real values. A set built FROM either constant could never
+    catch that constant drifting: it would always equal itself.
+    """
+
+    # Hand-written, not sourced from anomaly_detector.py: BR-ANOM-012
+    # named five detectors when it was written; BR-ANOM-014 added the
+    # sixth (detect_scraper_404_ratio). If a seventh detector is ever
+    # added without updating this literal set, this test fails, which is
+    # the point: it is the completeness net the hand-written case list in
+    # TestDetectUnsolvedChallenges.test_detector_field_populated_by_every_
+    # detector_passing_it (this file) does not provide.
+    _EXPECTED_DETECTOR_NAMES = frozenset(
+        {
+            "detect_ua_rotation",
+            "detect_subnet_burst",
+            "detect_challenge_farms",
+            "detect_unsolved_challenges",
+            "detect_cloud_spray",
+            "detect_scraper_404_ratio",
+        }
+    )
+
+    def test_detector_names_matches_the_independent_expected_set(self):
+        from django_waf.services.anomaly_detector import DETECTOR_NAMES
+
+        assert DETECTOR_NAMES == self._EXPECTED_DETECTOR_NAMES
+
+    def test_result_key_map_covers_exactly_the_same_names(self):
+        """DETECTOR_NAME_TO_RESULT_KEY's key set (not its values) must
+        equal DETECTOR_NAMES exactly: this is the invariant django_waf.W009
+        exists to catch a violation of at boot.
+        """
+        from django_waf.services.anomaly_detector import (
+            DETECTOR_NAME_TO_RESULT_KEY,
+            DETECTOR_NAMES,
+        )
+
+        assert set(DETECTOR_NAME_TO_RESULT_KEY) == DETECTOR_NAMES
+        assert set(DETECTOR_NAME_TO_RESULT_KEY) == self._EXPECTED_DETECTOR_NAMES
+
+    def test_real_run_all_detectors_return_dict_covers_every_result_key(self, db):
+        """The assertion nothing else in the suite makes (per this wave's
+        plan): a REAL, unmocked run_all_detectors() call against an empty
+        database (every detector legitimately returns [] with no fixture
+        traffic present, so this only exercises the dict-shape contract,
+        not detection logic, which TestRunAllDetectors and
+        test_detector_probe.py's falsifiability tests already cover) must
+        produce a key for every DETECTOR_NAME_TO_RESULT_KEY value, and
+        total_rules_created is the only extra key beyond that set. A
+        result key present in DETECTOR_NAME_TO_RESULT_KEY but absent from
+        run_all_detectors' actual return dict would mean the mapping
+        constant and the function's own hardcoded return statement have
+        desynced, the second of run_all_detectors' seven hand-maintained
+        places (see W009's docstring) that DETECTOR_NAMES /
+        DETECTOR_NAME_TO_RESULT_KEY alone cannot catch, since both of
+        those constants can agree with each other while still disagreeing
+        with what the function actually returns.
+        """
+        from django_waf.services.anomaly_detector import (
+            DETECTOR_NAME_TO_RESULT_KEY,
+            run_all_detectors,
+        )
+
+        result = run_all_detectors()
+
+        result_keys_excluding_total = set(result) - {"total_rules_created"}
+        assert result_keys_excluding_total == set(DETECTOR_NAME_TO_RESULT_KEY.values())
+
+
+# ---------------------------------------------------------------------------
 # _emit_anomaly_signal exception path
 # ---------------------------------------------------------------------------
 
@@ -4057,8 +4141,22 @@ class TestDetectUnsolvedChallenges:
     def test_detector_field_populated_by_every_detector_passing_it(self):
         """Every detector that passes detector_name to _get_or_create_auto_rule
         must have its name added to the created BlockRule's detectors set
-        (#97). Covers all five DETECTOR_NAMES entries plus rule_engine's
-        escalation caller, which passes a detector_name outside that set.
+        (#97). Covers all six DETECTOR_NAMES entries plus rule_engine's
+        escalation caller, which passes a detector_name outside that set
+        (`detectors` is a superset of DETECTOR_NAMES by design, see
+        BR-ANOM-011 / anomaly_detector.py's own comment).
+
+        This hand-written list is a fixed regression case, not a
+        completeness check: it is not parametrised over DETECTOR_NAMES and
+        does not fail if a seventh detector is added without a case here.
+        The wave-2 guard test in TestDetectorNamesResultKeyWiring
+        (services/anomaly_detector.py's own module, this file) is the
+        authoritative completeness check for DETECTOR_NAMES membership;
+        this test only pins the specific #97 regression (the detectors
+        field itself gets populated) for one representative pattern per
+        named detector, once BR-ANOM-014 added detect_scraper_404_ratio,
+        this list was extended to include it rather than left at the five
+        that existed when #97 was fixed.
         """
         from django_waf.services.anomaly_detector import _get_or_create_auto_rule
 
@@ -4068,6 +4166,7 @@ class TestDetectUnsolvedChallenges:
             ("detect_challenge_farms", RuleType.IP, "203.0.119.50"),
             ("detect_unsolved_challenges", RuleType.CIDR, "203.0.120.0/24"),
             ("detect_cloud_spray", RuleType.CIDR, "203.0.121.0/24"),
+            ("detect_scraper_404_ratio", RuleType.IP, "203.0.119.52"),
             ("challenge_escalation", RuleType.IP, "203.0.119.51"),
         ]
         for detector_name, rule_type, pattern in cases:

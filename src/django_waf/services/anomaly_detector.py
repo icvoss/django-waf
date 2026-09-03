@@ -63,6 +63,7 @@ def detect_ua_rotation(
     window_minutes: int = 5,
     threshold: int | None = None,
     dry_run: bool = False,
+    count_refresh_as_created: bool = False,
 ) -> list:
     """Detect IPs using an unusually large number of distinct User-Agent strings.
 
@@ -76,6 +77,9 @@ def detect_ua_rotation(
                    DJANGO_WAF_ANOMALY_THRESHOLD_DISTINCT_UAS.
         dry_run: When True (#38), collects what would be created without
                  writing any BlockRule or emitting the anomaly_detected signal.
+        count_refresh_as_created: Forwarded to ``_get_or_create_auto_rule``
+                 (see its docstring). Default False, no effect on any
+                 caller except ``services.detector_probe``.
 
     Returns:
         List of BlockRule instances that were created (or, in dry-run, would
@@ -120,6 +124,7 @@ def detect_ua_rotation(
             detector_name="detect_ua_rotation",
             confidence=confidence,
             evidence=details,
+            count_refresh_as_created=count_refresh_as_created,
         )
         if created:
             created_rules.append(rule)
@@ -134,7 +139,11 @@ def detect_ua_rotation(
     return created_rules
 
 
-def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list:
+def detect_subnet_burst(
+    window_minutes: int = 15,
+    dry_run: bool = False,
+    count_refresh_as_created: bool = False,
+) -> list:
     """Detect /24 (IPv4) or /48 (IPv6) subnets with anomalously high request volume.
 
     Per BR-ANOM-002 (as amended, issue #80): flags a subnet when BOTH of the
@@ -176,6 +185,9 @@ def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list
         window_minutes: Time window to analyse (default 15).
         dry_run: When True (#38), collects what would be created without
                  writing any BlockRule or emitting the anomaly_detected signal.
+        count_refresh_as_created: Forwarded to ``_get_or_create_auto_rule``
+                 (see its docstring). Default False, no effect on any
+                 caller except ``services.detector_probe``.
 
     Returns:
         List of BlockRule instances that were created (or, in dry-run, would
@@ -240,6 +252,7 @@ def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list
             detector_name="detect_subnet_burst",
             confidence=confidence,
             evidence=details,
+            count_refresh_as_created=count_refresh_as_created,
         )
         if created:
             created_rules.append(rule)
@@ -254,7 +267,11 @@ def detect_subnet_burst(window_minutes: int = 15, dry_run: bool = False) -> list
     return created_rules
 
 
-def detect_challenge_farms(window_hours: int = 24, dry_run: bool = False) -> list:
+def detect_challenge_farms(
+    window_hours: int = 24,
+    dry_run: bool = False,
+    count_refresh_as_created: bool = False,
+) -> list:
     """Detect IPs with high challenge failure rates and low pass rates.
 
     Per BR-ANOM-003: IPs with challenge_failures > 10 and challenge_passes < 2
@@ -264,6 +281,9 @@ def detect_challenge_farms(window_hours: int = 24, dry_run: bool = False) -> lis
         window_hours: Time window to analyse (default 24).
         dry_run: When True (#38), collects what would be created without
                  writing any BlockRule or emitting the anomaly_detected signal.
+        count_refresh_as_created: Forwarded to ``_get_or_create_auto_rule``
+                 (see its docstring). Default False, no effect on any
+                 caller except ``services.detector_probe``.
 
     Returns:
         List of BlockRule instances that were created (or, in dry-run, would
@@ -302,6 +322,7 @@ def detect_challenge_farms(window_hours: int = 24, dry_run: bool = False) -> lis
             detector_name="detect_challenge_farms",
             confidence=confidence,
             evidence=details,
+            count_refresh_as_created=count_refresh_as_created,
         )
         if created:
             created_rules.append(rule)
@@ -322,6 +343,7 @@ def detect_unsolved_challenges(
     referer_ratio: float | None = None,
     subnet_window_minutes: int | None = None,
     dry_run: bool = False,
+    count_refresh_as_created: bool = False,
 ) -> list:
     """Detect IPs, and subnets, that receive challenges but never solve them.
 
@@ -411,6 +433,9 @@ def detect_unsolved_challenges(
                        the per-IP path (#93).
         dry_run: When True (#38), collects what would be created without
                  writing any BlockRule or emitting the anomaly_detected signal.
+        count_refresh_as_created: Forwarded to ``_get_or_create_auto_rule``
+                 (see its docstring). Default False, no effect on any
+                 caller except ``services.detector_probe``.
 
     Returns:
         List of BlockRule instances that were created (or, in dry-run, would
@@ -502,6 +527,7 @@ def detect_unsolved_challenges(
             referer_ratio=effective_referer_ratio,
             expiry=expiry,
             dry_run=dry_run,
+            count_refresh_as_created=count_refresh_as_created,
         )
     )
     created_rules.extend(
@@ -511,6 +537,7 @@ def detect_unsolved_challenges(
             window_minutes=effective_subnet_window_minutes,
             expiry=expiry,
             dry_run=dry_run,
+            count_refresh_as_created=count_refresh_as_created,
         )
     )
 
@@ -527,6 +554,7 @@ def _detect_unsolved_challenges_per_ip(
     referer_ratio: float,
     expiry,
     dry_run: bool,
+    count_refresh_as_created: bool = False,
 ) -> list:
     """The per-IP half of detect_unsolved_challenges. See that function's
     docstring for the three-signal contract this implements unchanged.
@@ -605,6 +633,7 @@ def _detect_unsolved_challenges_per_ip(
             detector_name="detect_unsolved_challenges",
             confidence=confidence,
             evidence=details,
+            count_refresh_as_created=count_refresh_as_created,
         )
         if created:
             created_rules.append(rule)
@@ -631,6 +660,7 @@ def _detect_unsolved_challenges_by_subnet(
     window_minutes: int,
     expiry,
     dry_run: bool,
+    count_refresh_as_created: bool = False,
 ) -> list:
     """The subnet half of detect_unsolved_challenges (#84). See that
     function's docstring for the two-signal, two-stage contract this
@@ -746,6 +776,7 @@ def _detect_unsolved_challenges_by_subnet(
             detector_name="detect_unsolved_challenges",
             confidence=confidence,
             evidence=details,
+            count_refresh_as_created=count_refresh_as_created,
         )
         if created:
             created_rules.append(rule)
@@ -766,7 +797,11 @@ def _detect_unsolved_challenges_by_subnet(
     return created_rules
 
 
-def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
+def detect_cloud_spray(
+    window_minutes: int = 30,
+    dry_run: bool = False,
+    count_refresh_as_created: bool = False,
+) -> list:
     """Detect coordinated low-and-slow scraping from many distinct IPs.
 
     Identifies UAs shared by many distinct IPs (>= DJANGO_WAF_CLOUD_SPRAY_MIN_IPS)
@@ -806,6 +841,9 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
         window_minutes: Time window to analyse (default 30).
         dry_run: When True (#38), collects what would be created without
                  writing any BlockRule or emitting the anomaly_detected signal.
+        count_refresh_as_created: Forwarded to ``_get_or_create_auto_rule``
+                 (see its docstring). Default False, no effect on any
+                 caller except ``services.detector_probe``.
 
     Returns:
         List of BlockRule instances that were created (or, in dry-run, would
@@ -891,6 +929,7 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
                 detector_name="detect_cloud_spray",
                 confidence=ua_confidence,
                 evidence=ua_details,
+                count_refresh_as_created=count_refresh_as_created,
             )
             if ua_created:
                 created_rules.append(ua_rule)
@@ -940,6 +979,7 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
                 detector_name="detect_cloud_spray",
                 confidence=confidence,
                 evidence=details,
+                count_refresh_as_created=count_refresh_as_created,
             )
             if created:
                 created_rules.append(rule)
@@ -958,7 +998,11 @@ def detect_cloud_spray(window_minutes: int = 30, dry_run: bool = False) -> list:
     return created_rules
 
 
-def detect_scraper_404_ratio(window_minutes: int | None = None, dry_run: bool = False) -> list:
+def detect_scraper_404_ratio(
+    window_minutes: int | None = None,
+    dry_run: bool = False,
+    count_refresh_as_created: bool = False,
+) -> list:
     """Detect IPs whose requests are overwhelmingly 404s (BR-ANOM-014).
 
     Traced against a live deployment (VendablyCSS, shopping.vendably.com,
@@ -1056,6 +1100,9 @@ def detect_scraper_404_ratio(window_minutes: int | None = None, dry_run: bool = 
                         DJANGO_WAF_SCRAPER_404_WINDOW_MINUTES.
         dry_run: When True (#38), collects what would be created without
                  writing any BlockRule or emitting the anomaly_detected signal.
+        count_refresh_as_created: Forwarded to ``_get_or_create_auto_rule``
+                 (see its docstring). Default False, no effect on any
+                 caller except ``services.detector_probe``.
 
     Returns:
         List of BlockRule instances that were created (or, in dry-run, would
@@ -1151,6 +1198,7 @@ def detect_scraper_404_ratio(window_minutes: int | None = None, dry_run: bool = 
             detector_name="detect_scraper_404_ratio",
             confidence=confidence,
             evidence=details,
+            count_refresh_as_created=count_refresh_as_created,
         )
         if created:
             created_rules.append(rule)
@@ -1170,7 +1218,11 @@ def detect_scraper_404_ratio(window_minutes: int | None = None, dry_run: bool = 
     return created_rules
 
 
-def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) -> dict:
+def run_all_detectors(
+    window_minutes: int | None = None,
+    dry_run: bool = False,
+    count_refresh_as_created: bool = False,
+) -> dict:
     """Run all anomaly detectors and return a summary of findings.
 
     Args:
@@ -1189,6 +1241,16 @@ def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) 
             BlockRule, activating anything, or emitting the
             anomaly_detected signal. ``run_all_detectors(dry_run=True)``
             makes zero DB writes.
+        count_refresh_as_created: Forwarded to every detector and, through
+            them, to ``_get_or_create_auto_rule`` (see its docstring).
+            Default False, which leaves every existing caller (the
+            ``django_waf_detect_anomalies`` command, the scheduled Celery
+            task) unaffected. Exists solely for
+            ``services.detector_probe.run_detector_probe``, whose liveness
+            question ("did the detector's query fire against its fixture")
+            is genuinely different from dry-run's honesty question ("would
+            a real run insert a NEW row"), and must not be answered by
+            corrupting the second to answer the first.
 
     Returns:
         Dict with keys: ua_rotation_rules, subnet_burst_rules,
@@ -1197,20 +1259,32 @@ def run_all_detectors(window_minutes: int | None = None, dry_run: bool = False) 
         describe what WOULD be created, not what was created.
     """
     if window_minutes is None:
-        ua_rules = detect_ua_rotation(dry_run=dry_run)
-        subnet_rules = detect_subnet_burst(dry_run=dry_run)
-        farm_rules = detect_challenge_farms(dry_run=dry_run)
-        unsolved_rules = detect_unsolved_challenges(dry_run=dry_run)
-        spray_rules = detect_cloud_spray(dry_run=dry_run)
-        scraper_404_rules = detect_scraper_404_ratio(dry_run=dry_run)
+        ua_rules = detect_ua_rotation(dry_run=dry_run, count_refresh_as_created=count_refresh_as_created)
+        subnet_rules = detect_subnet_burst(dry_run=dry_run, count_refresh_as_created=count_refresh_as_created)
+        farm_rules = detect_challenge_farms(dry_run=dry_run, count_refresh_as_created=count_refresh_as_created)
+        unsolved_rules = detect_unsolved_challenges(dry_run=dry_run, count_refresh_as_created=count_refresh_as_created)
+        spray_rules = detect_cloud_spray(dry_run=dry_run, count_refresh_as_created=count_refresh_as_created)
+        scraper_404_rules = detect_scraper_404_ratio(dry_run=dry_run, count_refresh_as_created=count_refresh_as_created)
     else:
         window_hours = max(1, -(-window_minutes // 60))  # ceiling division
-        ua_rules = detect_ua_rotation(window_minutes=window_minutes, dry_run=dry_run)
-        subnet_rules = detect_subnet_burst(window_minutes=window_minutes, dry_run=dry_run)
-        farm_rules = detect_challenge_farms(window_hours=window_hours, dry_run=dry_run)
-        unsolved_rules = detect_unsolved_challenges(window_minutes=window_minutes, dry_run=dry_run)
-        spray_rules = detect_cloud_spray(window_minutes=window_minutes, dry_run=dry_run)
-        scraper_404_rules = detect_scraper_404_ratio(window_minutes=window_minutes, dry_run=dry_run)
+        ua_rules = detect_ua_rotation(
+            window_minutes=window_minutes, dry_run=dry_run, count_refresh_as_created=count_refresh_as_created
+        )
+        subnet_rules = detect_subnet_burst(
+            window_minutes=window_minutes, dry_run=dry_run, count_refresh_as_created=count_refresh_as_created
+        )
+        farm_rules = detect_challenge_farms(
+            window_hours=window_hours, dry_run=dry_run, count_refresh_as_created=count_refresh_as_created
+        )
+        unsolved_rules = detect_unsolved_challenges(
+            window_minutes=window_minutes, dry_run=dry_run, count_refresh_as_created=count_refresh_as_created
+        )
+        spray_rules = detect_cloud_spray(
+            window_minutes=window_minutes, dry_run=dry_run, count_refresh_as_created=count_refresh_as_created
+        )
+        scraper_404_rules = detect_scraper_404_ratio(
+            window_minutes=window_minutes, dry_run=dry_run, count_refresh_as_created=count_refresh_as_created
+        )
 
     total = (
         len(ua_rules)
@@ -1390,6 +1464,7 @@ def _get_or_create_auto_rule(
     detector_name: str = "",
     confidence: Decimal | None = None,
     evidence: dict | None = None,
+    count_refresh_as_created: bool = False,
 ) -> tuple:
     """Create or refresh an auto-generated BlockRule, avoiding duplicates.
 
@@ -1426,6 +1501,36 @@ def _get_or_create_auto_rule(
     built for the anomaly_detected signal. Neither key is touched when the
     corresponding argument is omitted, so a caller not yet passing them sees
     unchanged behaviour.
+
+    ``count_refresh_as_created`` (default ``False``, added for
+    ``services.detector_probe.run_detector_probe``): dry-run's ``created``
+    return value answers "would a subsequent real run create a NEW row",
+    which is ``False`` whenever ANY existing ``(rule_type, pattern,
+    source=AUTO, action)`` row is found, including one that is expired and
+    inactive, because a real run would refresh that row via
+    ``_update_or_create_auto_rule`` rather than insert a second one. The
+    probe's liveness question is different: "did this detector's logic
+    fire against its fixture", which is true whether the resulting row is a
+    fresh insert or a refresh of a stale leftover. Left at its default,
+    this parameter changes nothing: a leftover ``BlockRule`` from an
+    earlier real (non-dry-run) probe invocation, an operator's
+    ``django_waf_import_rules`` run, or a threat feed sync that happens to
+    land on the exact synthetic TEST-NET pattern a fixture builds, makes
+    ``_get_or_create_auto_rule`` report ``created=False`` even though the
+    detector's query genuinely matched, and ``run_detector_probe`` would
+    then misreport a healthy detector as SILENT. Set ``True`` ONLY by the
+    probe path (``run_detector_probe`` forwards it through
+    ``run_all_detectors`` and every ``detect_*`` function down to here): in
+    that case, a matched-but-would-be-refreshed existing row also counts as
+    ``created=True`` for reporting purposes, so the probe's liveness
+    signal reflects whether the query matched, not whether the row
+    happened to be new. This can never affect a real (non-dry-run)
+    invocation, because a real run never reaches the ``dry_run`` branch
+    below at all, and no caller other than the probe ever passes ``True``:
+    ``django_waf_detect_anomalies``'s dry-run "would create N rules" count,
+    which depends on the existing honesty contract, is therefore
+    unaffected regardless of what accumulates in ``BlockRule`` over the
+    life of a deployment.
 
     Provenance (#97): ``detector_name`` (when non-empty) is added to
     ``BlockRule.detectors``, a comma-separated, sorted SET of every detector
@@ -1499,7 +1604,13 @@ def _get_or_create_auto_rule(
     if dry_run:
         existing = BlockRule.objects.filter(**lookup).first()
         if existing is not None:
-            return existing, False
+            # See the docstring's "count_refresh_as_created" section: a
+            # real run would refresh this row rather than insert a new
+            # one, so `created` stays False for every caller by default
+            # (the dry-run honesty contract). Only the probe path, which
+            # opts in explicitly, treats a matched-but-would-be-refreshed
+            # row as evidence the detector's own query fired.
+            return existing, count_refresh_as_created
         defaults["detectors"] = _merge_detector_names("", detector_name)
         return BlockRule(**lookup, **defaults), True
 

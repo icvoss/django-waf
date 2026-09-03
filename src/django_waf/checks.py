@@ -88,13 +88,43 @@ line.
 
 The observe-only detector-name check (``django_waf.W008``) warns when
 ``DJANGO_WAF_ANOMALY_OBSERVE_ONLY_DETECTORS`` (BR-ANOM-008, #45) names a
-value that does not match any of the five anomaly detector function names.
-The setting is checked against
-``django_waf.services.anomaly_detector.DETECTOR_NAMES``, the same constant
-``_get_or_create_auto_rule`` reads to decide observe-only status, so a
-detector rename cannot silently desync the two: a typo or a stale name from
-a renamed detector would otherwise mean the operator believes a detector is
-running observe-only when it is, in fact, enforcing.
+value that does not match any of the six anomaly detector function names
+(five when this check was introduced; ``detect_scraper_404_ratio`` was
+added by BR-ANOM-014 without this docstring being swept). The setting is
+checked against ``django_waf.services.anomaly_detector.DETECTOR_NAMES``,
+the same constant ``_get_or_create_auto_rule`` reads to decide
+observe-only status, so a detector rename cannot silently desync the two:
+a typo or a stale name from a renamed detector would otherwise mean the
+operator believes a detector is running observe-only when it is, in fact,
+enforcing.
+
+The detector-wiring check (``django_waf.W009``) warns when
+``anomaly_detector.DETECTOR_NAMES`` and
+``anomaly_detector.DETECTOR_NAME_TO_RESULT_KEY`` disagree on membership: a
+name in one dict but not the other. A detector must currently be
+hand-added in several places (``DETECTOR_NAMES``,
+``DETECTOR_NAME_TO_RESULT_KEY``, both branches of ``run_all_detectors``'s
+call list, the hand-summed total, the log format string, the hand-written
+return dict, and ``detector_probe._build_fixture_traffic``); only the
+first two are adjacent and already commented against desync. A name added
+to ``DETECTOR_NAMES`` but never wired into ``DETECTOR_NAME_TO_RESULT_KEY``
+(or the reverse) is invisible to this check's own guard test at the Python
+level, but it IS visible to a running system: a detector present in
+``DETECTOR_NAMES`` without a matching result key reads as permanently
+silent to ``services.detector_probe.run_detector_probe`` (``.get(result_
+key, 0)`` never finds anything to count), reporting a wiring bug as a dead
+detector rather than what it actually is. Mirrors ``django_waf.W008``'s
+own pattern: it imports the two constants and checks their shape,
+performing no query and touching no external service, so it is exactly as
+cheap. Like W008, it is NOT gated on ``DJANGO_WAF_ENABLED``: this check
+verifies a static wiring invariant in ``services.anomaly_detector``'s own
+module-level constants (the "single source of truth" the top of that
+module's own comment describes), and the anomaly-detection subsystem it
+protects runs on its own Celery schedule (``detect_anomalies``,
+BR-ANOM-005) entirely independently of whether ``WafMiddleware`` is
+enforcing requests, so gating it on the WAF's per-request master switch
+would hide the misconfiguration from exactly the deployments running
+anomaly detection with the WAF's request-time enforcement switched off.
 
 The Redis version check (``django_waf.E005``) errors when the connected
 Redis server reports a version below the package's own floor, currently
@@ -632,6 +662,73 @@ def check_observe_only_detector_names(app_configs, **kwargs):
             "for this entry.",
             hint=f"Known detector names are: {known}.",
             id="django_waf.W008",
+        )
+    ]
+
+
+@register()
+def check_detector_wiring(app_configs, **kwargs):
+    """Warn (``django_waf.W009``) when ``anomaly_detector.DETECTOR_NAMES``
+    and ``anomaly_detector.DETECTOR_NAME_TO_RESULT_KEY`` disagree on
+    membership.
+
+    A name can land in only one of the two dicts if a detector is added or
+    renamed and the other dict is not updated in the same change: both are
+    hand-maintained module-level constants (see their own comments in
+    ``services/anomaly_detector.py``), and nothing at the Python level
+    enforces they stay in sync. A name in ``DETECTOR_NAMES`` with no
+    matching result key is the more dangerous of the two directions: it
+    reads to ``services.detector_probe.run_detector_probe`` as a
+    permanently silent detector (``result.get(result_key, 0)`` never finds
+    anything to count for it), which is indistinguishable from a genuinely
+    dead detector without reading the code. The reverse (a result key with
+    no matching ``DETECTOR_NAMES`` entry) is invisible to the probe,
+    ``django_waf.W008``, and observe-only mode alike, with nothing
+    failing. Both directions are reported together here.
+
+    Mirrors ``django_waf.W008``'s own pattern (import the constants, check
+    their shape) and is not gated on ``DJANGO_WAF_ENABLED`` for the same
+    reason W008 is not: this validates a static wiring invariant in
+    ``services.anomaly_detector``'s own constants, and the anomaly-
+    detection subsystem it protects runs on its own Celery schedule
+    independently of the WAF's per-request master switch (see the module
+    docstring for the fuller rationale).
+    """
+    from django_waf.services.anomaly_detector import (
+        DETECTOR_NAME_TO_RESULT_KEY,
+        DETECTOR_NAMES,
+    )
+
+    result_key_names = set(DETECTOR_NAME_TO_RESULT_KEY)
+    missing_result_key = sorted(DETECTOR_NAMES - result_key_names)
+    missing_from_detector_names = sorted(result_key_names - DETECTOR_NAMES)
+
+    if not missing_result_key and not missing_from_detector_names:
+        return []
+
+    problems = []
+    if missing_result_key:
+        problems.append(f"in DETECTOR_NAMES but missing from DETECTOR_NAME_TO_RESULT_KEY: {missing_result_key!r}")
+    if missing_from_detector_names:
+        problems.append(
+            f"a key in DETECTOR_NAME_TO_RESULT_KEY but missing from DETECTOR_NAMES: {missing_from_detector_names!r}"
+        )
+
+    return [
+        Warning(
+            "django_waf.services.anomaly_detector.DETECTOR_NAMES and "
+            "DETECTOR_NAME_TO_RESULT_KEY have desynced: " + "; ".join(problems) + ". "
+            "A name missing from DETECTOR_NAME_TO_RESULT_KEY reports as a "
+            "permanently silent detector to django_waf_probe_detectors "
+            "and the detector outcome report, indistinguishable from a "
+            "genuinely dead detector without reading the code.",
+            hint=(
+                "Add the missing entry to whichever constant lacks it in "
+                "services/anomaly_detector.py; both are updated in the "
+                "same change whenever a detector is added, renamed, or "
+                "removed."
+            ),
+            id="django_waf.W009",
         )
     ]
 

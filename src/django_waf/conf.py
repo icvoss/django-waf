@@ -393,6 +393,40 @@ def _DJANGO_WAF_LOG_RETENTION_DAYS() -> int:
     return _get_setting("DJANGO_WAF_LOG_RETENTION_DAYS", 30)
 
 
+# Number of days to retain an expired, inactive, auto-generated BlockRule
+# before prune_stale_rules (tasks.py) hard-deletes it (wave 2, #99 planning,
+# the wave 2 rule-provenance plan). BlockRule has expiry (BR-LIFE-001, expire_rules sets
+# is_active=False) but, unlike RequestLog, no deletion path existed before
+# this setting: measured on a live 2.4.0 deployment, 48,319 rows were older
+# than 90 days with nothing older than 150 (the table's own age), so nothing
+# was ever removing them. 90 days deliberately exceeds
+# DJANGO_WAF_LOG_RETENTION_DAYS's 30-day default: a BlockRule is a decision
+# record, not a sampled request, and an operator auditing "why was this IP
+# blocked three months ago" needs the rule to still exist longer than the
+# request logs that triggered it. Unbounded growth is not this setting's
+# only cost: a surviving expired-and-inactive, source=auto BlockRule whose
+# pattern matches a detector's probe fixture permanently reports that
+# detector SILENT in django_waf_probe_detectors, because the probe's
+# dry-run existence check filters on neither is_active nor expires_at (see
+# services/detector_probe.py). Retention is therefore also what keeps that
+# probe collision from being permanent.
+def _DJANGO_WAF_RULE_RETENTION_DAYS() -> int:
+    return _get_setting("DJANGO_WAF_RULE_RETENTION_DAYS", 90)
+
+
+# Gate on prune_stale_rules (tasks.py) actually deleting BlockRule rows.
+# Default False: this is the one destructive path in the package, so the
+# scheduled task is safe to include in DJANGO_WAF_CELERY_BEAT_SCHEDULE from
+# day one, at every consumer, without a single row ever being deleted until
+# an operator has read this setting and turned it on deliberately. While
+# False, the task still runs on schedule and still reports a count via its
+# log line, so an operator sees "this many rows are stale" for as long as
+# they like before flipping this on, the same escalation path the command's
+# --dry-run/--execute split offers for a manual run.
+def _DJANGO_WAF_RULE_PRUNE_ENABLED() -> bool:
+    return _get_setting("DJANGO_WAF_RULE_PRUNE_ENABLED", False)
+
+
 # Path to the nginx PID file. When set, reload_nginx() sends SIGHUP to the
 # master process directly: no subprocess, no sudo, no PATH required. Just
 # needs read access to the PID file. Set to None to use the command fallback.
@@ -688,6 +722,22 @@ def _DJANGO_WAF_SITE_PASSWORD_COOKIE_DOMAIN() -> str | None:
 # celery is installed. This module must remain importable even when celery
 # is entirely absent from the environment (e.g. projects that don't use
 # Celery at all still import django_waf.conf indirectly via checks/admin).
+#
+# This dict is exported, not registered: the package never calls
+# ``app.conf.beat_schedule.update(...)`` or otherwise reaches into a
+# consumer's Celery app on its own. A consumer who writes their own
+# CELERY_BEAT_SCHEDULE by hand, rather than merging this dict per the
+# pattern above, gets no error and no warning for a task named here that
+# their own schedule omits: the task simply never runs, silently. This is
+# pre-existing for every entry below (most notably
+# ``flush_rule_hit_counts``, whose own docstring in tasks.py describes the
+# unbounded Redis growth that follows from it never firing) and is not
+# solved by this wave's addition of ``prune_stale_rules``. It is
+# documented here rather than fixed because fixing it means either an
+# AppConfig.ready() check that can inspect a Celery app that may not exist
+# yet at import time, or a system check comparing this dict against
+# whatever the consumer actually configured, and both are a separate,
+# harder change than what this section covers.
 _CELERY_BEAT_INTERVAL_ENTRIES: dict = {
     "django-waf-generate-blocklist": {
         "task": "django_waf.tasks.generate_blocklist",
@@ -736,6 +786,16 @@ if crontab is not None:
         "django-waf-prune-challenge-tokens": {
             "task": "django_waf.tasks.prune_challenge_tokens",
             "schedule": crontab(hour=4, minute=15),
+        },
+        "django-waf-prune-stale-rules": {
+            # Safe to include unconditionally: prune_stale_rules itself is
+            # gated on DJANGO_WAF_RULE_PRUNE_ENABLED (default False, see
+            # conf.py) and reports a count without deleting while disabled.
+            # A consumer who merges this dict as-is (per the module
+            # docstring's documented pattern) never has a row deleted
+            # without first setting that flag deliberately.
+            "task": "django_waf.tasks.prune_stale_rules",
+            "schedule": crontab(hour=4, minute=20),
         },
         "django-waf-sync-threat-feed": {
             "task": "django_waf.tasks.sync_threat_feed",
