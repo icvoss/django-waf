@@ -9,6 +9,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A replaceable block response** (#74, BR-EVAL-012).
+  `DJANGO_WAF_BLOCK_RESPONSE_HANDLER` takes a dotted path to a callable
+  `handler(request, result) -> HttpResponse`, and the middleware returns
+  whatever it produces, unaltered. Unset (the default), the response is
+  exactly `HttpResponseForbidden("Access denied.")`, byte for byte what
+  every prior release returned; the built-in response is now produced by a
+  single named method that both the no-hook path and every fallback path
+  return, so the two cannot drift apart.
+
+  The need is specific rather than cosmetic: a multi-tenant host serving
+  unbound custom domains is fingerprinted as running this WAF by the fixed
+  403 body, and previously had no supported seam. On this path
+  `result.verdict` is always `BLOCKED` and `result.retry_after` always
+  `None`. `result.matched_rule_id` is a `UUID` or `None`, never a
+  `BlockRule`: the rule row is deliberately never loaded, because the block
+  decision comes from the Redis fast path and reading the row per blocked
+  request would hand an attacker a query amplifier. A handler needing the
+  rule must query for it.
+
+  Three failure modes fall back to the built-in 403 and log at ERROR,
+  distinguished so you can tell which happened: the path will not import,
+  the handler raises, or it returns something that is not an
+  `HttpResponse`. The import guard catches more than `ImportError` on
+  purpose, since importing your handler's module runs that module's own
+  top-level code and can raise anything. The request stays blocked in all
+  three cases: a broken hook must not turn a block into a pass. The path is
+  resolved on each blocked request rather than once at import, so
+  `override_settings` works.
+
+  **If you subclass `WafMiddleware` and override the private
+  `_handle_verdict`, you will not pick this up.** Your override keeps
+  working exactly as before and nothing breaks, but it will not honour the
+  new setting until you either rebase onto the new `_handle_verdict` or
+  call `self._build_block_response(request, result)` yourself where you
+  currently build the 403.
+
+  **Country blocks are deliberately not covered**, and still return the
+  same fixed 403. `_check_country_block` decides before `evaluate_request()`
+  runs, so it has no `EvaluationResult` to hand a `(request, result)`
+  handler, and synthesising a fake one to satisfy the signature would be a
+  worse defect than the gap. That means a country block still fingerprints
+  the WAF on exactly the unbound custom domains this hook is about; until
+  #76 closes that, exempt the path or gate country blocking at the edge.
+
+- **`django_waf.E007`**, a boot-time check for a challenge flow with
+  nowhere to send anyone (#102, BR-EVAL-011).
+
+  **This is an Error and it will fail `manage.py check`** for a deployment
+  with the WAF enabled, a challenge reachable from settings, neither
+  `DJANGO_WAF_CHALLENGE_URL` nor `DJANGO_WAF_VERIFY_URL` set, and
+  `django_waf.urls` not routed under the `django_waf` namespace. That is a
+  real break on upgrade, and it is reporting a fault that was already live:
+  a deployment in that state was serving **500s** to any legitimate visitor
+  the WAF challenged, because `_get_challenge_paths()` called
+  `reverse("django_waf:challenge")` and nothing caught the resulting
+  `NoReverseMatch`. Two fixes, either one sufficient: route the URLs, with
+  `path("waf/", include("django_waf.urls", namespace="django_waf"))`, or set
+  **both** `DJANGO_WAF_CHALLENGE_URL` and `DJANGO_WAF_VERIFY_URL` to the
+  literal paths your WAF views are mounted at.
+
+  Setting only one of the two is not enough and the check still fires. The
+  two settings are consumed on separate lines, each falling back to its own
+  `reverse()` call, so a half-configured project is still broken on the
+  other route: the check names precisely which route is unresolvable rather
+  than reporting one you have already pointed somewhere valid.
+
+  Three conditions must all hold before it fires, which is what makes a
+  false positive on a working deployment hard to construct. The WAF must be
+  enabled. A challenge must be reachable from settings, meaning either
+  `DJANGO_WAF_SCORE_THRESHOLD_CHALLENGE < DJANGO_WAF_SCORE_THRESHOLD_BLOCK`
+  or `DJANGO_WAF_CHALLENGE_NO_REFERER = True`, so a project running the WAF
+  purely for blocking and throttling is silent. And at least one URL
+  override must be empty, since setting both means `reverse()` is never
+  called and an unrouted urlconf is harmless. Two limitations are stated
+  rather than hidden: a `BlockRule` with `action = "challenge"` also
+  produces a challenge and no boot check can see one that does not exist
+  yet, and the check resolves against whichever `ROOT_URLCONF` is active at
+  check time, which under django-hosts or per-request urlconfs may not be
+  the one serving traffic. Setting both URL overrides is the escape for
+  that case, and is what the package already recommends there.
+
 - **A liveness probe for the Redis hit-count flush path** (#100, BR-LIFE-005).
   The companion to the detector probe shipped in 2.2.0, covering the
   subsystem that one cannot reach. `flush_rule_hit_counts` called Redis
@@ -122,6 +203,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with enforcement off.
 
 ### Fixed
+
+- **A challenged visitor was served a 500 on a deployment with the WAF
+  URLs unrouted** (#102, BR-EVAL-011). The CHALLENGED branch of
+  `_handle_verdict` called `_get_challenge_paths()` unguarded, and no
+  `NoReverseMatch` handler existed anywhere in `middleware.py`, so with
+  `django_waf.urls` routed nowhere and no explicit URL override set, the
+  exception escaped the middleware entirely. The visitor affected is a
+  legitimate one who merely tripped a detector: the WAF's own
+  misconfiguration turned a challenge into an error page.
+
+  The branch now catches `NoReverseMatch` narrowly, passes the request
+  through to the view, and logs at ERROR naming the client IP, the path,
+  and both fixes. Failing open is the right direction here, not a
+  compromise: there is no route to send the visitor to, so half-blocking
+  them behind a redirect to a page that does not exist is strictly worse
+  than letting them through. It is the same fail-open posture BR-EVAL-007
+  already sets for Redis outages and evaluation errors. Caught narrowly
+  rather than as a bare `Exception`, so any other failure in that branch
+  still surfaces. `django_waf.E007` above reports the same
+  misconfiguration at boot, and both are needed: an operator who ignores
+  the check must still not serve 500s.
 
 - **The detector liveness probe reported a healthy detector as SILENT**
   once a deployment had accumulated any `BlockRule` history. The dry-run
