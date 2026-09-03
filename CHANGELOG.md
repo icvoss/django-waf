@@ -178,6 +178,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   how many lines were skipped for a malformed IP, rather than one line per
   bad row.
 
+- **`score_user_agent` no longer penalises a client for honestly declaring
+  itself an automated one** (#82). The `_RE_SCRAPER_LIBS` check added 2.5
+  to the anomaly score for any UA matching a known HTTP library string
+  (curl, python-requests, Go-http-client, Scrapy, httpx, and others), on
+  top of every other weighted check in the function. Measured on a live
+  commercial deployment: 12,053 requests penalised this way over one
+  window came from just 22 distinct IPs, all in a single `/24`, all
+  sending `curl/8.7.1`, a scanner that happened to be honest about what it
+  was rather than evidence that honesty itself is suspicious. Worse, the
+  incentive it created was backwards: a client silently pretending to be a
+  browser paid no penalty for the pretence, while one that told the truth
+  paid 2.5 points for it.
+
+  The weight is removed, not reduced. A reduction (scoring honest UAs
+  below zero, or below what an unidentified UA would score) was considered
+  and rejected: it would be trivially exploitable, since any scanner
+  willing to send `curl` as its UA string could buy a discount on every
+  other signal. Absence of penalty is the only defensible position the
+  production evidence supports. Every other check in `score_user_agent` is
+  unchanged at full weight: impossible OS/browser combination (3.0),
+  ancient browser version (2.0), missing version token (1.5), short UA
+  under 15 characters (1.0), empty UA (1.0). Every behavioural signal
+  elsewhere in the composite score (volume gating, path scoring, subnet
+  detection, rate limiting, HTTP fingerprint mismatch) is also unchanged.
+  `classify_ua`, which uses the same `_RE_SCRAPER_LIBS` pattern to label a
+  UA `"library"` for analytics, is untouched: only the scoring
+  contribution inside `score_user_agent` was removed, not the pattern
+  itself.
+
+  Concretely: `curl/7.68.0` (11 characters) drops from 3.5 to 1.0, keeping
+  only the short-UA weight, which is a genuine anomaly signal independent
+  of the library match. `python-requests/2.28.1`, `Go-http-client/1.1`,
+  `Scrapy/2.6.1 (+https://scrapy.org)` and `Wget/1.20.3 (linux-gnu)` all
+  drop from 2.5 to 0.0, being long enough to clear the short-UA threshold.
+
+  **Behaviour change for an existing consumer on upgrade**: fewer honest
+  automated clients will cross `DJANGO_WAF_SCORE_THRESHOLD_LOG` (default
+  3.0) or `_CHALLENGE` (default 5.0) on UA score alone, once their
+  request volume clears the 10-requests-per-5-minutes gate that activates
+  UA scoring at all. A deceptive client, one whose UA claims to be a
+  browser while its headers say otherwise, is not affected by this change;
+  it is caught by `score_fingerprint_mismatch` regardless, which was
+  already scoring purely on the browser claim and is untouched here.
+
+- **`classify_fingerprint` no longer labels an honest non-browser client
+  `"browser"`** (#82). Every check inside `score_fingerprint_mismatch` is
+  gated on the UA claiming to be a browser (matching Chromium's
+  `Sec-CH-UA` requirement or the wider `Sec-Fetch-*` browser set), so a UA
+  that makes no such claim always scored a clean 0.0, by construction, and
+  no known mismatch could ever apply. `classify_fingerprint`'s final
+  fallthrough then labelled that clean score `"browser"`, so `curl`,
+  `python-requests`, and every self-identifying crawler in production were
+  recorded in `RequestLog.fingerprint_verdict` as browsers. That field is
+  what an operator reads to audit exactly this kind of tiering, so the
+  mislabel degraded the diagnostic it exists to provide.
+
+  A UA that makes no browser claim now classifies as `"unknown"` rather
+  than falling through to `"browser"`, which is the honest label: the
+  fingerprint mechanism has no signal to offer either way for a client
+  that never claimed to be a browser. `"unknown"` was already one of the
+  four documented values (browser/bot/suspicious/unknown per BR-FP-001);
+  no fifth value was added, and no consumer-facing admin filter or query
+  needs to change to recognise it.
+
+  **Behaviour change for an existing consumer on upgrade**: `RequestLog`
+  rows for honest libraries and self-identifying crawlers will now record
+  `fingerprint_verdict = "unknown"` instead of `"browser"`. This is a data
+  labelling correction, not an enforcement change: the set of inputs that
+  classify as `"bot"` is unchanged, because that branch requires a mismatch
+  score of 3.0 or higher, which is only reachable when the UA claims to be
+  a browser in the first place, the exact condition this fix's fallthrough
+  never reaches. `BR-CHAL-013`'s escalation gate, which keys on
+  `fingerprint_verdict == "bot"`, is therefore unaffected.
+
 ## [2.5.0] - 2026-09-03
 
 ### Added

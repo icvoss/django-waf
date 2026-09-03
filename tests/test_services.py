@@ -102,63 +102,94 @@ class TestScoreUserAgent:
         )
         assert score_user_agent(ua) == 0.0
 
-    def test_python_requests_scores_high(self):
-        """python-requests UA triggers scraper-library weight."""
-        score = score_user_agent("python-requests/2.28.1")
-        # Scraper lib (2.5) + missing impossible combo, but short (1.0) = at least 2.5
-        assert score >= 2.5
+    def test_python_requests_carries_no_self_identification_penalty(self):
+        """python-requests scores 0.0: no penalty for honest self-identification.
 
-    def test_curl_scores_as_scraper(self):
-        """curl UA triggers scraper-library weight."""
-        score = score_user_agent("curl/7.68.0")
-        assert score >= 2.5
+        Issue #82 teeth check: before the fix this scored 2.5 (the
+        _RE_SCRAPER_LIBS weight). 22 chars, so the short-UA check does not
+        apply either. This test fails against the pre-fix code (asserts
+        2.5, not >= 2.5) and passes after.
+        """
+        assert score_user_agent("python-requests/2.28.1") == 0.0
 
-    def test_wget_scores_as_scraper(self):
-        """Wget UA triggers scraper-library weight."""
-        score = score_user_agent("Wget/1.20.3 (linux-gnu)")
-        assert score >= 2.5
+    def test_curl_carries_no_self_identification_penalty_but_keeps_short_ua_weight(self):
+        """curl scores 1.0: the library penalty is gone, the short-UA weight is not.
+
+        Issue #82 teeth check: before the fix this scored 3.5 (2.5 library
+        + 1.0 short). curl/7.68.0 is 11 characters, under the 15-char
+        threshold, so the short-UA weight is a genuine, independent
+        anomaly signal and correctly still applies. This test fails
+        against the pre-fix code (asserts 3.5) and passes after.
+        """
+        assert score_user_agent("curl/7.68.0") == 1.0
+
+    def test_go_http_client_carries_no_self_identification_penalty(self):
+        """Go-http-client scores 0.0 (18 chars, over the short-UA threshold)."""
+        assert score_user_agent("Go-http-client/1.1") == 0.0
+
+    def test_scrapy_carries_no_self_identification_penalty(self):
+        """Scrapy with a project URL scores 0.0 (34 chars, over the short-UA threshold)."""
+        assert score_user_agent("Scrapy/2.6.1 (+https://scrapy.org)") == 0.0
+
+    def test_httpx_carries_no_self_identification_penalty_but_keeps_short_ua_weight(self):
+        """httpx/0.23.0 scores 1.0: 12 chars is under the short-UA threshold."""
+        assert score_user_agent("httpx/0.23.0") == 1.0
+
+    def test_wget_carries_no_self_identification_penalty(self):
+        """Wget with its platform suffix scores 0.0 (23 chars, over the short-UA threshold)."""
+        assert score_user_agent("Wget/1.20.3 (linux-gnu)") == 0.0
 
     def test_ancient_msie_scores_high(self):
-        """MSIE 6 browser UA triggers ancient-browser weight."""
+        """MSIE 6 browser UA triggers ancient-browser weight.
+
+        Regression guard: this weight (2.0) is untouched by the issue #82
+        change and must remain exactly as before.
+        """
         ua = "Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1)"
-        score = score_user_agent(ua)
-        assert score >= 2.0
+        assert score_user_agent(ua) == 2.0
 
     def test_ancient_firefox_scores_high(self):
-        """Firefox/2.x UA triggers ancient-browser weight."""
+        """Firefox/2.x UA triggers ancient-browser weight (unchanged, 2.0)."""
         ua = "Mozilla/5.0 (Windows; U; Windows NT 5.0; en-US; rv:1.9) Gecko/20100101 Firefox/2.0"
-        score = score_user_agent(ua)
-        assert score >= 2.0
+        assert score_user_agent(ua) == 2.0
 
     def test_impossible_ios_windows_combo(self):
-        """iPhone + Windows NT is an impossible combination — scores 3.0+."""
+        """iPhone + Windows NT is an impossible combination (unchanged, 3.0)."""
         ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) Windows NT 10.0"
-        score = score_user_agent(ua)
-        assert score >= 3.0
+        assert score_user_agent(ua) == 3.0
 
     def test_impossible_android_ios_combo(self):
-        """Android + iPhone combination is impossible — scores 3.0+."""
+        """Android + iPhone combination is impossible (unchanged, 3.0)."""
         ua = "Mozilla/5.0 (Android 12; iPhone; U; en-US)"
-        score = score_user_agent(ua)
-        assert score >= 3.0
+        assert score_user_agent(ua) == 3.0
 
     def test_very_short_ua_adds_weight(self):
-        """UAs under 15 characters add 1.0 to score."""
-        ua = "ShortUA/1"  # 9 chars, no version token → 1.5 (no token) + 1.0 (short)
-        score = score_user_agent(ua)
-        assert score >= 1.0
+        """A UA under 15 characters that already has a version token scores 1.0.
+
+        Regression guard: the short-UA weight (1.0) is unaffected by issue
+        #82, and is independent of the missing-version-token weight since
+        "ShortUA/1" itself matches the version-token pattern.
+        """
+        ua = "ShortUA/1"  # 9 chars, has a version token → short weight only
+        assert score_user_agent(ua) == 1.0
 
     def test_ua_without_version_token_adds_weight(self):
-        """UA lacking any 'Word/version' token adds 1.5 to score."""
+        """UA lacking any 'Word/version' token scores 1.5 (unchanged)."""
         ua = "UnknownBrowserWithNoVersionToken"
-        score = score_user_agent(ua)
-        assert score >= 1.5
+        assert score_user_agent(ua) == 1.5
 
     def test_score_capped_at_ten(self):
         """Score is capped at 10.0 regardless of accumulation."""
-        # Impossible combo (3) + scraper (2.5) + ancient (2.0) + no token (1.5) + short (1.0) = 10
-        ua = "MSIE 6.0 python-requests iPhone Windows NT"
+        # Impossible combo (3.0) + ancient browser (2.0) + no version token
+        # (1.5) = 6.5, well under the 10.0 cap. Confirms the cap logic
+        # without depending on the removed scraper-library weight: before
+        # issue #82's fix, a UA matching this pattern plus _RE_SCRAPER_LIBS
+        # could reach the full 10.0 cap; that combination is no longer
+        # reachable because the weight was removed, not because the cap
+        # itself changed.
+        ua = "MSIE 6.0 iPhone Windows NT"
         score = score_user_agent(ua)
+        assert score == 6.5
         assert score <= 10.0
 
     def test_googlebot_scores_zero(self):
@@ -857,8 +888,13 @@ class TestEvaluateRequest:
         # >10 recent requests so UA scoring kicks in
         redis.zcount.return_value = 15
 
-        # 'urllib' scores 5.0 (scraper 2.5 + no version token 1.5 + short 1.0)
-        # which maps to CHALLENGED per _score_to_verdict.
+        # This UA scores 5.0 (ancient-browser 2.0 + impossible OS/browser
+        # combo 3.0), which maps to CHALLENGED per _score_to_verdict. Not
+        # 'urllib', which scored 5.0 before issue #82 removed the
+        # self-identification weight from score_user_agent and now scores
+        # only 2.5 (no version token 1.5 + short 1.0), no longer enough to
+        # clear the threshold this test exercises.
+        ua = "Mozilla/4.0 (compatible; MSIE 6.0; iPhone; Windows NT 5.1)"
         with (
             patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_BURST", 120),
             patch.object(conf_mod, "DJANGO_WAF_RATE_LIMIT_PER_MINUTE", 1200),
@@ -866,7 +902,7 @@ class TestEvaluateRequest:
         ):
             result = evaluate_request(
                 ip_address="7.7.7.7",
-                user_agent="urllib",
+                user_agent=ua,
                 path="/",
                 method="GET",
                 redis_client=redis,
@@ -4692,12 +4728,114 @@ class TestClassifyFingerprint:
         """An empty UA with no signals classifies as 'unknown'."""
         assert classify_fingerprint("", {}) == "unknown"
 
-    def test_non_browser_ua_classifies_as_browser(self):
-        """A non-browser UA like curl scores 0.0 and falls through to 'browser'.
+    def test_non_browser_ua_classifies_as_unknown(self):
+        """A non-browser UA like curl scores 0.0 and classifies as 'unknown'.
 
-        classify_fingerprint reserves 'unknown' for the empty-UA case.
+        Before the issue #82 fix, this fell through to 'browser' purely
+        because a UA that never claimed to be a browser could not fail any
+        of score_fingerprint_mismatch's browser-claim-gated checks. That
+        recorded honest libraries and crawlers as fingerprint_verdict
+        'browser' in RequestLog. curl never claims to be a browser, so
+        'unknown' (no signal either way) is the honest label, not 'browser'.
         """
-        assert classify_fingerprint("curl/7.88.1", {}) == "browser"
+        assert classify_fingerprint("curl/7.88.1", {}) == "unknown"
+
+    def test_crawler_ua_classifies_as_unknown(self):
+        """A crawler UA that makes no browser claim also classifies as 'unknown'.
+
+        Regression guard distinguishing this from the empty-UA 'unknown'
+        case: Googlebot's UA is non-empty and known to classify_ua as
+        'crawler', but it matches neither _CHROMIUM_UA_RE nor
+        _SEC_FETCH_BROWSERS_RE, so it must land on the same 'unknown'
+        branch as curl, not fall through to 'browser'.
+        """
+        ua = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+        assert classify_fingerprint(ua, {}) == "unknown"
+
+    def test_browser_claiming_ua_still_classifies_as_browser(self):
+        """A genuine browser-claiming UA with consistent headers is still 'browser'.
+
+        Regression guard: the fix must not turn every clean-fingerprint
+        request into 'unknown'. Only a UA that makes no browser claim at
+        all is affected.
+        """
+        assert classify_fingerprint(_CHROME_UA, _CHROME_META) == "browser"
+
+    def test_bot_verdict_set_is_unchanged_for_deceptive_browser_claim(self):
+        """A browser-claiming UA with bot-shaped headers still classifies as 'bot'.
+
+        BR-CHAL-013's escalation gate keys on fingerprint_verdict == 'bot'.
+        This fix only touches the non-browser-claiming fallthrough
+        (mismatch is always 0.0 there), so it cannot change which inputs
+        cross the mismatch >= 3.0 threshold that produces 'bot'.
+        """
+        assert classify_fingerprint(_CHROME_UA, {"HTTP_ACCEPT": "*/*"}) == "bot"
+
+
+class TestIssue82Composite:
+    """Composite checks tying score_user_agent and classify_fingerprint
+    together the way evaluate_request does, confirming issue #82's two
+    changes compose correctly and classify_ua is untouched by either.
+    """
+
+    def test_deceptive_browser_still_scores_five_via_fingerprint(self):
+        """A browser-claiming client with no client hints still scores 5.0.
+
+        Unchanged by issue #82: score_fingerprint_mismatch and
+        classify_fingerprint's 'bot' branch are untouched. Chrome 120
+        claims Chromium 89+ (needs Sec-CH-UA), claims a Sec-Fetch-*
+        browser (needs Sec-Fetch-*, Accept-Language, and a non-wildcard
+        Accept), and the empty meta dict supplies none of them: 2.0 + 1.5
+        + 1.0 + 0.5 = 5.0, the fingerprint scorer's cap.
+        """
+        assert score_fingerprint_mismatch(_CHROME_UA, {}) == 5.0
+        assert classify_fingerprint(_CHROME_UA, {}) == "bot"
+        # score_user_agent is unaffected: Chrome 120's UA string matches
+        # none of the anomaly checks, self-identification weight or not.
+        assert score_user_agent(_CHROME_UA) == 0.0
+
+    def test_honest_curl_scores_low_on_both_axes(self):
+        """Honest curl scores low on score_user_agent and 'unknown' on fingerprint.
+
+        curl/7.68.0 never claims to be a browser, so
+        score_fingerprint_mismatch is 0.0 by construction and
+        classify_fingerprint is 'unknown' (issue #82 change 2), and
+        score_user_agent no longer carries the self-identification penalty
+        (issue #82 change 1), leaving only the short-UA weight (1.0).
+        """
+        ua = "curl/7.68.0"
+        assert score_user_agent(ua) == 1.0
+        assert score_fingerprint_mismatch(ua, {}) == 0.0
+        assert classify_fingerprint(ua, {}) == "unknown"
+
+    def test_googlebot_scores_zero_on_both_axes(self):
+        """Googlebot scores 0.0 on score_user_agent and 'unknown' on fingerprint."""
+        ua = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+        assert score_user_agent(ua) == 0.0
+        assert score_fingerprint_mismatch(ua, {}) == 0.0
+        assert classify_fingerprint(ua, {}) == "unknown"
+
+    def test_classify_ua_categories_are_completely_unchanged(self):
+        """classify_ua's return value for all five categories is untouched by issue #82.
+
+        Neither change in this issue alters classify_ua or the regexes it
+        reads (_RE_CRAWLER, _RE_SCRAPER_LIBS, _RE_BOT, _RE_BROWSER): change
+        1 only removes _RE_SCRAPER_LIBS's contribution inside
+        score_user_agent, and change 2 only touches classify_fingerprint.
+        """
+        cases = {
+            "": "unknown",
+            "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)": "crawler",
+            "curl/7.68.0": "library",
+            "My Custom bot/1.0": "bot",
+            (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ): "browser",
+        }
+        for ua, expected in cases.items():
+            assert classify_ua(ua) == expected
 
 
 class TestKnownFingerprintRegistry:
