@@ -631,6 +631,27 @@ def _DJANGO_WAF_BLOCKED_COUNTRIES() -> list:
     return _get_setting("DJANGO_WAF_BLOCKED_COUNTRIES", [])
 
 
+# Dotted path to a callable returning the response for a BLOCKED verdict
+# (BR-EVAL-011). Empty (the default) keeps the built-in
+# ``HttpResponseForbidden("Access denied.")``, byte for byte.
+#
+# The path is imported at call time, on the blocked request, not at import
+# time, so ``override_settings`` and the pytest ``settings`` fixture work
+# exactly as they do for every other setting in this module.
+#
+# The handler takes ``(request, result)`` and returns an ``HttpResponse``.
+# See ``django_waf.middleware.WafMiddleware._build_block_response`` for the
+# full contract, including what happens when the path will not import, the
+# handler raises, or it returns a non-response: all three fall back to the
+# built-in response and log at ERROR. The WAF never 500s on its own
+# misconfiguration.
+#
+# This is the only dotted-path setting in the package; every other setting
+# resolves to a scalar, list or dict.
+def _DJANGO_WAF_BLOCK_RESPONSE_HANDLER() -> str:
+    return _get_setting("DJANGO_WAF_BLOCK_RESPONSE_HANDLER", "")
+
+
 # Enable the optional DRF API under waf/api/ (requires the [api] extra).
 def _DJANGO_WAF_API_ENABLED() -> bool:
     return _get_setting("DJANGO_WAF_API_ENABLED", False)

@@ -173,6 +173,21 @@ pass-through), so the absence of a middleware nobody asked to run is not a
 misconfiguration, matching the gating rationale #95 established for every
 other check in this module.
 
+The challenge-routing check (``django_waf.E007``) errors when the WAF can
+issue a challenge but has no URL to send the challenged visitor to (#102).
+``WafMiddleware._get_challenge_paths`` resolves
+``DJANGO_WAF_CHALLENGE_URL or reverse("django_waf:challenge")``, so with
+the explicit setting empty and ``django_waf.urls`` routed nowhere,
+``reverse()`` raises ``NoReverseMatch``. Before #102 that escaped the
+middleware uncaught and served a **500** to a legitimate visitor who
+merely tripped a detector; the request path now catches it and fails open
+per BR-EVAL-007, but a WAF that quietly stops challenging anyone is still
+a control that is not doing what its operator believes. This is an Error
+rather than a Warning for the same reason ``django_waf.E006`` is: the
+deployment is misconfigured in a way that silently degrades the control,
+and the layered gate below makes a false positive on a working deployment
+very hard to construct.
+
 The environment-variable check (``django_waf.W010``) warns when a
 ``DJANGO_WAF_*`` name is present in ``os.environ`` but the resolved Django
 setting of the same name is not explicitly configured, so the environment
@@ -498,6 +513,134 @@ def check_middleware_present(app_configs, **kwargs):
                 "run the WAF yet."
             ),
             id="django_waf.E006",
+        )
+    ]
+
+
+@register()
+def check_challenge_urls_resolvable(app_configs, **kwargs):
+    """Error (``django_waf.E007``) when the WAF can issue a challenge but
+    neither ``reverse("django_waf:challenge")`` nor an explicit URL
+    override can produce a path to send the challenged visitor to (#102).
+
+    Guards, cheapest first, in the layered ladder ``django_waf.E005``
+    established:
+
+    1. **The WAF is enabled.** With ``DJANGO_WAF_ENABLED = False`` the
+       middleware returns at BR-EVAL-002 before any verdict is produced,
+       so no challenge is ever issued and there is nothing to route. Same
+       gating rationale #95 established for every other check here.
+    2. **A challenge is actually issuable.** ``DJANGO_WAF_ENABLED`` alone
+       does not imply it: a project can run the WAF purely for blocking
+       and throttling. The two settings-readable producers of a
+       ``Verdict.CHALLENGED`` are the score band in
+       ``rule_engine._score_to_verdict``, which can only return CHALLENGED
+       when ``DJANGO_WAF_SCORE_THRESHOLD_CHALLENGE <
+       DJANGO_WAF_SCORE_THRESHOLD_BLOCK`` (raise the challenge threshold to
+       or above the block threshold and the band is empty, every scoring
+       request goes straight from LOGGED to BLOCKED), and
+       ``DJANGO_WAF_CHALLENGE_NO_REFERER``. If neither can fire, the check
+       is silent.
+    3. **At least one explicit URL setting is empty.** The two settings are
+       consumed on separate lines of ``_get_challenge_paths``, each
+       ``setting or reverse(...)`` in its own right, so they silence
+       ``reverse()`` one route at a time and not as a pair. A project that
+       sets **both** ``DJANGO_WAF_CHALLENGE_URL`` and
+       ``DJANGO_WAF_VERIFY_URL`` to literal paths never calls ``reverse()``
+       at all, and an unrouted urlconf is harmless to it: that is the
+       documented escape hatch, and the reason this can be an Error rather
+       than a Warning. Setting only one is **not** an escape. The other
+       line still calls ``reverse()`` and still raises on an unrouted
+       urlconf, which is a live routing gap the operator is least likely to
+       spot precisely because they believe they have configured it.
+
+    Only then is ``reverse()`` attempted, and only for the routes whose own
+    override is empty, inside ``try/except NoReverseMatch``. Skipping the
+    overridden route keeps the reported failure honest: a partially
+    configured project is told which single route is unresolvable, not one
+    it has already pointed somewhere valid.
+
+    **Known limitation, stated rather than papered over.** Condition 2 is
+    settings-only and therefore not exhaustive: a ``BlockRule`` row with
+    ``action = "challenge"`` (admin-created, feed-supplied, or written by
+    the anomaly detectors) also produces a CHALLENGED verdict, and no boot
+    check can know whether such a row exists or will be created later.
+    Silence under condition 2 therefore means "no challenge is reachable
+    from settings alone", not "no challenge can ever be issued". That
+    asymmetry is deliberate: the check errs towards firing, because the
+    failure it prevents is a live routing gap, and the deployment that
+    silences it wrongly is one that has already told the package it does
+    not want scored or no-referer challenges.
+
+    **The other known limitation**, shared with every check in this module
+    but sharpest here: this resolves against whichever ``ROOT_URLCONF`` is
+    active at check time. A project using per-request or per-host urlconfs
+    (django-hosts, or a middleware that sets ``request.urlconf``) may serve
+    traffic from a urlconf that is not the one this check saw, in either
+    direction: routes present here and absent there, or the reverse.
+    Setting ``DJANGO_WAF_CHALLENGE_URL`` and ``DJANGO_WAF_VERIFY_URL`` to
+    literal paths is the escape, and it is the correct configuration for
+    such a project anyway, since ``_get_challenge_paths`` is documented to
+    recommend exactly that for multi-urlconf deployments.
+    """
+    from django.urls import NoReverseMatch, reverse
+
+    from django_waf import conf
+
+    if not conf.DJANGO_WAF_ENABLED:
+        return []
+
+    score_band_can_challenge = conf.DJANGO_WAF_SCORE_THRESHOLD_CHALLENGE < conf.DJANGO_WAF_SCORE_THRESHOLD_BLOCK
+    if not score_band_can_challenge and not conf.DJANGO_WAF_CHALLENGE_NO_REFERER:
+        return []
+
+    if conf.DJANGO_WAF_CHALLENGE_URL and conf.DJANGO_WAF_VERIFY_URL:
+        return []
+
+    # The two settings are consumed on separate lines of
+    # _get_challenge_paths, each falling back to its own reverse() call
+    # independently, so a half-configured project is still broken: with only
+    # DJANGO_WAF_CHALLENGE_URL set, the verify line still calls
+    # reverse("django_waf:verify") and still raises. Only the route whose own
+    # override is empty is attempted here, so the message names precisely
+    # what is unresolvable rather than reporting a route the operator has
+    # already configured.
+    routes_to_resolve = []
+    if not conf.DJANGO_WAF_CHALLENGE_URL:
+        routes_to_resolve.append("django_waf:challenge")
+    if not conf.DJANGO_WAF_VERIFY_URL:
+        routes_to_resolve.append("django_waf:verify")
+
+    unresolvable = []
+    for route in routes_to_resolve:
+        try:
+            reverse(route)
+        except NoReverseMatch:
+            unresolvable.append(route)
+
+    if not unresolvable:
+        return []
+
+    return [
+        Error(
+            "The WAF is enabled and can issue a challenge, but "
+            f"{', '.join(repr(name) for name in unresolvable)} cannot be "
+            "reversed and carries no explicit URL override: the challenge "
+            "flow breaks for any visitor the WAF challenges. "
+            "django_waf.urls is not routed under the 'django_waf' namespace "
+            "in the active ROOT_URLCONF.",
+            hint=(
+                "Include django_waf.urls in your URLconf, e.g. "
+                "path('waf/', include('django_waf.urls', namespace='django_waf')), "
+                "or set BOTH DJANGO_WAF_CHALLENGE_URL and DJANGO_WAF_VERIFY_URL "
+                "to the literal paths the WAF views are mounted at (the "
+                "recommended approach for projects with per-host or "
+                "per-request urlconfs, where this check cannot see the "
+                "urlconf that actually serves traffic). Setting only one of "
+                "the two is not enough: they are resolved independently, so "
+                "the other still calls reverse() and still fails."
+            ),
+            id="django_waf.E007",
         )
     ]
 
