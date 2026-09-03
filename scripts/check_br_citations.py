@@ -39,7 +39,40 @@ CONTROL_RULE_IDS = ("BR-UA-002", "BR-EVAL-001", "BR-ANOM-002b")
 # A citation known to exist on the source side.
 CONTROL_CITATION = "BR-UA-002"
 
-DEFAULT_SPEC_DIR = Path(__file__).resolve().parent.parent.parent.parent / "docs" / "specs" / "django-waf"
+
+def _default_spec_dir() -> Path:
+    """Locate the umbrella spec for the normal workspace layout.
+
+    Resolved from the repo's MAIN worktree rather than from this file's
+    own path. Counting parents from __file__ is correct only in a plain
+    checkout: under the repo's own worktree convention the script lives at
+    .claude/worktrees/<slug>/scripts/, so four parents up lands inside
+    .claude/ and the guard reports the spec as missing. It fails loudly
+    rather than passing when that happens, which is the intended
+    behaviour, but the default should simply work from a worktree, since
+    worktrees are how work is normally split out here.
+
+    git rev-parse --path-format=absolute --git-common-dir returns the
+    shared .git directory for both a checkout and any of its worktrees,
+    whose parent is always the main checkout.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            repo_root = Path(result.stdout.strip()).parent
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return repo_root.parent.parent / "docs" / "specs" / "django-waf"
+
+
+DEFAULT_SPEC_DIR = _default_spec_dir()
 
 
 class GuardError(Exception):

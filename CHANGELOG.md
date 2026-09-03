@@ -17,9 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a matching heading before trusting any absence, and exits non-zero if
   either side comes back empty, so a missing umbrella checkout fails loudly
   instead of reporting zero dangling citations as a pass. Run it manually
-  or from a pre-push hook: `python3 scripts/check_br_citations.py`. It is
-  not yet wired into CI, because the umbrella spec lives in a separate
-  private repository that the default CI token cannot read; see #142.
+  or from a pre-push hook: `python3 scripts/check_br_citations.py`.
+  Deliberately NOT a CI check: this package is public and the spec it
+  reconciles against is private, so a CI job would need a credential
+  granting a fork-triggerable public workflow read access to a private
+  repository. It is a local and maintainer-side check instead, which is
+  the correct scope for a check whose reference data is not public.
 
 ### Fixed
 
