@@ -121,13 +121,15 @@ def parse_access_log(log_path: str | None = None) -> dict:
     """
     import os
 
-    from django.core.cache import cache
+    from django.core.cache import caches
     from django.core.exceptions import ValidationError as DjangoValidationError
     from django.core.validators import validate_ipv46_address
 
     from django_waf import conf
     from django_waf.enums import RequestLogSource
     from django_waf.models import RequestLog
+
+    cache = caches[conf.ICV_CACHES_ALIAS]
 
     path = log_path or conf.DJANGO_WAF_ACCESS_LOG_PATH
 
@@ -1020,7 +1022,9 @@ def _invalidate_rule_cache_redis() -> None:
             "django-waf: Redis unavailable for rule cache invalidation, falling back to the local Django "
             "cache (other worker processes will not see this invalidation until Redis recovers)"
         )
-        from django.core.cache import cache
+        from django.core.cache import caches
+
+        cache = caches[conf.ICV_CACHES_ALIAS]
 
         version = (cache.get("waf:rules:version") or 0) + 1
         cache.set("waf:rules:version", version)

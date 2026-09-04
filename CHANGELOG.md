@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+
+- Caching now routes through the fleet-global `ICV_CACHES_ALIAS` setting
+  (ADR-037) rather than always using the `"default"` Django cache: the
+  threat-feed install id, the nginx access-log ingest task's offset, and
+  the Redis-unavailable rule-version fallback all resolve their cache alias
+  from `ICV_CACHES_ALIAS` (falling back to `"default"` when it is unset).
+  A consumer with neither setting configured sees no change (#149).
+- `DJANGO_WAF_REDIS_ALIAS` now defaults to the resolved `ICV_CACHES_ALIAS`
+  instead of the literal `"default"`; an explicit `DJANGO_WAF_REDIS_ALIAS`
+  still wins (ADR-037 second amendment, case 2). One consequence a
+  consumer can hit without changing their own code: if `ICV_CACHES_ALIAS`
+  points at a cache that is not backed by `django_redis.cache.RedisCache`
+  and `DJANGO_WAF_REDIS_ALIAS` is unset, `manage.py check` now raises
+  `django_waf.E004` against that alias, where it previously checked
+  `"default"`. Set `DJANGO_WAF_REDIS_ALIAS` explicitly to a Redis-backed
+  alias to keep the WAF's Redis-only stores on their own cache (#149).
+
 ### Fixed
 
 - `services.detector_probe`: `_build_scraper_404_fixture`'s docstring

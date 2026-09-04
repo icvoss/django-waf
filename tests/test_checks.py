@@ -915,6 +915,62 @@ class TestRedisBackendCheck:
             assert _run_redis_backend_check() == []
 
 
+class TestRedisBackendCheckIcvCachesAliasConsequence:
+    """#149 / ADR-037 case 2: DJANGO_WAF_REDIS_ALIAS now defaults onto the
+    resolved ICV_CACHES_ALIAS rather than the literal "default" (conf.py's
+    ``_DJANGO_WAF_REDIS_ALIAS``). This is the one boot-time consequence a
+    consumer can hit without changing their own code: a project that already
+    points ICV_CACHES_ALIAS at a non-Redis cache alias, and never had reason
+    to set DJANGO_WAF_REDIS_ALIAS because it previously and silently checked
+    "default", now gets django_waf.E004 at check time. Exercised against
+    real settings.CACHES with is_redis_backend unmocked, unlike the other
+    E004 tests, because the chain being pinned lives in conf.py's resolver
+    itself, not in check_redis_backend's own logic."""
+
+    def test_fires_when_icv_caches_alias_points_at_a_non_redis_cache_and_redis_alias_is_unset(self):
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            override_settings(
+                CACHES={
+                    "default": {
+                        "BACKEND": "django_redis.cache.RedisCache",
+                        "LOCATION": "redis://localhost:6379/0",
+                    },
+                    "fleet": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+                },
+                ICV_CACHES_ALIAS="fleet",
+            ),
+        ):
+            messages = _run_redis_backend_check()
+
+        assert any(m.id == "django_waf.E004" for m in messages)
+        assert any("fleet" in m.msg for m in messages)
+
+    def test_silent_when_django_waf_redis_alias_is_set_explicitly(self):
+        """Most specific wins (#149): setting DJANGO_WAF_REDIS_ALIAS
+        explicitly to a Redis alias restores a clean check even though
+        ICV_CACHES_ALIAS still points at the non-Redis alias."""
+        import django_waf.conf as conf_mod
+
+        with (
+            patch.object(conf_mod, "DJANGO_WAF_ENABLED", True),
+            override_settings(
+                CACHES={
+                    "default": {
+                        "BACKEND": "django_redis.cache.RedisCache",
+                        "LOCATION": "redis://localhost:6379/0",
+                    },
+                    "fleet": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+                },
+                ICV_CACHES_ALIAS="fleet",
+                DJANGO_WAF_REDIS_ALIAS="default",
+            ),
+        ):
+            assert _run_redis_backend_check() == []
+
+
 class TestRedisVersionCheck:
     """E005 errors when the connected Redis server reports a version below
     MIN_REDIS_VERSION (currently 6.0, see #78: getdel silently failed on a

@@ -127,7 +127,19 @@ def is_redis_backend(alias: str | None = None) -> bool:
     """
     from django.conf import settings
 
-    resolved_alias = alias or getattr(settings, "DJANGO_WAF_REDIS_ALIAS", "default")
+    # Deliberately bypasses django_waf.conf here rather than reading
+    # conf.DJANGO_WAF_REDIS_ALIAS: this helper backs django_waf.E004, a
+    # boot-time system check, and conf's call-time resolvers already
+    # tolerate settings being unconfigured, but a plain getattr chain keeps
+    # this module's contract (see the module docstring: no partial Redis
+    # adapter, no hidden fallback machinery) independent of conf's own
+    # behaviour. Chains onto the fleet-global ICV_CACHES_ALIAS (ADR-037)
+    # the same way conf.DJANGO_WAF_REDIS_ALIAS does, so a consumer that
+    # only sets the fleet alias still gets its Redis check pointed at the
+    # right cache; an explicit DJANGO_WAF_REDIS_ALIAS still wins.
+    resolved_alias = alias or getattr(
+        settings, "DJANGO_WAF_REDIS_ALIAS", getattr(settings, "ICV_CACHES_ALIAS", "default")
+    )
 
     caches_setting = getattr(settings, "CACHES", {})
     backend = caches_setting.get(resolved_alias, {}).get("BACKEND", "")

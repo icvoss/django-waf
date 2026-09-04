@@ -156,7 +156,8 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | `DJANGO_WAF_TRUST_X_FORWARDED_FOR` | `False` | Trust `X-Forwarded-For` header for client IP extraction |
 | `DJANGO_WAF_TRUSTED_PROXIES` | `[]` | CIDR ranges for direct TCP reverse proxies. When `REMOTE_ADDR` is in a configured range, resolve `X-Forwarded-For` from right to left, skipping trusted proxy hops |
 | `DJANGO_WAF_TRUSTED_UNIX_SOCKET` | `False` | Explicitly trust an empty `REMOTE_ADDR` from a unix-socket WSGI peer and use the same right-to-left `X-Forwarded-For` walk. Enable only when the socket is accessible exclusively to your reverse proxy |
-| `DJANGO_WAF_REDIS_ALIAS` | `"default"` | Django cache alias for Redis connections |
+| `ICV_CACHES_ALIAS` | `"default"` | Fleet-global Django cache alias (ADR-037) the package caches through by default: the threat-feed install id, the nginx log ingest task's offset, and the Redis-unavailable rule-version fallback. Shared across the whole icv fleet, not django-waf-specific |
+| `DJANGO_WAF_REDIS_ALIAS` | The resolved `ICV_CACHES_ALIAS` (itself `"default"` unless set) | Django cache alias the WAF requires to be backed by Redis, for rate-limit counters and rule-version keys. Follows the resolved `ICV_CACHES_ALIAS` unless set explicitly. If `ICV_CACHES_ALIAS` points at a non-Redis cache, set this explicitly or `django_waf.E004` fires at check time |
 | `DJANGO_WAF_ALLOWED_METHODS` | `None` | Allowed HTTP methods; requests with other methods receive 405 before rule evaluation. `None` allows all methods. |
 | `DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS` | `True` | Seed rDNS-verified `AllowRule` rows for major search crawlers (Googlebot, Bingbot) so a verified crawler is never served the `noindex` challenge. See [Search engine crawlers](#search-engine-crawlers). Set `False` to opt out |
 

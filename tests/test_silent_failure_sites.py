@@ -162,6 +162,38 @@ class TestInvalidateRuleCacheRedisFailure:
             "Django cache; before #78 this except branch was silent"
         )
 
+    def test_fallback_routes_through_icv_caches_alias(self):
+        """The Django cache fallback routes through ICV_CACHES_ALIAS (#149,
+        ADR-037), proven against two real, distinct LocMemCache aliases so a
+        regression that keeps writing to "default" cannot pass unnoticed.
+        """
+        from django.core.cache import caches
+        from django.test import override_settings
+
+        from django_waf.tasks import _invalidate_rule_cache_redis
+
+        with override_settings(
+            CACHES={
+                "default": {
+                    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                    "LOCATION": "icv-caches-alias-default",
+                },
+                "icv": {
+                    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                    "LOCATION": "icv-caches-alias-icv",
+                },
+            },
+            ICV_CACHES_ALIAS="icv",
+        ):
+            caches["default"].delete("waf:rules:version")
+            caches["icv"].delete("waf:rules:version")
+
+            with mock_redis_connection_raises(RuntimeError("redis down")):
+                _invalidate_rule_cache_redis()
+
+            assert caches["icv"].get("waf:rules:version") == 1
+            assert caches["default"].get("waf:rules:version") is None
+
 
 # ---------------------------------------------------------------------------
 # expire_rules: the caller, proving the fail-open contract end to end

@@ -3103,13 +3103,26 @@ class TestSubmitTelemetry:
 
 
 class TestGetOrCreateInstallId:
+    """get_or_create_install_id caches through django.core.cache.caches[alias]
+    (#149, ADR-037), not the bare ``cache`` proxy, so these tests patch
+    ``django.core.cache.caches`` with a mapping whose ``__getitem__`` returns
+    the mock, rather than patching ``django.core.cache.cache`` directly
+    (which the function under test no longer touches).
+    """
+
+    def _patched_caches(self, mock_cache):
+        mapping = MagicMock()
+        mapping.__getitem__.return_value = mock_cache
+        return patch("django.core.cache.caches", mapping)
+
     def test_returns_cached_value_without_file_io(self):
         """Returns the install_id from Django cache without touching the filesystem."""
         from django_waf.services.threat_feed import get_or_create_install_id
 
-        with patch("django.core.cache.cache") as mock_cache:
-            mock_cache.get.return_value = "cached-install-id"
+        mock_cache = MagicMock()
+        mock_cache.get.return_value = "cached-install-id"
 
+        with self._patched_caches(mock_cache):
             result = get_or_create_install_id()
 
         assert result == "cached-install-id"
@@ -3120,13 +3133,14 @@ class TestGetOrCreateInstallId:
 
         from django_waf.services.threat_feed import get_or_create_install_id
 
+        mock_cache = MagicMock()
+        mock_cache.get.return_value = None
+
         with (
-            patch("django.core.cache.cache") as mock_cache,
+            self._patched_caches(mock_cache),
             patch("os.path.isfile", return_value=True),
             patch("builtins.open", mock_open(read_data="file-install-id")),
         ):
-            mock_cache.get.return_value = None
-
             result = get_or_create_install_id()
 
         assert result == "file-install-id"
@@ -3137,14 +3151,15 @@ class TestGetOrCreateInstallId:
 
         from django_waf.services.threat_feed import get_or_create_install_id
 
+        mock_cache = MagicMock()
+        mock_cache.get.return_value = None
+
         with (
-            patch("django.core.cache.cache") as mock_cache,
+            self._patched_caches(mock_cache),
             patch("os.path.isfile", return_value=False),
             patch("uuid.uuid4", return_value=uuid_mod.UUID("12345678-1234-5678-1234-567812345678")),
             patch("builtins.open", side_effect=OSError("no write")),
         ):
-            mock_cache.get.return_value = None
-
             result = get_or_create_install_id()
 
         assert result == "12345678-1234-5678-1234-567812345678"
@@ -3154,16 +3169,57 @@ class TestGetOrCreateInstallId:
         """A freshly generated install_id is stored in the Django cache."""
         from django_waf.services.threat_feed import get_or_create_install_id
 
+        mock_cache = MagicMock()
+        mock_cache.get.return_value = None
+
         with (
-            patch("django.core.cache.cache") as mock_cache,
+            self._patched_caches(mock_cache),
             patch("os.path.isfile", return_value=False),
             patch("builtins.open", side_effect=OSError("no write")),
         ):
-            mock_cache.get.return_value = None
-
             get_or_create_install_id()
 
         assert mock_cache.set.called
+
+
+class TestGetOrCreateInstallIdIcvCachesAliasRouting:
+    """get_or_create_install_id routes through ICV_CACHES_ALIAS (#149,
+    ADR-037), proven against two real, distinct LocMemCache aliases rather
+    than a mock: writing to the wrong alias and reading it back from the
+    right one would pass a mocked test that only asserts "some cache was
+    called", so this uses ``django.core.cache.caches`` for real.
+    """
+
+    def test_writes_to_the_configured_alias_and_not_default(self):
+        from django.core.cache import caches
+        from django.test import override_settings
+
+        from django_waf.services.threat_feed import _INSTALL_ID_SETTING, get_or_create_install_id
+
+        with override_settings(
+            CACHES={
+                "default": {
+                    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                    "LOCATION": "icv-caches-alias-default",
+                },
+                "icv": {
+                    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                    "LOCATION": "icv-caches-alias-icv",
+                },
+            },
+            ICV_CACHES_ALIAS="icv",
+        ):
+            caches["default"].clear()
+            caches["icv"].clear()
+
+            with (
+                patch("os.path.isfile", return_value=False),
+                patch("builtins.open", side_effect=OSError("no write")),
+            ):
+                install_id = get_or_create_install_id()
+
+            assert caches["icv"].get(_INSTALL_ID_SETTING) == install_id
+            assert caches["default"].get(_INSTALL_ID_SETTING) is None
 
 
 # ---------------------------------------------------------------------------

@@ -338,9 +338,24 @@ def _DJANGO_WAF_TRUST_X_FORWARDED_FOR() -> bool:
     return _get_setting("DJANGO_WAF_TRUST_X_FORWARDED_FOR", False)
 
 
-# Django cache alias used for Redis rate-limit counters and rule-version keys.
+# Fleet-global cache alias (ADR-037, "Amendment 2026-09-04"): which
+# configured django.core.cache.caches entry every icv package caches
+# through by default. Not a django_waf-specific setting; every package in
+# the fleet resolves the same name the same way.
+def _ICV_CACHES_ALIAS() -> str:
+    return _get_setting("ICV_CACHES_ALIAS", "default")
+
+
+# Django cache alias used for Redis rate-limit counters and rule-version
+# keys. A package-scoped alias is still warranted here (ADR-037, second
+# 2026-09-04 amendment, case 2): this package requires the resolved alias to
+# be backed by Redis specifically (rule 5), which ICV_CACHES_ALIAS alone
+# does not guarantee. Defaults onto the resolved fleet-global alias rather
+# than the literal "default", so a consumer that has already pointed the
+# fleet at a shared cache does not also have to repeat that choice here;
+# an explicit DJANGO_WAF_REDIS_ALIAS still wins (most specific wins, #149).
 def _DJANGO_WAF_REDIS_ALIAS() -> str:
-    return _get_setting("DJANGO_WAF_REDIS_ALIAS", "default")
+    return _get_setting("DJANGO_WAF_REDIS_ALIAS", _ICV_CACHES_ALIAS())
 
 
 # Enable syncing rules from the collective threat feed.
@@ -1285,8 +1300,9 @@ def _DJANGO_WAF_SCRAPER_404_ACTION_BLOCK() -> bool:
 # ---------------------------------------------------------------------------
 # PEP 562 module-level __getattr__ / __dir__: call-time resolution (#75)
 # ---------------------------------------------------------------------------
-# Every DJANGO_WAF_* name above is a private ``_NAME()`` resolver function,
-# never a module-level constant, specifically so that ``conf.DJANGO_WAF_X``
+# Every DJANGO_WAF_* name above, and every fleet-global ICV_* name (ADR-037,
+# e.g. ICV_CACHES_ALIAS), is a private ``_NAME()`` resolver function, never
+# a module-level constant, specifically so that ``conf.DJANGO_WAF_X``
 # re-consults django.conf.settings on every access rather than freezing a
 # value read once at import time. __getattr__ is only called by Python when
 # normal attribute lookup fails (i.e. the name is not in this module's
@@ -1306,8 +1322,9 @@ def _DJANGO_WAF_SCRAPER_404_ACTION_BLOCK() -> bool:
 # use monkeypatch.setattr(conf, "NAME", ...) in a consumer's own tests for
 # this reason; use unittest.mock.patch.object (as this package's own test
 # suite does throughout) or override_settings instead.
+_RESOLVER_PREFIXES = ("_DJANGO_WAF_", "_ICV_")
 _RESOLVERS: dict[str, Any] = {
-    name[1:]: func for name, func in list(globals().items()) if name.startswith("_DJANGO_WAF_") and callable(func)
+    name[1:]: func for name, func in list(globals().items()) if name.startswith(_RESOLVER_PREFIXES) and callable(func)
 }
 
 
