@@ -351,8 +351,8 @@ until a form opts in via the mixin, decorator, or template tag.
 | `DJANGO_WAF_FORM_TIME_TRAP_MIN_SECONDS` | `1.5` | Below this → flag; below 0.5 → block (hard floor) |
 | `DJANGO_WAF_FORM_TIME_TRAP_MAX_SECONDS` | `3600` | Above this → flag (stale form) |
 | `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW` | `900` | Sliding window for credential-failure counters (seconds) |
-| `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT` | `5` | Per-account threshold. Observation-only (drives `credential_attack_observed` signal); never user-visible |
-| `DJANGO_WAF_FORM_CREDENTIAL_IP_LIMIT` | `20` | Per-IP threshold. **Drives the user-visible challenge**: same behaviour regardless of which accounts were tried (enumeration-safe) |
+| `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT` | `5` | Per-account threshold. Observation-only (drives `credential_attack_observed` signal); never user-visible. The counter increments only when your login view calls `waf_record_credential_failure`, see *Hooking the login flow* below |
+| `DJANGO_WAF_FORM_CREDENTIAL_IP_LIMIT` | `20` | Per-IP threshold. **Drives the user-visible challenge**: same behaviour regardless of which accounts were tried (enumeration-safe). Fed by the same `waf_record_credential_failure` call, see *Hooking the login flow* below |
 | `DJANGO_WAF_FORM_SIGNUP_VELOCITY_WINDOW` | `86400` | Window for completed-signup counter (24h) |
 | `DJANGO_WAF_FORM_SIGNUP_VELOCITY_LIMIT` | `5` | Successful signups per IP before next attempt is flagged |
 | `DJANGO_WAF_FORM_POW_DIFFICULTY` | `12` | Per-submission PoW difficulty (bits). 12 ≈ 4k SHA-256 hashes ≈ 50ms desktop / ~200ms mobile |
@@ -419,6 +419,30 @@ def contact_view(request):
   <button type="submit">Send</button>
 </form>
 ```
+
+**Hooking the login flow** (required for the `credential_throttle`
+defence): the defence only *reads* the failure counters at submit time.
+Neither the mixin nor the decorator increments them, because both run
+before your authentication check and cannot tell a wrong password from
+any other validation failure. Your login view must call
+`waf_record_credential_failure` after its own credential check fails,
+unconditionally, whether or not the account exists: an attacker must
+not be able to tell "wrong password" from "no such account" by
+observing side effects.
+
+```python
+from django_waf.forms import waf_record_credential_failure
+
+# In the login view, after the credential check fails (authenticate()
+# returns None, or form.is_valid() is False for an AuthenticationForm):
+waf_record_credential_failure(request, form.cleaned_data["username"])
+```
+
+Without that call the per-account counter never increments, so
+`credential_attack_observed` never fires, and the per-IP counter never
+increments, so the challenge never triggers. The helper returns
+`(account_count, ip_count)` and fails open, returning `(0, 0)` on a
+Redis outage, so it is safe to call from the hot path of a login view.
 
 **HTMX compatibility**: the form-protection render token persists
 across HTMX re-renders of the same form (a user fixing a validation
