@@ -75,6 +75,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   roughly 194,000 per run, rather than only the handful of detector
   candidates).
 
+- **The credential-throttle per-account counter could never increment**
+  (#141, BR-FORM-009). `CredentialThrottleDefence` only reads the per-IP
+  counter at submit time; the per-account counter and the
+  `credential_attack_observed` signal both depended on a documented
+  caller, `record_credential_failure`, that had zero callers anywhere in
+  `src/`. Neither the `ProtectedForm` mixin nor the `waf_protect_post`
+  decorator could call it on the consumer's behalf: both run before the
+  authentication check, so neither can know whether it subsequently
+  failed, and the mixin has no way to know which field carries the
+  identifier.
+
+  **Fix**: a new public entry point, `waf_record_credential_failure(request,
+  identifier)`, exported from `django_waf.forms`. Consumers call it from
+  their login view after their own credential check fails, unconditionally,
+  whether or not the account exists (enumeration safety, PRD §3.6.1). It
+  increments both counters and emits `credential_attack_observed` on the
+  single request whose increment makes the per-account count exactly equal
+  `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT`, once per window rather than
+  on every attempt at or above it. Fails open like the rest of the
+  subsystem: a Redis outage, an empty identifier, or a request with no
+  resolvable client IP all no-op without raising.
+
+  The `CredentialThrottleDefence` docstring and the PRD's "Hooking into
+  login flow" section previously described a caller (an "orchestrator"
+  call, or the mixin "handling it") that did not exist; both are corrected
+  to name the new explicit call.
+
 ## [2.7.0] - 2026-09-03
 ### Added
 

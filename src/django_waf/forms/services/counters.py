@@ -27,11 +27,16 @@ _CRED_IP_KEY = "waf:form:cred_fail:ip:{ip}"
 _SIGNUP_IP_KEY = "waf:form:signup:{ip}"
 
 
-def _hash_identifier(identifier: str) -> str:
+def hash_identifier(identifier: str) -> str:
     """Return a stable hash of the typed identifier (username/email).
 
     Hashed not for security per se (the identifier is on a wire we
     control) but so a Redis dump doesn't expose typed credentials.
+
+    Public (not module-private) because ``forms/credentials.py`` needs
+    the same hash to populate ``credential_attack_observed``'s
+    ``identifier_hash`` kwarg, and re-hashing ad hoc there would risk
+    the two hashes silently diverging.
     """
     return hashlib.sha256(identifier.encode("utf-8", errors="replace")).hexdigest()
 
@@ -56,7 +61,7 @@ def record_credential_failure(redis_client, *, identifier: str, ip: str, window_
     if not identifier or not ip:
         return (0, 0)
 
-    account_key = _CRED_ACCOUNT_KEY.format(identifier_hash=_hash_identifier(identifier))
+    account_key = _CRED_ACCOUNT_KEY.format(identifier_hash=hash_identifier(identifier))
     ip_key = _CRED_IP_KEY.format(ip=ip)
 
     try:
@@ -102,7 +107,7 @@ def credential_account_count(redis_client, *, identifier: str) -> int:
     if not identifier:
         return 0
     try:
-        raw = redis_client.get(_CRED_ACCOUNT_KEY.format(identifier_hash=_hash_identifier(identifier)))
+        raw = redis_client.get(_CRED_ACCOUNT_KEY.format(identifier_hash=hash_identifier(identifier)))
         if raw is None:
             return 0
         return int(raw)

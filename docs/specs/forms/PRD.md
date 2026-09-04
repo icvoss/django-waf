@@ -372,19 +372,29 @@ values; the `1.5` weight ensures this can't single-handedly block.
 Both have window TTL `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_WINDOW` (default
 `900` seconds, 15 min).
 
-**Hooking into login flow:** This defence runs in `evaluate()` *after*
-the form's `is_valid()` returns `False` (i.e. authentication failed).
-The mixin handles this; for the decorator, the consumer calls
-`waf_record_credential_failure(request, identifier)` explicitly when
-auth fails.
+**Hooking into login flow:** `CredentialThrottleDefence.evaluate()`
+only *reads* the per-IP counter; it runs before the auth check and
+cannot know whether that check subsequently fails. Neither the mixin
+nor the decorator increments the counter on the consumer's behalf:
+the mixin cannot distinguish an authentication failure from any other
+form-validation failure, and it cannot know which field carries the
+identifier. In both integration paths, the consumer calls
+`waf_record_credential_failure(request, identifier)` explicitly from
+their login view after the credential check fails, unconditionally
+(whether or not the account exists, see §3.6.1). Without that call
+the per-account counter never increments and
+`credential_attack_observed` never fires.
 
 **Verdict on submit:**
 - Per-IP count ≥ `DJANGO_WAF_FORM_CREDENTIAL_IP_LIMIT` (default `20`)
   → `flag`, score `5.0`, reason `"credential_throttle:ip"`. Triggers
   challenge redirect.
 - Per-account count ≥ `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT`
-  (default `5`) → does **not** affect form verdict; emits
-  `credential_attack_observed` signal only (see §3.6.1).
+  (default `5`) is the observation state; it does **not** affect the
+  form verdict. `credential_attack_observed` fires once per window,
+  on the single request whose increment makes the count exactly equal
+  `DJANGO_WAF_FORM_CREDENTIAL_THROTTLE_LIMIT` (the crossing), not on
+  every attempt at or above it (see §3.6.1).
 - Otherwise → `pass`.
 
 #### 3.6.1 Account enumeration safety

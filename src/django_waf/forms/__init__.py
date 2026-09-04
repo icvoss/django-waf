@@ -7,11 +7,16 @@ three entry points:
 * ``waf_protect_post``, view decorator (block 6).
 * ``{% waf_protect %}``, template tag (block 6).
 
-Plus the orchestrator and signals for advanced use.
+Plus ``waf_record_credential_failure`` for the login flow to call
+after an authentication failure (required by both the mixin and
+decorator paths, neither runs the check for you, see
+``forms/credentials.py``), and the orchestrator and signals for
+advanced use.
 """
 
 from __future__ import annotations
 
+from django_waf.forms.credentials import waf_record_credential_failure
 from django_waf.forms.mixin import ProtectedForm
 from django_waf.forms.protection import (
     FormEvaluationResult,
@@ -34,4 +39,5 @@ __all__ = [
     "form_submission_blocked",
     "form_submission_flagged",
     "form_submission_passed",
+    "waf_record_credential_failure",
 ]
