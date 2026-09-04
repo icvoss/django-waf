@@ -113,6 +113,7 @@ class TestRunDetectorProbeFalsifiability:
         for detector_name in DETECTOR_NAMES:
             assert result[detector_name]["alive"] is True
             assert result[detector_name]["rules_reported"] > 0
+        assert result["detect_scraper_404_ratio"]["rules_reported"] == 2
 
     def test_probe_goes_red_when_ua_rotation_cannot_match_its_fixture(self, db, monkeypatch):
         """detect_ua_rotation: the real query legitimately finds nothing.
@@ -438,6 +439,107 @@ class TestRunDetectorProbeFalsifiability:
             assert result[detector_name]["alive"] is True
             assert result[detector_name]["rules_reported"] > 0
 
+    def test_probe_goes_red_when_the_nginx_sourced_scraper_fixture_is_missing(self, db, monkeypatch):
+        """detect_scraper_404_ratio: losing the nginx-sourced fixture row
+        must be visible on its own, not masked by the middleware row still
+        crossing the threshold.
+
+        Layer under test: the full real path. run_all_detectors is NOT
+        patched, and detect_scraper_404_ratio is NOT patched; only the
+        fixture builder is asked to skip its nginx IP
+        (``include_nginx=False``), so the middleware IP (``.90``) still
+        qualifies on its own and the real query still creates one rule for
+        it. ``_MIN_RULES_REPORTED["detect_scraper_404_ratio"] == 2`` is what
+        turns that single rule into SILENT: without the per-detector floor,
+        ``rules_reported == 1`` would report ``alive`` under the default
+        ``>= 1`` contract, exactly the blind spot #145 exists to close
+        (a fixture that only ever built ``source=middleware`` rows, so a
+        regression in nginx-sourced counting could never turn this probe
+        red).
+        """
+        from django_waf.services import detector_probe as detector_probe_mod
+
+        real_builder = detector_probe_mod._build_scraper_404_fixture
+        monkeypatch.setattr(
+            detector_probe_mod,
+            "_build_scraper_404_fixture",
+            lambda *, now, conf: real_builder(now=now, conf=conf, include_nginx=False),
+        )
+
+        result = run_detector_probe(dry_run=True)
+
+        assert result["all_alive"] is False
+        assert result["silent_detectors"] == ["detect_scraper_404_ratio"]
+        assert result["detect_scraper_404_ratio"]["alive"] is False
+        assert result["detect_scraper_404_ratio"]["rules_reported"] == 1
+        for detector_name in DETECTOR_NAMES - {"detect_scraper_404_ratio"}:
+            assert result[detector_name]["alive"] is True
+            assert result[detector_name]["rules_reported"] > 0
+
+    def test_probe_goes_red_when_the_middleware_sourced_scraper_fixture_is_missing(self, db, monkeypatch):
+        """Mirror of the nginx-missing case above: losing the
+        middleware-sourced fixture row must also be visible on its own,
+        with only the nginx IP (``.91``) qualifying and creating one rule.
+
+        Layer under test: the full real path, unpatched. Proves the same
+        blind spot from the opposite direction: a fixture that only ever
+        built ``source=nginx_log`` rows would also stay green through a
+        regression in middleware-sourced counting, and the per-detector
+        floor catches that direction too.
+        """
+        from django_waf.services import detector_probe as detector_probe_mod
+
+        real_builder = detector_probe_mod._build_scraper_404_fixture
+        monkeypatch.setattr(
+            detector_probe_mod,
+            "_build_scraper_404_fixture",
+            lambda *, now, conf: real_builder(now=now, conf=conf, include_middleware=False),
+        )
+
+        result = run_detector_probe(dry_run=True)
+
+        assert result["all_alive"] is False
+        assert result["silent_detectors"] == ["detect_scraper_404_ratio"]
+        assert result["detect_scraper_404_ratio"]["alive"] is False
+        assert result["detect_scraper_404_ratio"]["rules_reported"] == 1
+        for detector_name in DETECTOR_NAMES - {"detect_scraper_404_ratio"}:
+            assert result[detector_name]["alive"] is True
+            assert result[detector_name]["rules_reported"] > 0
+
+    def test_build_scraper_404_fixture_writes_both_sources_as_documented(self, db):
+        """Direct proof, independent of the probe's reporting layer, that
+        _build_scraper_404_fixture writes what its own docstring claims:
+        the middleware IP's rows all carry source=middleware and the nginx
+        IP's rows all carry source=nginx_log, both allowed/404, both sized
+        to conf.DJANGO_WAF_SCRAPER_404_MIN_REQUESTS + 1.
+        """
+        from django_waf import conf
+        from django_waf.enums import RequestLogSource, Verdict
+        from django_waf.models import RequestLog
+        from django_waf.services.detector_probe import (
+            _SCRAPER_404_IP,
+            _SCRAPER_404_NGINX_IP,
+            _build_scraper_404_fixture,
+        )
+
+        expected_count = conf.DJANGO_WAF_SCRAPER_404_MIN_REQUESTS + 1
+
+        _build_scraper_404_fixture(now=timezone.now(), conf=conf)
+
+        middleware_rows = RequestLog.objects.filter(ip_address=_SCRAPER_404_IP)
+        nginx_rows = RequestLog.objects.filter(ip_address=_SCRAPER_404_NGINX_IP)
+
+        assert middleware_rows.count() == expected_count
+        assert nginx_rows.count() == expected_count
+        for row in middleware_rows:
+            assert row.source == RequestLogSource.MIDDLEWARE
+            assert row.verdict == Verdict.ALLOWED
+            assert row.response_code == 404
+        for row in nginx_rows:
+            assert row.source == RequestLogSource.NGINX_LOG
+            assert row.verdict == Verdict.ALLOWED
+            assert row.response_code == 404
+
 
 # ---------------------------------------------------------------------------
 # run_detector_probe: BlockRule history must not silence a healthy detector
@@ -481,13 +583,13 @@ class TestRunDetectorProbeSurvivesBlockRuleHistory:
     the probe's fixture window regardless of which detector's fixture
     wrote it (see detector_probe.py's own module comment), so the combined
     volume from three OTHER detectors' fixture IPs sharing 192.0.2.0/24
-    (_UA_ROTATION_IP, _UNSOLVED_CHALLENGE_IP, _SCRAPER_404_IP) already
-    clears its burst floor on its own, independently of
-    _SUBNET_BURST_SUBNET_BASE (198.51.100.0/24). A control that seeded
-    only the 198.51.100.0/24 collision left the 192.0.2.0/24 rule free to
-    create normally, so detect_subnet_burst kept reporting alive even with
-    the fix reverted, a genuinely vacuous control caught by running it
-    against the real code before trusting it.
+    (_UA_ROTATION_IP, _UNSOLVED_CHALLENGE_IP, _SCRAPER_404_IP,
+    _SCRAPER_404_NGINX_IP) already clears its burst floor on its own,
+    independently of _SUBNET_BURST_SUBNET_BASE (198.51.100.0/24). A
+    control that seeded only the 198.51.100.0/24 collision left the
+    192.0.2.0/24 rule free to create normally, so detect_subnet_burst kept
+    reporting alive even with the fix reverted, a genuinely vacuous
+    control caught by running it against the real code before trusting it.
     """
 
     # detector_name -> list of (rule_type, match_type, pattern, action)
@@ -516,6 +618,7 @@ class TestRunDetectorProbeSurvivesBlockRuleHistory:
         ],
         "detect_scraper_404_ratio": [
             (RuleType.IP, MatchType.EXACT, "192.0.2.90", RuleAction.CHALLENGE),
+            (RuleType.IP, MatchType.EXACT, "192.0.2.91", RuleAction.CHALLENGE),
         ],
     }
 
@@ -560,6 +663,11 @@ class TestRunDetectorProbeSurvivesBlockRuleHistory:
             f"{detector_name} reported SILENT with a stale BlockRule collision present: {result[detector_name]}"
         )
         assert result[detector_name]["rules_reported"] > 0
+        if detector_name == "detect_scraper_404_ratio":
+            # Both fixture patterns (.90 and .91) are seeded as stale
+            # collisions above; count_refresh_as_created=True must keep
+            # BOTH counted, not just clear the floor by one.
+            assert result[detector_name]["rules_reported"] == 2
 
     @pytest.mark.parametrize("detector_name", sorted(_COLLIDING_FIXTURE_ROWS))
     def test_seeding_a_collision_without_the_fix_reproduces_the_defect(self, db, detector_name):
@@ -618,8 +726,11 @@ class TestRunDetectorProbeReportingLogic:
             "challenge_farm_rules": 1,
             "unsolved_challenge_rules": 1,
             "cloud_spray_rules": 1,
-            "scraper_404_rules": 1,
-            "total_rules_created": 5,
+            # 2, not 1: detect_scraper_404_ratio has its own _MIN_RULES_REPORTED
+            # floor of 2 (one per source). This class pins the reporting layer,
+            # not that floor, so every other key stays at a plain alive value.
+            "scraper_404_rules": 2,
+            "total_rules_created": 6,
         }
 
         with patch(
@@ -643,8 +754,10 @@ class TestRunDetectorProbeReportingLogic:
             "challenge_farm_rules": 1,
             "unsolved_challenge_rules": 1,
             "cloud_spray_rules": 1,
-            "scraper_404_rules": 1,
-            "total_rules_created": 4,
+            # 2, not 1: detect_scraper_404_ratio has its own _MIN_RULES_REPORTED
+            # floor of 2 (one per source), and this test is not exercising that.
+            "scraper_404_rules": 2,
+            "total_rules_created": 5,
         }
 
         with patch(

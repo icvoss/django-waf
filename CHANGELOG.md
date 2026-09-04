@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Fixed
 
+- `services.detector_probe`: `_build_scraper_404_fixture`'s docstring
+  wrongly claimed its rows carried "allowed, passed, or logged" verdicts;
+  `detect_scraper_404_ratio` counts only `allowed`/`logged` and deliberately
+  excludes `passed` (an AllowRule match, BR-ANOM-014), and the fixture
+  itself already built `verdict=allowed` correctly, so only the docstring
+  was wrong. Separately, the fixture never set `RequestLog.source`, so
+  every row defaulted to `source=middleware`, and the detector has no
+  `source` filter at all: nginx-sourced rows are deliberately counted
+  alongside middleware rows (#140, #135), 98.3% of real input on the
+  reporting deployment, and the probe had never exercised that path. The
+  fixture now builds two independently qualifying IPs, one
+  `source=middleware` and one `source=nginx_log`, and
+  `django_waf_probe_detectors` now requires a rule from each: it reports
+  `detect_scraper_404_ratio` SILENT if either ingest path stops producing a
+  rule, and `rules_reported` for that detector is 2 on a healthy
+  deployment, up from 1 (#145).
+
 - README: the form-protection usage section now documents that the
   consuming login view must call `waf_record_credential_failure` after
   a failed credential check, unconditionally, and the two

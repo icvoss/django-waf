@@ -89,8 +89,20 @@ _SUBNET_BURST_SUBNET_BASE = "198.51.100."  # .10-.15 used below
 _CHALLENGE_FARM_IP = "203.0.113.10"
 _CLOUD_SPRAY_SUBNET_BASE = "203.0.113."  # .20-.40 used below (21 IPs)
 _SCRAPER_404_IP = "192.0.2.90"
+_SCRAPER_404_NGINX_IP = "192.0.2.91"  # same detector, source=nginx_log (#145)
 
 _PROBE_UA = "django-waf-detector-probe/1.0"
+
+# Per-detector floor for "alive", overriding the default at-least-one
+# contract every other detector keeps. detect_scraper_404_ratio counts rows
+# from two independent producers (source=middleware, written by
+# middleware.py, and source=nginx_log, written by tasks.parse_access_log;
+# see the detector's own docstring), so a fixture that only ever proves one
+# source alive would leave the other's regression path (#140, #135, where
+# nginx-sourced rows were 98.3% of real input) permanently unprobed. Requiring 2 rules here
+# means losing either source's fixture row drops rules_reported to 1 and
+# the probe correctly goes red, which a bare ">= 1" contract cannot express.
+_MIN_RULES_REPORTED: dict[str, int] = {"detect_scraper_404_ratio": 2}
 
 
 def run_detector_probe(dry_run: bool = True) -> dict:
@@ -145,9 +157,15 @@ def run_detector_probe(dry_run: bool = True) -> dict:
               each mapping to a per-detector dict with ``alive`` (bool)
               and ``rules_reported`` (int, the count
               ``run_all_detectors`` attributed to that detector for this
-              run).
+              run). ``alive`` is ``rules_reported >= 1`` for every
+              detector except where ``_MIN_RULES_REPORTED`` names a
+              higher floor: ``detect_scraper_404_ratio`` requires 2,
+              one for its ``source=middleware`` fixture row and one
+              for its ``source=nginx_log`` fixture row, so losing
+              either ingest path's rule is distinguishable from losing
+              both.
             - ``all_alive`` (bool): True only when every detector reported
-              at least one rule against its own fixture.
+              ``alive`` against its own fixture.
             - ``silent_detectors`` (list[str]): names of any detector that
               reported zero, empty when ``all_alive`` is True.
             - ``dry_run`` (bool): echoes the argument, so a caller does not
@@ -202,7 +220,7 @@ def run_detector_probe(dry_run: bool = True) -> dict:
     for detector_name in sorted(DETECTOR_NAMES):
         result_key = DETECTOR_NAME_TO_RESULT_KEY[detector_name]
         rules_reported = result.get(result_key, 0)
-        alive = rules_reported > 0
+        alive = rules_reported >= _MIN_RULES_REPORTED.get(detector_name, 1)
         report[detector_name] = {"alive": alive, "rules_reported": rules_reported}
         if not alive:
             silent_detectors.append(detector_name)
@@ -447,30 +465,64 @@ def _build_cloud_spray_fixture(*, now, conf, distinct_ip_count: int | None = Non
     )
 
 
-def _build_scraper_404_fixture(*, now, conf, total_requests: int | None = None) -> None:
-    """BR-ANOM-014: a single IP with at least
+def _build_scraper_404_fixture(
+    *,
+    now,
+    conf,
+    total_requests: int | None = None,
+    include_middleware: bool = True,
+    include_nginx: bool = True,
+) -> None:
+    """BR-ANOM-014: two IPs, one per ingest path, each with at least
     DJANGO_WAF_SCRAPER_404_MIN_REQUESTS (default 20) requests within the
     window, at least DJANGO_WAF_SCRAPER_404_RATIO (default 0.85) of them
-    404, all carrying a verdict that reached the application (allowed,
-    passed, or logged, never a WAF-produced verdict). Every row is built
-    with response_code=404 so the fixture's ratio is 100%, comfortably
-    clear of the default 85% floor.
+    404, all carrying ``verdict=allowed``: the detector counts only
+    ``Verdict.ALLOWED`` and ``Verdict.LOGGED`` rows, the verdicts that show
+    a request reached the application (see detect_scraper_404_ratio's own
+    docstring, ``anomaly_detector.py``). ``Verdict.PASSED`` (an AllowRule
+    match) is deliberately excluded by the detector per BR-ANOM-014, so a
+    ``passed`` row here would build a fixture the real query is required to
+    ignore. Every row is built with response_code=404 so the fixture's
+    ratio is 100%, comfortably clear of the default 85% floor.
+
+    Builds TWO IPs, one per ``RequestLog.source`` value
+    (``RequestLogSource.MIDDLEWARE``/``NGINX_LOG``), because the detector
+    has no ``source`` filter at all: nginx-sourced rows are deliberately
+    counted alongside middleware rows (#140, #135), and on the deployment
+    measured in #135 nginx-sourced rows were 98.3% of this detector's real
+    input. A probe fixture built only on ``source=middleware`` (the
+    model's own default, so an earlier revision of this fixture got it
+    silently by never passing ``source`` at all) never exercised that path
+    and would stay green through a regression that broke nginx-sourced
+    counting specifically.
+
+    Two IPs, each independently crossing the threshold, rather than one
+    mixed-source IP: with a single IP, a regression that dropped every
+    nginx row would still leave enough middleware rows behind to clear
+    the threshold on their own, and the probe would stay green. Two
+    independently qualifying IPs, combined with ``run_detector_probe``'s
+    ``_MIN_RULES_REPORTED`` floor of 2 for this detector, means losing
+    either source's fixture drops ``rules_reported`` to 1 and the probe
+    goes red.
 
     ``total_requests`` defaults to ``conf.DJANGO_WAF_SCRAPER_404_MIN_
     REQUESTS + 1``, for the same reason as the other config-derived
     fixtures in this module: raising the threshold alone cannot falsify a
     fixture that grows to match it. A falsifiability test that needs to
     raise the threshold past a FIXED fixture size must pass an explicit
-    literal here.
+    literal here. ``include_middleware``/``include_nginx`` default to
+    ``True`` and let a test drop one source's rows entirely, to prove the
+    probe can see a missing ingest path rather than only a missing IP.
     """
-    from django_waf.enums import Verdict
+    from django_waf.enums import RequestLogSource, Verdict
     from django_waf.models import RequestLog
 
     if total_requests is None:
         total_requests = conf.DJANGO_WAF_SCRAPER_404_MIN_REQUESTS + 1
 
-    RequestLog.objects.bulk_create(
-        [
+    rows: list[RequestLog] = []
+    if include_middleware:
+        rows.extend(
             RequestLog(
                 timestamp=now,
                 ip_address=_SCRAPER_404_IP,
@@ -479,7 +531,23 @@ def _build_scraper_404_fixture(*, now, conf, total_requests: int | None = None) 
                 method="GET",
                 verdict=Verdict.ALLOWED,
                 response_code=404,
+                source=RequestLogSource.MIDDLEWARE,
             )
             for i in range(total_requests)
-        ]
-    )
+        )
+    if include_nginx:
+        rows.extend(
+            RequestLog(
+                timestamp=now,
+                ip_address=_SCRAPER_404_NGINX_IP,
+                user_agent=_PROBE_UA,
+                path=f"/scraper-404-nginx-fixture-path-{i}/",
+                method="GET",
+                verdict=Verdict.ALLOWED,
+                response_code=404,
+                source=RequestLogSource.NGINX_LOG,
+            )
+            for i in range(total_requests)
+        )
+
+    RequestLog.objects.bulk_create(rows)
