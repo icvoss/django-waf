@@ -5,6 +5,18 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Fixed
+
+- README: the form-protection usage section now documents that the
+  consuming login view must call `waf_record_credential_failure` after
+  a failed credential check, unconditionally, and the two
+  credential-throttle settings rows point at that note. A README-only
+  reader could previously enable `credential_throttle` and connect
+  `credential_attack_observed` without anything ever incrementing the
+  counters, which is the belief behind #141. Documentation only, no
+  behaviour change.
+
 ## [2.8.0] - 2026-09-04
 ### Added
 
