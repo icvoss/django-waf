@@ -120,6 +120,48 @@ class TestReingestionDedup:
         assert RequestLog.objects.count() == 2
 
 
+class TestIcvCachesAliasRouting:
+    @pytest.mark.django_db
+    def test_offset_key_is_written_to_the_configured_alias_and_not_default(self):
+        """parse_access_log's offset cache routes through ICV_CACHES_ALIAS
+        (#149, ADR-037), proven against two real, distinct LocMemCache
+        aliases so a regression that keeps writing to "default" cannot pass
+        unnoticed.
+        """
+        from django.core.cache import caches
+        from django.test import override_settings
+
+        from django_waf.tasks import parse_access_log
+
+        log_content = '1.2.3.4 - - [07/Apr/2026:10:00:00 +0000] "GET /page/1/ HTTP/1.1" 200 1234 "-" "ua"\n'
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as fh:
+            fh.write(log_content)
+            log_path = fh.name
+
+        offset_key = f"django_waf:access_log_offset:{log_path}"
+
+        with override_settings(
+            CACHES={
+                "default": {
+                    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                    "LOCATION": "icv-caches-alias-default",
+                },
+                "icv": {
+                    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+                    "LOCATION": "icv-caches-alias-icv",
+                },
+            },
+            ICV_CACHES_ALIAS="icv",
+        ):
+            caches["default"].delete(offset_key)
+            caches["icv"].delete(offset_key)
+
+            parse_access_log(log_path=log_path)
+
+            assert caches["icv"].get(offset_key) is not None
+            assert caches["default"].get(offset_key) is None
+
+
 # ---------------------------------------------------------------------------
 # real log-line timestamps
 # ---------------------------------------------------------------------------

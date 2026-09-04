@@ -182,6 +182,84 @@ class TestCallTimeResolution:
             _ = conf_mod.DJANGO_WAF_FORM_REPLAY_STORE
 
 
+class TestIcvCachesAliasChaining:
+    """ICV_CACHES_ALIAS (ADR-037) and its DJANGO_WAF_REDIS_ALIAS chain (#149).
+
+    ADR-037's second 2026-09-04 amendment, case 2: DJANGO_WAF_REDIS_ALIAS is
+    a package-scoped rule-5 concern (this package requires the alias to be
+    Redis specifically) that defaults onto the resolved fleet-global
+    ICV_CACHES_ALIAS rather than the literal "default", most specific wins.
+    """
+
+    def test_icv_caches_alias_defaults_to_default(self):
+        assert conf_mod.ICV_CACHES_ALIAS == "default"
+
+    def test_icv_caches_alias_follows_the_setting(self, settings):
+        settings.ICV_CACHES_ALIAS = "fleet"
+        assert conf_mod.ICV_CACHES_ALIAS == "fleet"
+
+    def test_redis_alias_defaults_to_default_when_neither_is_set(self):
+        assert conf_mod.DJANGO_WAF_REDIS_ALIAS == "default"
+
+    def test_redis_alias_follows_icv_caches_alias_when_only_that_is_set(self, settings):
+        settings.ICV_CACHES_ALIAS = "fleet"
+        assert conf_mod.DJANGO_WAF_REDIS_ALIAS == "fleet"
+
+    def test_redis_alias_follows_its_own_explicit_value_when_both_are_set(self, settings):
+        """Most specific wins: an explicit DJANGO_WAF_REDIS_ALIAS is never
+        overridden by ICV_CACHES_ALIAS, even when both are set."""
+        settings.ICV_CACHES_ALIAS = "fleet"
+        settings.DJANGO_WAF_REDIS_ALIAS = "waf-specific"
+        assert conf_mod.DJANGO_WAF_REDIS_ALIAS == "waf-specific"
+
+    def test_dir_includes_icv_caches_alias(self):
+        assert "ICV_CACHES_ALIAS" in dir(conf_mod)
+
+
+class TestIsRedisBackendIcvCachesAliasChaining:
+    """is_redis_backend() (services/redis_client.py) resolves its default
+    alias independently of django_waf.conf (a deliberate boot-time-check
+    seam, see that function's docstring), so it chains onto ICV_CACHES_ALIAS
+    via its own getattr fallback rather than through conf.DJANGO_WAF_REDIS_ALIAS.
+    Proven here as its own three-way case so the two independent resolution
+    paths cannot silently diverge (#149).
+    """
+
+    def test_defaults_to_default_when_neither_is_set(self):
+        from django_waf.services.redis_client import is_redis_backend
+
+        with override_settings(
+            CACHES={"default": {"BACKEND": "django_redis.cache.RedisCache", "LOCATION": "redis://localhost:6379/0"}}
+        ):
+            assert is_redis_backend() is True
+
+    def test_follows_icv_caches_alias_when_only_that_is_set(self):
+        from django_waf.services.redis_client import is_redis_backend
+
+        with override_settings(
+            CACHES={
+                "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+                "fleet": {"BACKEND": "django_redis.cache.RedisCache", "LOCATION": "redis://localhost:6379/1"},
+            },
+            ICV_CACHES_ALIAS="fleet",
+        ):
+            assert is_redis_backend() is True
+
+    def test_follows_its_own_explicit_value_when_both_are_set(self):
+        from django_waf.services.redis_client import is_redis_backend
+
+        with override_settings(
+            CACHES={
+                "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+                "fleet": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+                "waf-specific": {"BACKEND": "django_redis.cache.RedisCache", "LOCATION": "redis://localhost:6379/2"},
+            },
+            ICV_CACHES_ALIAS="fleet",
+            DJANGO_WAF_REDIS_ALIAS="waf-specific",
+        ):
+            assert is_redis_backend() is True
+
+
 class TestSitePasswordEnabledDerivation:
     """DJANGO_WAF_SITE_PASSWORD_ENABLED recurses through the resolver for
     DJANGO_WAF_SITE_PASSWORD (HAZARD 2), the one intra-conf cross-reference

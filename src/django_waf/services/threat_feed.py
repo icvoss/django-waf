@@ -526,7 +526,11 @@ def get_or_create_install_id() -> str:
     """
     import os
 
-    from django.core.cache import cache
+    from django.core.cache import caches
+
+    from django_waf import conf
+
+    cache = caches[conf.ICV_CACHES_ALIAS]
 
     cached = cache.get(_INSTALL_ID_SETTING)
     if cached:
