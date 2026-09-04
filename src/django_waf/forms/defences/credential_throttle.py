@@ -14,10 +14,15 @@ whether an account exists**. This implementation enforces that by:
 
 The defence runs at submit time, *before* the auth check. It reads
 the current per-IP count; if it's at-or-above threshold the
-submission is flagged (challenge redirect). The actual increment
-happens via the orchestrator's ``record_credential_failure`` call
-after auth fails, which the consuming project hooks into its
-login view.
+submission is flagged (challenge redirect). There is no orchestrator
+call that increments the counter: neither the ``ProtectedForm`` mixin
+nor the ``waf_protect_post`` decorator can tell whether the
+authentication check that runs after them succeeded, so the consumer
+must call ``django_waf.forms.waf_record_credential_failure(request,
+identifier)`` from their own login flow, unconditionally, whenever
+the credential check fails, whether or not the account exists (PRD
+§3.6.1). Without that call the per-account counter never increments
+and ``credential_attack_observed`` never fires.
 
 Per PRD §3.6 + §3.6.1.
 """
