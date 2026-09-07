@@ -1,6 +1,37 @@
 # Plan: django-waf next session (from 2.9.0)
 
-**Status:** proposed. Not accepted, not started.
+**Status:** COMPLETE, executed 2026-09-06 to 2026-09-07. Shipped as
+2.10.0 (PR #156, merged `6943c93`, tag `v2.10.0`, PyPI serves 2.10.0).
+Kept for the record; do not re-execute.
+
+**Two corrections made during execution, both verified in source:**
+
+1. The constraint key in step 3 below (and in #153 itself) was
+   `(rule_type, match_type, pattern, action)`. That is wrong.
+   `_get_or_create_auto_rule` builds its lookup as
+   `rule_type, pattern, source, action` (`anomaly_detector.py:1781-1786`)
+   and writes `match_type` as a default, so a key including it would
+   permit two rows the detector treats as one and close nothing. Shipped
+   as `(rule_type, pattern, action)` with `condition=Q(source=auto)`.
+2. Step 2 below says the rule list arrives "ordered by `Meta.ordering`
+   (`priority`, `-created_at`)". It does not. `BlockRuleManager.active()`
+   ends `.order_by("priority")` (`models.py:62`), which REPLACES
+   `Meta.ordering`, so there is no `-created_at` tiebreak. First
+   occurrence wins means lowest `priority`; ties are unspecified. This
+   does not affect correctness, since tied rows render the same key.
+
+Two test-side defects were also found and fixed during verification: the
+migration-test fixture used the `db` fixture to drop a constraint via
+`schema_editor`, which Django's SQLite schema editor refuses inside an
+open atomic block (it raised `NotSupportedError` on every SQLite leg
+while passing on PostgreSQL), and the race harness did not initially
+reproduce the race at all. Neither implicated production code.
+
+The spec amendment in step 5 was filed upstream as
+`icvoss/icv-oss-umbrella#658`, not written here.
+
+---
+
 **Written:** 2026-09-06, against `origin/main` at `69c9986` (tag `v2.9.0`,
 PyPI serves 2.9.0, no open PRs).
 **Size:** one work item at multi-phase size (#153 adds a constraint and a
