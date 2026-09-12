@@ -5,7 +5,30 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.11.0] - 2026-09-12
+
+Filter-ready honesty release. Six publish gates were completed before
+tagging: version and dated CHANGELOG match; suite green on the tagged
+commit's CI backends; `publish.yml` install simulated in a clean venv;
+wheel built, `twine check`ed, contents and import verified; tagged
+commit's `publish.yml` confirmed; upgrade behaviour named below.
+
+### Upgrade notes
+
+- Receivers of `request_blocked` previously always saw `rule=None`. They
+  now receive the matched rule UUID (or `None` when unattributed). Treat
+  `rule` as `UUID | None`, not a `BlockRule` instance; load the row if
+  you need it.
+- Receivers of `request_throttled` previously saw only `ip_address` and
+  an always-`None` `window`. They now receive `path`, `window` (e.g.
+  `1m`, `path`), and `retry_after` (seconds). Drop any reliance on the
+  undocumented `requests_per_minute` name from older comments.
+- `rule_saved` now fires on BlockRule/AllowRule save and delete after
+  cache invalidation (`instance` + `created` on save; `instance` only on
+  delete).
+- `feed_synced` kwargs remain `created`/`updated`/`expired`/`skipped`;
+  comments that said `added`/`removed`/`duration_ms` were wrong and are
+  corrected (no send-site change).
 
 ### Fixed
 
