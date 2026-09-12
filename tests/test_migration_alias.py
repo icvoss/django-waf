@@ -66,6 +66,7 @@ class TestDedupeAutoBlockRulesUsesConnectionAlias:
 
     def test_dedupe_deletes_on_the_migrating_alias_only(self):
         from django.apps import apps
+
         from django_waf.models import BlockRule as LiveBlockRule
 
         module = importlib.import_module("django_waf.migrations.0008_dedupe_auto_block_rules")
