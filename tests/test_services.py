@@ -2698,6 +2698,17 @@ class TestSyncFeed:
 class TestSeedVerifiedCrawlers:
     """Test the seed_verified_crawlers migration function (AC-CHAL-001a/d)."""
 
+    def _schema_editor(self):
+        """Return a SchemaEditor with .connection.alias set.
+
+        Do not enter it as a context manager: SQLite refuses schema-editor
+        enter while the ``db`` fixture's atomic block has FK checks on.
+        Reading ``.connection.alias`` does not need ``__enter__``.
+        """
+        from django.db import connections
+
+        return connections["default"].schema_editor()
+
     def test_seed_creates_two_rows_with_default_setting(self, db):
         """With DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS=True, seed creates 2 rows.
 
@@ -2719,8 +2730,7 @@ class TestSeedVerifiedCrawlers:
         # Clear any existing rows
         AllowRule.objects.all().delete()
 
-        # Call seed_verified_crawlers directly
-        seed_verified_crawlers(apps, None)
+        seed_verified_crawlers(apps, self._schema_editor())
 
         # Verify exactly 2 rows created with correct patterns
         assert AllowRule.objects.count() == 2
@@ -2755,10 +2765,10 @@ class TestSeedVerifiedCrawlers:
 
         AllowRule.objects.all().delete()
 
-        seed_verified_crawlers(apps, None)
+        seed_verified_crawlers(apps, self._schema_editor())
         count_first = AllowRule.objects.count()
 
-        seed_verified_crawlers(apps, None)
+        seed_verified_crawlers(apps, self._schema_editor())
         count_second = AllowRule.objects.count()
 
         assert count_first == 2
@@ -2781,10 +2791,10 @@ class TestSeedVerifiedCrawlers:
 
         AllowRule.objects.all().delete()
 
-        seed_verified_crawlers(apps, None)
+        seed_verified_crawlers(apps, self._schema_editor())
         assert AllowRule.objects.count() == 2
 
-        unseed_verified_crawlers(apps, None)
+        unseed_verified_crawlers(apps, self._schema_editor())
         assert AllowRule.objects.count() == 0
 
     def test_seed_respects_allow_verified_crawlers_setting_false(self, db):
@@ -2807,7 +2817,7 @@ class TestSeedVerifiedCrawlers:
         AllowRule.objects.all().delete()
 
         with override_settings(DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS=False):
-            seed_verified_crawlers(apps, None)
+            seed_verified_crawlers(apps, self._schema_editor())
 
         assert AllowRule.objects.count() == 0
 
