@@ -400,6 +400,95 @@ class TestVerdictDispatch:
         assert response.status_code == 403
 
     @override_settings(DJANGO_WAF_ENABLED=True)
+    def test_middleware_blocked_signal_carries_matched_rule_id(self):
+        """Through-middleware receiver sees matched_rule_id as rule (#158).
+
+        Direct _emit_* unit tests can pass while the call site still hardcodes
+        None; this path goes through WafMiddleware._handle_verdict.
+        """
+        from uuid import uuid4
+
+        from django_waf.signals import request_blocked
+
+        rule_id = uuid4()
+        received = []
+
+        def handler(sender, **kwargs):
+            received.append(kwargs)
+
+        request_blocked.connect(handler, dispatch_uid="test_158_blocked_mw")
+        try:
+            factory = RequestFactory()
+            request = factory.get("/page/", HTTP_USER_AGENT="TestAgent/1.0")
+            request.user = MagicMock(is_authenticated=False)
+            request.COOKIES = {}
+            get_response = MagicMock(return_value=HttpResponse("view response"))
+
+            with (
+                patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+                patch("django_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+                patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+                patch("django_waf.services.rule_engine.record_block_verdict"),
+            ):
+                mock_redis_fn.return_value = _mock_redis()
+                mock_validate.return_value = False
+                mock_eval.return_value = _make_result("blocked", matched_rule_id=rule_id)
+                middleware = _make_middleware(get_response)
+                response = middleware(request)
+        finally:
+            request_blocked.disconnect(dispatch_uid="test_158_blocked_mw")
+
+        assert response.status_code == 403
+        assert len(received) == 1
+        assert received[0]["rule"] == rule_id
+        assert received[0]["path"] == "/page/"
+        assert received[0]["user_agent"] == "TestAgent/1.0"
+        assert received[0]["verdict"] == "blocked"
+        assert received[0]["ip_address"]
+
+    @override_settings(DJANGO_WAF_ENABLED=True)
+    def test_middleware_throttled_signal_carries_window_and_retry_after(self):
+        """Through-middleware receiver sees real window and retry_after (#158)."""
+        from django_waf.signals import request_throttled
+
+        received = []
+
+        def handler(sender, **kwargs):
+            received.append(kwargs)
+
+        request_throttled.connect(handler, dispatch_uid="test_158_throttled_mw")
+        try:
+            factory = RequestFactory()
+            request = factory.get("/api/items/")
+            request.user = MagicMock(is_authenticated=False)
+            request.COOKIES = {}
+            get_response = MagicMock(return_value=HttpResponse("view response"))
+
+            with (
+                patch("django_waf.middleware._get_redis_client") as mock_redis_fn,
+                patch("django_waf.services.challenge_service.validate_pass_cookie") as mock_validate,
+                patch("django_waf.services.rule_engine.evaluate_request") as mock_eval,
+            ):
+                mock_redis_fn.return_value = _mock_redis()
+                mock_validate.return_value = False
+                mock_eval.return_value = _make_result(
+                    "throttled",
+                    window="1m",
+                    retry_after=22,
+                )
+                middleware = _make_middleware(get_response)
+                response = middleware(request)
+        finally:
+            request_throttled.disconnect(dispatch_uid="test_158_throttled_mw")
+
+        assert response.status_code == 429
+        assert len(received) == 1
+        assert received[0]["window"] == "1m"
+        assert received[0]["retry_after"] == 22
+        assert received[0]["path"] == "/api/items/"
+        assert received[0]["ip_address"]
+
+    @override_settings(DJANGO_WAF_ENABLED=True)
     def test_throttled_verdict_returns_429(self):
         response = self._run_with_verdict("throttled")
 
@@ -1102,10 +1191,14 @@ class TestMiddlewareHelpers:
         on_request_blocked handler requires, causing a silent TypeError
         swallowed by the except Exception wrapper.
         """
+        from uuid import uuid4
+
         from django_waf.middleware import _emit_request_blocked
 
+        rule_id = uuid4()
         result = MagicMock()
         result.verdict = "blocked"
+        result.matched_rule_id = rule_id
 
         with patch("django_waf.signals.request_blocked.send") as mock_send:
             _emit_request_blocked(
@@ -1120,7 +1213,7 @@ class TestMiddlewareHelpers:
             assert call_kwargs["ip_address"] == "1.2.3.4"
             assert call_kwargs["user_agent"] == "curl"
             assert call_kwargs["path"] == "/"
-            assert call_kwargs["rule"] is None
+            assert call_kwargs["rule"] == rule_id
 
     def test_emit_request_blocked_swallows_exception(self):
         """Signal dispatch errors are logged, not raised."""
@@ -1139,8 +1232,14 @@ class TestMiddlewareHelpers:
         with patch("django_waf.signals.request_throttled.send") as mock_send:
             result = MagicMock()
             result.window = "1m"
-            _emit_request_throttled(result, "1.2.3.4")
+            result.retry_after = 22
+            _emit_request_throttled(result, "1.2.3.4", path="/api/")
             mock_send.assert_called_once()
+            call_kwargs = mock_send.call_args[1]
+            assert call_kwargs["ip_address"] == "1.2.3.4"
+            assert call_kwargs["path"] == "/api/"
+            assert call_kwargs["window"] == "1m"
+            assert call_kwargs["retry_after"] == 22
 
     def test_emit_request_throttled_swallows_exception(self):
         from django_waf.middleware import _emit_request_throttled
@@ -1149,7 +1248,7 @@ class TestMiddlewareHelpers:
             "django_waf.signals.request_throttled.send",
             side_effect=RuntimeError("listener crashed"),
         ):
-            _emit_request_throttled(MagicMock(), "1.2.3.4")
+            _emit_request_throttled(MagicMock(), "1.2.3.4", path="/")
 
 
 # ---------------------------------------------------------------------------

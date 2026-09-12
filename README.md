@@ -250,6 +250,22 @@ them from there; unreviewed quarantined rules that expire are marked
 | `DJANGO_WAF_LOG_SAMPLE_RATE` | `0.01` | Fraction of allowed requests to log (0.0 to 1.0) |
 | `DJANGO_WAF_LOG_RETENTION_DAYS` | `30` | Days to retain `RequestLog` entries |
 
+### Privacy and data retention (current posture)
+
+This documents what the package stores today and what the shipped prune
+tasks remove. It is not a hashed-IP or field-redaction mode; those need a
+named retention regime before they ship (tracker #37).
+
+| Surface | What is retained | How long / prune | What is not pruned |
+|---------|------------------|------------------|--------------------|
+| `RequestLog` | Full client IP, user-agent, path, method, referer, verdict, matched rule id, HTTP fingerprint fields, response code | `prune_request_logs` deletes rows older than `DJANGO_WAF_LOG_RETENTION_DAYS` (default 30). Blocked, challenged and throttled requests are always written; allowed traffic is sampled | Rows within the retention window; there is no IP truncation or path redaction on write |
+| `ChallengeToken` | Full client IP, token, difficulty, nonce, status | `prune_challenge_tokens` deletes `PENDING` and `FAILED` tokens whose `expires_at` is older than 24 hours (command/task default). `SOLVED` tokens are kept for reputation aggregation | `SOLVED` tokens; `EXPIRED` status is handled by challenge verification, not this prune |
+| `IPReputation` | Full client IP, threat score, request/challenge aggregates, last-seen timestamps | No prune task. Rows are upserted from the last 24 hours of `RequestLog` / `ChallengeToken` by `update_ip_reputation` | The whole table unless an operator deletes rows |
+| `BlockRule` / `AllowRule` | Pattern (IP, CIDR, UA, path), notes, feed confidence, detector names, review fields | `expire_rules` deactivates expired active rules (does not delete). `prune_stale_rules` hard-deletes expired, inactive, auto-generated `BlockRule` rows older than `DJANGO_WAF_RULE_RETENTION_DAYS` (default 90) when `DJANGO_WAF_RULE_PRUNE_ENABLED` is True | Admin and feed rules; active rules; auto rules younger than the retention window; `AllowRule` rows (no stale prune) |
+
+Feed telemetry (when reporting is enabled) truncates IPs to /24 or /48 before
+leaving the site; that does not change what the local tables store.
+
 ### GeoIP
 
 | Setting | Default | Description |

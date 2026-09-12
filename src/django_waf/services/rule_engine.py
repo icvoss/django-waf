@@ -36,6 +36,9 @@ class EvaluationResult(NamedTuple):
     # verdict. Defaulted so existing positional/keyword construction sites
     # that predate this field keep working unchanged.
     retry_after: int | None = None
+    # Populated only on THROTTLED verdicts: the RateLimitResult.window name
+    # that tripped ('1s', '1m', '5m', 'path', 'verify'). None otherwise.
+    window: str | None = None
 
 
 class RuleCache(NamedTuple):
@@ -381,8 +384,15 @@ def evaluate_request(
                 matched_rule_id = UUID(rule_id_str)
                 _record_rule_hit(rule_id_str, redis_client)
             except ValueError:
-                # Malformed cache value, log nothing, still block.
-                pass
+                # Malformed cache value: still block (safe direction) but
+                # disclose so an operator can tell corruption from a
+                # legacy "1" marker (ADR-101 / #159).
+                logger.warning(
+                    "django-waf: malformed blocked-IP cache value for %s "
+                    "(length=%d); blocking without rule attribution",
+                    ip_address,
+                    len(rule_id_str),
+                )
         return EvaluationResult(
             verdict=Verdict.BLOCKED,
             action=RuleAction.BLOCK,
@@ -419,6 +429,7 @@ def evaluate_request(
             matched_rule_type="",
             anomaly_score=None,
             retry_after=rate_result.retry_after,
+            window=rate_result.window,
         )
 
     # Step 8: No-referer challenge (moved from middleware for proper logging)

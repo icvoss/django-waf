@@ -317,6 +317,29 @@ class TestRequestBlockedHandler:
         assert extra.get("rule_id") == str(rule.id)
         assert extra.get("rule_name") == str(rule)
 
+    def test_on_request_blocked_includes_rule_id_when_uuid_present(self):
+        """Middleware sends a matched-rule UUID; the handler logs it as rule_id."""
+        from uuid import uuid4
+
+        from django_waf.signals import request_blocked
+
+        rule_id = uuid4()
+
+        with patch("django_waf.handlers.logger") as mock_logger:
+            request_blocked.send(
+                sender=None,
+                ip_address="9.10.11.12",
+                user_agent="",
+                path="/blocked/",
+                rule=rule_id,
+                verdict="blocked",
+            )
+
+        _args, kwargs = mock_logger.info.call_args
+        extra = kwargs.get("extra", {})
+        assert extra.get("rule_id") == str(rule_id)
+        assert extra.get("rule_name") is None
+
     def test_on_request_blocked_includes_user_agent(self):
         """user_agent from the signal is included in the structured log record."""
         from django_waf.signals import request_blocked
@@ -400,3 +423,78 @@ class TestInvalidateRuleCacheHelper:
             _invalidate_rule_cache()
 
         assert cache.data.get("waf:rules:version") == 1
+
+
+# ---------------------------------------------------------------------------
+# rule_saved signal (#161)
+# ---------------------------------------------------------------------------
+
+
+class TestRuleSavedSignal:
+    """Saving or deleting BlockRule/AllowRule emits rule_saved after cache invalidate."""
+
+    @pytest.mark.django_db
+    def test_block_rule_create_emits_rule_saved_with_created_true(self):
+        from django_waf.signals import rule_saved
+        from django_waf.testing.factories import BlockRuleFactory
+
+        received = []
+
+        def handler(sender, **kwargs):
+            received.append(kwargs)
+
+        rule_saved.connect(handler, dispatch_uid="test_161_block_create")
+        try:
+            with patch(_get_cache_incr_path(), return_value=(MagicMock(), True)):
+                rule = BlockRuleFactory()
+        finally:
+            rule_saved.disconnect(dispatch_uid="test_161_block_create")
+
+        assert len(received) == 1
+        assert received[0]["instance"].pk == rule.pk
+        assert received[0]["created"] is True
+
+    @pytest.mark.django_db
+    def test_block_rule_delete_emits_rule_saved_without_created(self):
+        from django_waf.signals import rule_saved
+        from django_waf.testing.factories import BlockRuleFactory
+
+        with patch(_get_cache_incr_path(), return_value=(MagicMock(), True)):
+            rule = BlockRuleFactory()
+
+        received = []
+
+        def handler(sender, **kwargs):
+            received.append(kwargs)
+
+        rule_saved.connect(handler, dispatch_uid="test_161_block_delete")
+        try:
+            with patch(_get_cache_incr_path(), return_value=(MagicMock(), True)):
+                rule.delete()
+        finally:
+            rule_saved.disconnect(dispatch_uid="test_161_block_delete")
+
+        assert len(received) == 1
+        assert "created" not in received[0]
+        assert received[0]["instance"].pk == rule.pk
+
+    @pytest.mark.django_db
+    def test_allow_rule_create_emits_rule_saved(self):
+        from django_waf.signals import rule_saved
+        from django_waf.testing.factories import AllowRuleFactory
+
+        received = []
+
+        def handler(sender, **kwargs):
+            received.append(kwargs)
+
+        rule_saved.connect(handler, dispatch_uid="test_161_allow_create")
+        try:
+            with patch(_get_cache_incr_path(), return_value=(MagicMock(), True)):
+                rule = AllowRuleFactory()
+        finally:
+            rule_saved.disconnect(dispatch_uid="test_161_allow_create")
+
+        assert len(received) == 1
+        assert received[0]["instance"].pk == rule.pk
+        assert received[0]["created"] is True

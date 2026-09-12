@@ -65,14 +65,25 @@ if os.environ.get("DJANGO_WAF_TEST_DB") == "postgres":
             "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "postgres"),
             "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
             "PORT": os.environ.get("POSTGRES_PORT", "5432"),
-        }
+        },
+        # Second, always-SQLite alias for tests/test_migration_alias.py
+        # (icvoss/django-waf#164). Routing only; never backend-specific
+        # behaviour, so it stays identical on every settings leg.
+        "other": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        },
     }
 else:
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": ":memory:",
-        }
+        },
+        "other": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": ":memory:",
+        },
     }
 
 # Schema is built directly from the models rather than by running migrations,

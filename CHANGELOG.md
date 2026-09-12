@@ -5,6 +5,35 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `request_blocked` now sends `rule` as the matched rule UUID (or `None`),
+  and `request_throttled` sends real `path`, `window`, and `retry_after`
+  values from the evaluation result. Middleware tests cover the kwargs a
+  receiver observes through `WafMiddleware`, not only a direct signal send
+  (#158).
+- Malformed Redis blocked-IP cache values still block (safe direction) but
+  now log a WARNING naming the IP and value length, so corruption is not
+  silent (#159).
+- Data migrations `0003_seed_verified_crawlers` and
+  `0008_dedupe_auto_block_rules` route every ORM call through
+  `.using(schema_editor.connection.alias)` so `migrate --database=<alias>`
+  writes to the intended database (#164).
+
+### Changed
+
+- `signals.py` comments and the package README privacy/retention section
+  now match the kwargs and retention behaviour the code actually ships:
+  `feed_synced` documents `created`/`updated`/`expired`/`skipped` (#162);
+  `rule_saved` is emitted from BlockRule/AllowRule save and delete handlers
+  with a receiver test (#161); local retention for RequestLog,
+  ChallengeToken, IPReputation and BlockRule patterns is documented without
+  adding a hashed-IP mode (#37 docs slice).
+- `EvaluationResult` gains an optional `window` field, populated on
+  `THROTTLED` verdicts from the rate limiter.
+
 ## [2.10.0] - 2026-09-06
 ### Fixed
 

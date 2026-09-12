@@ -59,10 +59,11 @@ def seed_verified_crawlers(apps, schema_editor):
     if not getattr(settings, "DJANGO_WAF_ALLOW_VERIFIED_CRAWLERS", True):
         return
 
+    alias = schema_editor.connection.alias
     AllowRule = apps.get_model("django_waf", "AllowRule")
 
     for row in _SEED_ROWS:
-        AllowRule.objects.update_or_create(
+        AllowRule.objects.using(alias).update_or_create(
             rule_type=row["rule_type"],
             pattern=row["pattern"],
             defaults=row["defaults"],
@@ -70,10 +71,11 @@ def seed_verified_crawlers(apps, schema_editor):
 
 
 def unseed_verified_crawlers(apps, schema_editor):
+    alias = schema_editor.connection.alias
     AllowRule = apps.get_model("django_waf", "AllowRule")
 
     for row in _SEED_ROWS:
-        AllowRule.objects.filter(
+        AllowRule.objects.using(alias).filter(
             rule_type=row["rule_type"],
             pattern=row["pattern"],
         ).delete()
