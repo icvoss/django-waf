@@ -682,7 +682,7 @@ class WafMiddleware:
             return self._build_block_response(request, result)
 
         if verdict == Verdict.THROTTLED:
-            _emit_request_throttled(result, ip_address)
+            _emit_request_throttled(result, ip_address, path)
             return self._build_throttle_response(request, result)
 
         if verdict == Verdict.CHALLENGED:
@@ -904,7 +904,12 @@ def _get_redis_client():
 
 
 def _emit_request_blocked(result, ip_address: str, user_agent: str, path: str) -> None:
-    """Emit the request_blocked signal without raising."""
+    """Emit the request_blocked signal without raising.
+
+    ``rule`` is the matched rule UUID (or None), never a loaded BlockRule
+    row: the same attribution the EvaluationResult already carries, without
+    an extra query on the hot path (#158).
+    """
     try:
         from django_waf.signals import request_blocked
 
@@ -913,22 +918,29 @@ def _emit_request_blocked(result, ip_address: str, user_agent: str, path: str) -
             ip_address=ip_address,
             user_agent=user_agent,
             path=path,
-            rule=None,
+            rule=getattr(result, "matched_rule_id", None),
             verdict=result.verdict,
         )
     except Exception:
         logger.exception("django-waf: failed to emit request_blocked signal")
 
 
-def _emit_request_throttled(result, ip_address: str) -> None:
-    """Emit the request_throttled signal without raising."""
+def _emit_request_throttled(result, ip_address: str, path: str = "") -> None:
+    """Emit the request_throttled signal without raising.
+
+    Carries the real window name and retry_after from EvaluationResult
+    (populated from RateLimitResult on THROTTLED verdicts), not the stale
+    getattr(result, "window", None) that was always None (#158).
+    """
     try:
         from django_waf.signals import request_throttled
 
         request_throttled.send(
             sender=None,
             ip_address=ip_address,
+            path=path,
             window=getattr(result, "window", None),
+            retry_after=getattr(result, "retry_after", None),
         )
     except Exception:
         logger.exception("django-waf: failed to emit request_throttled signal")

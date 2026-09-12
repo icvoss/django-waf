@@ -987,27 +987,31 @@ class TestEvaluateRequest:
         incr_keys = [c.args[0] for c in redis.incr.call_args_list]
         assert f"waf:rule_hits:{rule_uuid}" in incr_keys
 
-    def test_fast_path_malformed_cache_value_falls_back(self, db):
+    def test_fast_path_malformed_cache_value_falls_back(self, db, caplog):
         """A malformed cache value still blocks but carries no attribution.
 
         Defensive: someone could write garbage to the cache key (replication
         race, manual ops intervention). The fast path must still block, failing open on a malformed cache value would be
         worse than failing
-        closed without attribution.
+        closed without attribution. ADR-101 / #159: the miss is logged.
         """
+        import logging
+
         redis = _make_redis()
         redis.get.side_effect = lambda key: b"not-a-uuid" if "blocked" in key else None
 
-        result = evaluate_request(
-            ip_address="5.5.5.7",
-            user_agent="Mozilla/5.0",
-            path="/",
-            method="GET",
-            redis_client=redis,
-        )
+        with caplog.at_level(logging.WARNING, logger="django_waf.rule_engine"):
+            result = evaluate_request(
+                ip_address="5.5.5.7",
+                user_agent="Mozilla/5.0",
+                path="/",
+                method="GET",
+                redis_client=redis,
+            )
 
         assert result.verdict == Verdict.BLOCKED
         assert result.matched_rule_id is None
+        assert any("malformed blocked-IP cache value" in r.message for r in caplog.records)
 
     def test_rate_limit_exceeded_returns_throttled(self, db):
         """When rate limit is exceeded, result is THROTTLED."""
@@ -1033,6 +1037,8 @@ class TestEvaluateRequest:
 
         assert result.verdict == Verdict.THROTTLED
         assert result.action == RuleAction.THROTTLE
+        assert result.window is not None
+        assert result.retry_after is not None
 
     def test_ua_anomaly_score_triggers_challenge(self, db):
         """High-anomaly UA with >10 recent requests triggers CHALLENGED verdict."""
@@ -2431,7 +2437,15 @@ class TestSyncFeed:
             feed_synced.disconnect(dispatch_uid="test_sync_feed_signal")
 
         assert len(received) == 1
-        assert "created" in received[0]
+        assert set(received[0]) >= {"created", "updated", "expired", "skipped", "signal"}
+        # Django always adds "signal"; the sync payload keys must match
+        # sync_feed's return dict and signals.py (#162), not the old
+        # added/removed/duration_ms names.
+        for key in ("created", "updated", "expired", "skipped"):
+            assert key in received[0]
+        assert "added" not in received[0]
+        assert "removed" not in received[0]
+        assert "duration_ms" not in received[0]
 
     def test_allow_rule_entry_with_rdns_creates_allow_rule_ac_feed_004(self, db):
         """kind='allow' entry with verify_rdns + rdns_pattern creates AllowRule, no BlockRule.

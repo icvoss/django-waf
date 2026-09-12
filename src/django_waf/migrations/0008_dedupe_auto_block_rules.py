@@ -28,9 +28,10 @@ def dedupe_auto_block_rules(apps, schema_editor):
     hand and are not covered by the partial constraint, so duplicates among
     them are legitimate and must survive.
     """
+    alias = schema_editor.connection.alias
     BlockRule = apps.get_model("django_waf", "BlockRule")
 
-    auto_rules = BlockRule.objects.filter(source="auto")
+    auto_rules = BlockRule.objects.using(alias).filter(source="auto")
     duplicate_keys = (
         auto_rules.values("rule_type", "pattern", "action")
         .annotate(row_count=models.Count("id"))
@@ -50,7 +51,7 @@ def dedupe_auto_block_rules(apps, schema_editor):
         stale_pks.extend(group.values_list("id", flat=True)[1:])
 
     if stale_pks:
-        BlockRule.objects.filter(id__in=stale_pks).delete()
+        BlockRule.objects.using(alias).filter(id__in=stale_pks).delete()
 
 
 class Migration(migrations.Migration):

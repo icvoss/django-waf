@@ -92,10 +92,27 @@ def _invalidate_rule_cache() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _emit_rule_saved(sender, instance, *, created: bool | None = None) -> None:
+    """Emit ``rule_saved`` for consumer cache listeners without raising.
+
+    Saves pass ``created``; deletes omit it (matching signals.py).
+    """
+    try:
+        from django_waf.signals import rule_saved
+
+        if created is None:
+            rule_saved.send(sender=sender, instance=instance)
+        else:
+            rule_saved.send(sender=sender, instance=instance, created=created)
+    except Exception:
+        logger.exception("django-waf: failed to emit rule_saved signal")
+
+
 @receiver(post_save, sender="django_waf.BlockRule")
 def on_block_rule_save(sender, instance, **kwargs) -> None:
     """Invalidate the compiled rule cache when a BlockRule is saved."""
     _invalidate_rule_cache()
+    _emit_rule_saved(sender, instance, created=kwargs.get("created", False))
     logger.debug("BlockRule %r saved, rule cache invalidated.", str(instance))
 
 
@@ -103,6 +120,7 @@ def on_block_rule_save(sender, instance, **kwargs) -> None:
 def on_block_rule_delete(sender, instance, **kwargs) -> None:
     """Invalidate the compiled rule cache when a BlockRule is deleted."""
     _invalidate_rule_cache()
+    _emit_rule_saved(sender, instance)
     logger.debug("BlockRule %r deleted, rule cache invalidated.", str(instance))
 
 
@@ -115,6 +133,7 @@ def on_block_rule_delete(sender, instance, **kwargs) -> None:
 def on_allow_rule_save(sender, instance, **kwargs) -> None:
     """Invalidate the compiled rule cache when an AllowRule is saved."""
     _invalidate_rule_cache()
+    _emit_rule_saved(sender, instance, created=kwargs.get("created", False))
     logger.debug("AllowRule %r saved, rule cache invalidated.", str(instance))
 
 
@@ -122,6 +141,7 @@ def on_allow_rule_save(sender, instance, **kwargs) -> None:
 def on_allow_rule_delete(sender, instance, **kwargs) -> None:
     """Invalidate the compiled rule cache when an AllowRule is deleted."""
     _invalidate_rule_cache()
+    _emit_rule_saved(sender, instance)
     logger.debug("AllowRule %r deleted, rule cache invalidated.", str(instance))
 
 
@@ -132,9 +152,20 @@ def on_allow_rule_delete(sender, instance, **kwargs) -> None:
 
 @receiver(request_blocked)
 def on_request_blocked(sender, ip_address: str, path: str, rule, verdict: str = "", **kwargs) -> None:
-    """Write a structured log entry when a request is blocked."""
-    rule_id = str(rule.id) if rule is not None else None
-    rule_name = str(rule) if rule is not None else None
+    """Write a structured log entry when a request is blocked.
+
+    ``rule`` may be a matched-rule UUID (what the middleware sends), a
+    BlockRule instance (legacy / test senders), or None.
+    """
+    if rule is None:
+        rule_id = None
+        rule_name = None
+    elif hasattr(rule, "id"):
+        rule_id = str(rule.id)
+        rule_name = str(rule)
+    else:
+        rule_id = str(rule)
+        rule_name = None
     logger.info(
         "WAF blocked request",
         extra={
