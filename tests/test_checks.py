@@ -1280,7 +1280,10 @@ class TestManagePyCheckWithWafDisabled:
             # Before #95's guards, E003 (and, before #92, E004) would
             # raise here on this exact profile; a clean return is the
             # regression assertion.
-            call_command("check")
+            # Django 6.1 defaults databases=None to every connection and probes
+            # connection.features (JSONField), which needs databases=[] or django_db.
+            # Only package configuration checks are asserted, so skip DB probing.
+            call_command("check", databases=[])
 
     def test_check_command_aborts_when_site_password_misconfigured_even_disabled_guard_removed(self):
         """Sanity check that this test harness can actually detect the
@@ -1297,7 +1300,7 @@ class TestManagePyCheckWithWafDisabled:
             patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
         ):
             try:
-                call_command("check")
+                call_command("check", databases=[])
             except SystemCheckError as exc:
                 assert "django_waf.E003" in str(exc)
             else:
@@ -1340,7 +1343,9 @@ class TestManagePyCheckWithUnroutedChallengeUrls:
             ),
             patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
         ):
-            call_command("check")
+            # Django 6.1: databases=None probes every connection (JSONField
+            # features); only package configuration checks matter here.
+            call_command("check", databases=[])
 
     def test_check_command_aborts_when_challenge_urls_are_unroutable(self):
         """The positive control for the test above, so a silent
@@ -1358,7 +1363,7 @@ class TestManagePyCheckWithUnroutedChallengeUrls:
             patch("django_waf.services.redis_client.is_redis_backend", return_value=True),
         ):
             try:
-                call_command("check")
+                call_command("check", databases=[])
             except SystemCheckError as exc:
                 assert "django_waf.E007" in str(exc)
             else:
