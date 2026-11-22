@@ -19,8 +19,10 @@ JSON body tests.
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import MagicMock, patch
 
+import django
 import pytest
 from django.contrib.auth import get_user_model
 from django.test import Client
@@ -28,6 +30,8 @@ from django.test import Client
 User = get_user_model()
 
 pytestmark = pytest.mark.django_db
+
+_DJANGO_6_PLUS = django.VERSION >= (6, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +248,57 @@ class TestChallengeView:
 
         content = response.content.decode()
         assert '<meta name="robots" content="noindex, nofollow">' in content
+
+    @pytest.mark.skipif(not _DJANGO_6_PLUS, reason="ContentSecurityPolicyMiddleware requires Django 6+")
+    def test_inline_script_carries_csp_nonce_matching_header(self, settings):
+        """Under a strict SECURE_CSP the challenge PoW script must be permitted.
+
+        Django 6's ContentSecurityPolicyMiddleware applies the site policy to
+        the challenge response. Without a matching nonce on the inline
+        <script>, script-src without 'unsafe-inline' blocks the solver and
+        challenged visitors are locked out (#168).
+        """
+        from django.utils.csp import CSP
+
+        settings.DJANGO_WAF_ENABLED = True
+        settings.SECURE_CSP = {
+            "default-src": [CSP.SELF],
+            "script-src": [CSP.SELF, CSP.NONCE],
+            "style-src": [CSP.SELF, CSP.NONCE],
+        }
+        settings.MIDDLEWARE = [
+            *settings.MIDDLEWARE,
+            "django.middleware.csp.ContentSecurityPolicyMiddleware",
+        ]
+
+        client = Client()
+
+        with (
+            patch("django_waf.views._get_redis_client") as mock_redis_fn,
+            patch("django_waf.services.challenge_service.issue_challenge") as mock_issue,
+        ):
+            mock_redis_fn.return_value = _mock_redis()
+            mock_issue.return_value = _mock_challenge_token("tok")
+
+            response = client.get("/waf/challenge/")
+
+        assert response.status_code == 200
+        csp = response.get("Content-Security-Policy", "")
+        assert csp, "Content-Security-Policy header must be set"
+        assert "unsafe-inline" not in csp
+
+        script_nonce_match = re.search(r'<script nonce="([^"]+)">', response.content.decode())
+        assert script_nonce_match is not None, "inline <script> must carry a nonce attribute"
+        script_nonce = script_nonce_match.group(1)
+        assert script_nonce, "nonce attribute must be non-empty under Django 6 CSP"
+
+        style_nonce_match = re.search(r'<style nonce="([^"]+)">', response.content.decode())
+        assert style_nonce_match is not None, "inline <style> must carry a nonce attribute"
+        assert style_nonce_match.group(1) == script_nonce
+
+        assert f"'nonce-{script_nonce}'" in csp
+        assert "script-src" in csp
+        assert "style-src" in csp
 
 
 # ---------------------------------------------------------------------------
