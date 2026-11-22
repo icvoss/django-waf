@@ -5,6 +5,26 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.0] - 2026-11-22
+
+### Upgrade notes
+
+- Sites that run Django 6 `ContentSecurityPolicyMiddleware` with a strict
+  `script-src` / `style-src` (no `'unsafe-inline'`) no longer need a
+  per-response CSP override for the challenge page. Include `CSP.NONCE` in
+  those directives so the challenge's inline solver is permitted. See the
+  README Challenges section.
+
+### Fixed
+
+- The challenge page's inline `<style>` and proof-of-work `<script>` now
+  render with the request CSP nonce (`nonce="{{ csp_nonce }}"`), so
+  challenged visitors are not locked out under a strict Django 6 CSP.
+  The view passes `request._csp_nonce` into the template context so the
+  nonce is present even without `django.template.context_processors.csp`.
+  On Django 5.2 or when CSP middleware is absent the attribute is empty
+  and behaviour is unchanged (#168).
+
 ## [2.11.0] - 2026-09-12
 
 Filter-ready honesty release. Six publish gates were completed before

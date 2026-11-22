@@ -199,6 +199,12 @@ class ChallengeView(NoIndexResponseMixin, TemplateView):
         # tokens stay PENDING forever.
         verify_path = conf.DJANGO_WAF_VERIFY_URL or reverse("django_waf:verify")
 
+        # Django 6 ContentSecurityPolicyMiddleware attaches a LazyNonce as
+        # request._csp_nonce. Pass it through so the challenge template can
+        # put matching nonce attrs on its inline <style>/<script> even when
+        # the consumer has not enabled django.template.context_processors.csp.
+        # On Django 5.2 (no CSP middleware) or when the middleware is absent,
+        # the attribute renders empty and a non-CSP page is unchanged (#168).
         response = self.render_to_response(
             {
                 "token": challenge_token.token,
@@ -207,6 +213,7 @@ class ChallengeView(NoIndexResponseMixin, TemplateView):
                 "difficulty": challenge_token.difficulty,
                 "next_url": next_url,
                 "post_url": request.build_absolute_uri(verify_path),
+                "csp_nonce": getattr(request, "_csp_nonce", ""),
             }
         )
         response["Cache-Control"] = "no-store"

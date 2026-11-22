@@ -189,6 +189,41 @@ All settings are namespaced under `DJANGO_WAF_*` and have sensible defaults.
 | `DJANGO_WAF_CHALLENGE_ESCALATION_THRESHOLD` | `10` | Number of challenges before auto-escalating to a block (bot-fingerprinted clients count even when solved) |
 | `DJANGO_WAF_ESCALATION_BLOCK_TTL` | `3600` | TTL in seconds for escalation blocks |
 
+#### Content Security Policy (Django 6+)
+
+The challenge page ships a small inline `<style>` and proof-of-work
+`<script>`. Under Django 6's `ContentSecurityPolicyMiddleware`, a strict
+`script-src` / `style-src` without `'unsafe-inline'` will block those tags
+unless they carry a matching CSP nonce. The template renders
+`nonce="{{ csp_nonce }}"` on both tags; the challenge view also passes
+`request._csp_nonce` into the template context so the attribute is filled
+when the middleware is installed, even if
+`django.template.context_processors.csp` is not enabled. When no nonce is
+available (Django 5.2, or CSP middleware not installed) the attribute is
+empty and behaviour is unchanged.
+
+To allow the challenge under a strict policy, include Django's `NONCE`
+placeholder in both directives:
+
+```python
+from django.utils.csp import CSP
+
+SECURE_CSP = {
+    "default-src": [CSP.SELF],
+    "script-src": [CSP.SELF, CSP.NONCE],
+    "style-src": [CSP.SELF, CSP.NONCE],
+}
+
+MIDDLEWARE = [
+    # ...
+    "django.middleware.csp.ContentSecurityPolicyMiddleware",
+]
+```
+
+Enabling `django.template.context_processors.csp` remains the Django
+recommended path for site-wide nonce use; django-waf does not require it
+for the challenge page alone.
+
 ### Search engine crawlers
 
 The proof-of-work challenge carries `X-Robots-Tag: noindex` and a robots meta
