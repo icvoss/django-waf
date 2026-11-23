@@ -391,13 +391,14 @@ class TestVerdictDispatch:
             middleware = _make_middleware(get_response)
             response = middleware(request)
 
-        return response
+        return response, get_response
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_blocked_verdict_returns_403(self):
-        response = self._run_with_verdict("blocked")
+        response, get_response = self._run_with_verdict("blocked")
 
         assert response.status_code == 403
+        get_response.assert_not_called()
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_middleware_blocked_signal_carries_matched_rule_id(self):
@@ -490,19 +491,20 @@ class TestVerdictDispatch:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_throttled_verdict_returns_429(self):
-        response = self._run_with_verdict("throttled")
+        response, get_response = self._run_with_verdict("throttled")
 
         assert response.status_code == 429
+        get_response.assert_not_called()
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_throttled_verdict_includes_retry_after_header(self):
-        response = self._run_with_verdict("throttled")
+        response, _ = self._run_with_verdict("throttled")
 
         assert "Retry-After" in response
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_challenged_verdict_redirects_to_challenge_page(self):
-        response = self._run_with_verdict("challenged")
+        response, _ = self._run_with_verdict("challenged")
 
         assert response.status_code == 302
         assert "/challenge/" in response["Location"]
@@ -604,14 +606,14 @@ class TestVerdictDispatch:
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_allowed_verdict_passes_to_get_response(self):
-        response = self._run_with_verdict("allowed")
+        response, _ = self._run_with_verdict("allowed")
 
         assert response.status_code == 200
         assert response.content == b"view response"
 
     @override_settings(DJANGO_WAF_ENABLED=True)
     def test_passed_verdict_passes_to_get_response(self):
-        response = self._run_with_verdict("passed")
+        response, _ = self._run_with_verdict("passed")
 
         assert response.status_code == 200
 

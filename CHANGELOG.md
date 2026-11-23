@@ -5,6 +5,23 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.1] - 2026-11-23
+
+### Changed
+
+- **Dev dependency:** pin `fakeredis>=2.20,<2.33` so CI does not pull
+  2.37+ releases that raise `AttributeError` on
+  `method_descriptor.__closure__` when constructing `FakeRedis`.
+
+### Fixed
+
+- Blocked and throttled middleware verdict tests now assert that the wrapped
+  view never runs (`get_response.assert_not_called()`), closing the negative
+  case for the block and throttle promise (#160).
+- The deprecated `icv_waf` import-name compatibility shim now has dedicated
+  coverage for aliasing, the deprecation warning, submodule remapping, and
+  single finder install (#163).
+
 ## [2.12.0] - 2026-11-22
 
 ### Upgrade notes
