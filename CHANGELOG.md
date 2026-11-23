@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.12.1] - 2026-11-23
 
+### Changed
+
+- **Dev dependency:** pin `fakeredis>=2.20,<2.33` so CI does not pull
+  2.37+ releases that raise `AttributeError` on
+  `method_descriptor.__closure__` when constructing `FakeRedis`.
+
 ### Fixed
 
 - Blocked and throttled middleware verdict tests now assert that the wrapped
