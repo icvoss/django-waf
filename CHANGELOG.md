@@ -5,6 +5,29 @@ All notable changes to django-waf will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.2] - 2026-11-26
+
+### Added
+
+- **`django_waf.W011` system check** (ADR-101 decision 3, umbrella
+  icvoss/icv-oss-umbrella#678). Warns at `manage.py check`, `runserver` and
+  deploy when no logging handler is reachable from the `django_waf` logger
+  (a handler on the logger itself, or on an ancestor while `propagate` stays
+  true; `logging.lastResort` does not count). Without one, the failures this
+  package logs (the challenge-verify rate-limit check failing open, a failed
+  replacement challenge token, nginx test/reload failures in the blocklist
+  generator) are invisible. Not gated on `DJANGO_WAF_ENABLED`, because the
+  blocklist generator, tasks and admin views log with the middleware off.
+
+### Upgrade notes
+
+- **New warning on upgrade.** A project whose `LOGGING` configures no handler
+  for `django_waf` or the root logger will now see `django_waf.W011` from
+  `manage.py check`. It is a Warning, not an Error, so boot is unaffected;
+  add a handler for `django_waf` (or the root logger) to clear it, or list it
+  in `SILENCED_SYSTEM_CHECKS`. A project that runs
+  `check --fail-level WARNING` will fail until one of those is done.
+
 ## [2.12.1] - 2026-11-23
 
 ### Changed
