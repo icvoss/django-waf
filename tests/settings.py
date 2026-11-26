@@ -138,3 +138,19 @@ DJANGO_WAF_NGINX_VALIDATE = False
 # django_waf.conf.DJANGO_WAF_API_ENABLED directly, which api/viewsets.py reads
 # live on every request via WafApiEnabledMixin.initial().
 DJANGO_WAF_API_ENABLED = True
+
+
+# ADR-101 decision 3: the logging-handler boot check (django_waf.E010) is an
+# Error, so every settings module that runs system checks (makemigrations,
+# migrate, check) must route the package logger to a handler. Propagation
+# stays on so caplog and the root logger still see the records, and the root
+# handler covers any sibling ICV package installed alongside this one.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"null": {"class": "logging.NullHandler"}},
+    "loggers": {
+        "django_waf": {"handlers": ["null"], "level": "WARNING", "propagate": True},
+    },
+    "root": {"handlers": ["null"]},
+}

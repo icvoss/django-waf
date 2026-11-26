@@ -260,8 +260,8 @@ never runs at all, so a malformed entry behind it is not a live
 misconfiguration, only a latent one that will be caught the moment the WAF
 is switched on and this check runs again.
 
-The logging-handler check (``django_waf.W011``, ADR-101 decision 3) warns
-when no handler reaches the package's own logger hierarchy. django-waf logs
+The logging-handler check (``django_waf.E010``, ADR-101 decision 3) fails
+as an Error when no handler reaches the package's own logger hierarchy. django-waf logs
 through ``django_waf.*`` loggers (``views``, ``blocklist_generator``,
 ``middleware``, ``tasks`` and others); if a consuming project's LOGGING
 configuration attaches no handler anywhere in that chain, the failures it
@@ -269,7 +269,9 @@ logs (the challenge-verify rate-limit check failing open, a failed
 replacement challenge token, nginx test/reload failures when generating the
 blocklist) are effectively invisible. Deliberately not gated on
 ``DJANGO_WAF_ENABLED``: the blocklist generator, tasks and admin views log
-whether or not the middleware is evaluating requests.
+whether or not the middleware is evaluating requests. It shipped as the
+Warning ``django_waf.W011`` in 2.12.2 and is an Error per ADR-101 decision 3
+and docs/STANDARDS.md section 15; the W011 id is retired and not reused.
 """
 
 from __future__ import annotations
@@ -279,7 +281,7 @@ import os
 
 from django.core.checks import Error, Warning, register
 
-W011_ID = "django_waf.W011"
+E010_ID = "django_waf.E010"
 _PACKAGE_LOGGER_NAME = "django_waf"
 
 
@@ -1263,7 +1265,7 @@ def _has_reachable_handler(logger_name: str) -> bool:
 
 @register()
 def check_logging_handler_configured(app_configs, **kwargs):
-    """Warn when no handler reaches the django_waf logger hierarchy (django_waf.W011).
+    """Fail with an Error when no handler reaches the django_waf logger hierarchy (django_waf.E010).
 
     ADR-101 decision 3: a package that emits through logging ships a
     boot-time check confirming the consumer's LOGGING configuration
@@ -1277,7 +1279,7 @@ def check_logging_handler_configured(app_configs, **kwargs):
         return []
 
     return [
-        Warning(
+        Error(
             "No logging handler is configured to receive records from the "
             f"'{_PACKAGE_LOGGER_NAME}' logger (or any of its ancestors while "
             "propagate=True), so failures django-waf logs (e.g. the challenge "
@@ -1289,6 +1291,6 @@ def check_logging_handler_configured(app_configs, **kwargs):
                 "LOGGING['loggers']['django_waf'] = {'handlers': [...], "
                 "'level': 'WARNING', 'propagate': True}."
             ),
-            id=W011_ID,
+            id=E010_ID,
         )
     ]
