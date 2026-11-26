@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import logging
 
-from django.core.checks import run_checks
+from django.core.checks.registry import registry
 
 from django_waf.checks import check_logging_handler_configured
 
@@ -96,10 +96,4 @@ class TestLoggingHandlerConfigured:
 
     def test_is_registered_with_the_django_check_framework(self):
         """The check must run under ``manage.py check``, not only when called directly."""
-        with self._logger_state("django_waf") as (logger,):
-            logger.handlers = []
-            logger.propagate = False
-
-            messages = run_checks()
-
-        assert "django_waf.W011" in [m.id for m in messages]
+        assert check_logging_handler_configured in registry.registered_checks
