@@ -259,13 +259,28 @@ rather than surfacing the operator's typo. Gated on
 never runs at all, so a malformed entry behind it is not a live
 misconfiguration, only a latent one that will be caught the moment the WAF
 is switched on and this check runs again.
+
+The logging-handler check (``django_waf.W011``, ADR-101 decision 3) warns
+when no handler reaches the package's own logger hierarchy. django-waf logs
+through ``django_waf.*`` loggers (``views``, ``blocklist_generator``,
+``middleware``, ``tasks`` and others); if a consuming project's LOGGING
+configuration attaches no handler anywhere in that chain, the failures it
+logs (the challenge-verify rate-limit check failing open, a failed
+replacement challenge token, nginx test/reload failures when generating the
+blocklist) are effectively invisible. Deliberately not gated on
+``DJANGO_WAF_ENABLED``: the blocklist generator, tasks and admin views log
+whether or not the middleware is evaluating requests.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 
 from django.core.checks import Error, Warning, register
+
+W011_ID = "django_waf.W011"
+_PACKAGE_LOGGER_NAME = "django_waf"
 
 
 @register()
@@ -1222,3 +1237,58 @@ def check_rate_limit_paths(app_configs, **kwargs):
                 )
 
     return messages
+
+
+def _has_reachable_handler(logger_name: str) -> bool:
+    """Return whether a handler is attached anywhere in ``logger_name``'s
+    hierarchy that a record from it would actually reach, walking ancestors
+    while ``propagate`` is true. ``logging.lastResort`` (the module-level
+    fallback that stderr-prints WARNING+ when nothing else is configured) is
+    not a configured handler and is ignored, per ADR-101 decision 3: it
+    exists precisely to be invisible/unmanaged, not a substitute for a real
+    handler the consumer chose.
+    """
+    logger = logging.getLogger(logger_name)
+
+    current: logging.Logger | None = logger
+    while current is not None:
+        if any(handler is not logging.lastResort for handler in current.handlers):
+            return True
+        if not current.propagate:
+            return False
+        current = current.parent
+
+    return False
+
+
+@register()
+def check_logging_handler_configured(app_configs, **kwargs):
+    """Warn when no handler reaches the django_waf logger hierarchy (django_waf.W011).
+
+    ADR-101 decision 3: a package that emits through logging ships a
+    boot-time check confirming the consumer's LOGGING configuration
+    actually routes it somewhere. django-waf's failure-logging call sites
+    (``django_waf.views``: the challenge-verify rate-limit check failing
+    open and a failed replacement challenge token;
+    ``django_waf.blocklist_generator``: nginx test and reload failures)
+    rely on this.
+    """
+    if _has_reachable_handler(_PACKAGE_LOGGER_NAME):
+        return []
+
+    return [
+        Warning(
+            "No logging handler is configured to receive records from the "
+            f"'{_PACKAGE_LOGGER_NAME}' logger (or any of its ancestors while "
+            "propagate=True), so failures django-waf logs (e.g. the challenge "
+            "verify rate-limit check failing open, nginx test/reload failures "
+            "in the blocklist generator) will be invisible.",
+            hint=(
+                "Add a handler for the 'django_waf' logger (or the root logger, "
+                "if it propagates) in your LOGGING setting, e.g. "
+                "LOGGING['loggers']['django_waf'] = {'handlers': [...], "
+                "'level': 'WARNING', 'propagate': True}."
+            ),
+            id=W011_ID,
+        )
+    ]
