@@ -1,8 +1,8 @@
 """Tests for the django_waf.checks logging-handler boot check (django_waf.W011).
 
 ADR-101 decision 3 (umbrella icvoss/icv-oss-umbrella#678). The check function
-is driven directly with ``app_configs=None``; one test also runs the full
-check framework to prove the check is registered.
+is driven directly with ``app_configs=None``; one test also asserts it is
+registered with Django's check registry.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from django_waf.checks import check_logging_handler_configured
 
 class TestLoggingHandlerConfigured:
     """ADR-101 decision 3 (django_waf.W011): warn when nothing would receive a record
-    logged by the django_waf logger hierarchy (umbrella icvoss/oss#678)."""
+    logged by the django_waf logger hierarchy (umbrella icvoss/icv-oss-umbrella#678)."""
 
     @staticmethod
     @contextlib.contextmanager
